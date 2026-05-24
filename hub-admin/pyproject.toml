@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hub-admin"
+version = "0.1.0"
+description = "Production-grade CLI for hub device & integration management"
+requires-python = ">=3.11"
+dependencies = [
+    "typer[all]",
+    "rich",
+    "grpcio",
+    "protobuf",
+    "pyyaml",
+    "tenacity",
+]
+
+[project.scripts]
+hub-admin = "hub_admin.cli:app"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-mock"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

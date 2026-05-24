@@ -1,0 +1,451 @@
+{
+  "deployment": "Kela Fob 06",
+  "version": "1.0.6",
+  "deployer": "Avi S.",
+  "dry_run": false,
+  "started_at": "2026-05-10T18:08:34.546268+00:00",
+  "finished_at": "2026-05-10T18:08:41.255599+00:00",
+  "wall_clock_minutes": 0.11,
+  "active_wall_clock_minutes": 0.11,
+  "sum_of_steps_minutes": 0,
+  "expected_total_minutes": 270,
+  "total_break_minutes": 0,
+  "parallel_overlap_minutes": 0.0,
+  "breaks": [],
+  "device_type_summary": {
+    "server": {
+      "name": "Server",
+      "count": 1,
+      "actual_minutes": 0.0,
+      "expected_minutes": 55.0,
+      "completed_steps": 0,
+      "total_steps": 5
+    },
+    "ptz_camera": {
+      "name": "PTZ Camera (Raycam)",
+      "count": 1,
+      "actual_minutes": 0.0,
+      "expected_minutes": 30.0,
+      "completed_steps": 0,
+      "total_steps": 3
+    },
+    "radar_magos": {
+      "name": "Magos Radar",
+      "count": 4,
+      "actual_minutes": 0.0,
+      "expected_minutes": 60.0,
+      "completed_steps": 0,
+      "total_steps": 12
+    },
+    "pwf": {
+      "name": "PWF",
+      "count": 1,
+      "actual_minutes": 0.0,
+      "expected_minutes": 45.0,
+      "completed_steps": 0,
+      "total_steps": 4
+    },
+    "operator_station": {
+      "name": "Operator Station",
+      "count": 1,
+      "actual_minutes": 0.0,
+      "expected_minutes": 45.0,
+      "completed_steps": 0,
+      "total_steps": 4
+    },
+    "System-wide": {
+      "name": "System-wide",
+      "count": 1,
+      "actual_minutes": 0.0,
+      "expected_minutes": 35.0,
+      "completed_steps": 0,
+      "total_steps": 2
+    }
+  },
+  "devices": {
+    "server_main": {
+      "name": "Server",
+      "type": "server",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and rack mount",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "install_os",
+          "name": "Install OS",
+          "expected_minutes": 15,
+          "actual_minutes": 0.0,
+          "delta_minutes": -15.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "install_cluster",
+          "name": "Install Kubernetes cluster",
+          "expected_minutes": 10,
+          "actual_minutes": 0.0,
+          "delta_minutes": -10.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "deploy_app",
+          "name": "Deploy application stack",
+          "expected_minutes": 15,
+          "actual_minutes": 0.0,
+          "delta_minutes": -15.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "load_map",
+          "name": "Load map into server",
+          "expected_minutes": 10,
+          "actual_minutes": 0.0,
+          "delta_minutes": -10.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "camera_1": {
+      "name": "PTZ Camera (Raycam)",
+      "type": "ptz_camera",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 10,
+          "actual_minutes": 0.0,
+          "delta_minutes": -10.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "configure_network",
+          "name": "Configure network and ONVIF",
+          "expected_minutes": 10,
+          "actual_minutes": 0.0,
+          "delta_minutes": -10.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "register",
+          "name": "Register in platform",
+          "expected_minutes": 10,
+          "actual_minutes": 0.0,
+          "delta_minutes": -10.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "radar_1": {
+      "name": "Magos Radar",
+      "type": "radar_magos",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "configure",
+          "name": "Configure radar parameters",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "register",
+          "name": "Register in platform",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "radar_2": {
+      "name": "Magos Radar",
+      "type": "radar_magos",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "configure",
+          "name": "Configure radar parameters",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "register",
+          "name": "Register in platform",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "radar_3": {
+      "name": "Magos Radar",
+      "type": "radar_magos",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "configure",
+          "name": "Configure radar parameters",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "register",
+          "name": "Register in platform",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "radar_4": {
+      "name": "Magos Radar",
+      "type": "radar_magos",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "configure",
+          "name": "Configure radar parameters",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "register",
+          "name": "Register in platform",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "pwf": {
+      "name": "PWF",
+      "type": "pwf",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 10,
+          "actual_minutes": 0.0,
+          "delta_minutes": -10.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "setup_router",
+          "name": "Setup router (RUTM51) including firmware update",
+          "expected_minutes": 15,
+          "actual_minutes": 0.0,
+          "delta_minutes": -15.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "setup_modem",
+          "name": "Setup modem (OTD500) including firmware update",
+          "expected_minutes": 15,
+          "actual_minutes": 0.0,
+          "delta_minutes": -15.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "setup_switch",
+          "name": "Setup switch (TSW202 / MikroTik) including firmware update",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "operator_station": {
+      "name": "Operator Station",
+      "type": "operator_station",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 10,
+          "actual_minutes": 0.0,
+          "delta_minutes": -10.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "install_os",
+          "name": "Install OS",
+          "expected_minutes": 15,
+          "actual_minutes": 0.0,
+          "delta_minutes": -15.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "install_software",
+          "name": "Install software",
+          "expected_minutes": 10,
+          "actual_minutes": 0.0,
+          "delta_minutes": -10.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "software_validation",
+          "name": "Validate software",
+          "expected_minutes": 10,
+          "actual_minutes": 0.0,
+          "delta_minutes": -10.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "system": {
+      "name": "System-wide",
+      "type": null,
+      "steps": [
+        {
+          "id": "integration_test",
+          "name": "End-to-end integration test",
+          "expected_minutes": 15,
+          "actual_minutes": 0.0,
+          "delta_minutes": -15.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "pack_up",
+          "name": "Pack up and clean up",
+          "expected_minutes": 20,
+          "actual_minutes": 0.0,
+          "delta_minutes": -20.0,
+          "status": "pending",
+          "notes": "",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    }
+  }
+}

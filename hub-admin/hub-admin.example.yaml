@@ -1,0 +1,9 @@
+defaults:
+  context: kela-office-01
+  namespace: kela
+  port: 8001
+
+# One or more device_config.json files. Each can describe the radars/cameras
+# at a single site (see device_config.example.json for the schema).
+device_configs:
+  - ./device_config.json

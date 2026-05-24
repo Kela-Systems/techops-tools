@@ -1,0 +1,46 @@
+deployment:
+  name: "Site Alpha"
+  version: "2.4.1"
+  catalog: "../devices.yaml"
+
+devices:
+  server_main:
+    type: server
+
+  camera_north:
+    type: ptz_camera
+    name: "Camera North"
+    overrides:
+      configure_network:
+        name: "Network + VPN tunnel setup"
+        expected_minutes: 20
+
+  camera_south:
+    type: ptz_camera
+
+  radar_west:
+    type: radar_magos
+
+  operator_station_main:
+    type: operator_station
+
+  perimeter_fence:
+    name: "Perimeter Fence Sensor (one-off)"
+    steps:
+      - id: install
+        name: "Install fence sensors"
+        expected_minutes: 45
+      - id: configure
+        name: "Configure zones and sensitivity"
+        expected_minutes: 20
+      - id: register
+        name: "Register in platform"
+        expected_minutes: 5
+
+system_steps:
+  - id: integration_test
+    name: "End-to-end integration test"
+    expected_minutes: 15
+  - id: customer_handoff
+    name: "Customer handoff and walkthrough"
+    expected_minutes: 20

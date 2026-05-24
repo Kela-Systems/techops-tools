@@ -1,0 +1,3 @@
+check filesystem home_autorecords with path /
+    if space usage > 75% then exec "/usr/local/bin/fs_cleanup.sh" as uid root and gid root
+    if space usage > 75% then exec "/usr/local/bin/alert.sh"

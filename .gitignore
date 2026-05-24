@@ -1,0 +1,56 @@
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Real device/config files — commit only the *.example.* variants
+hub-admin/device_config.json
+hub-admin/hub-admin.yaml
+
+# Generated outputs from the raster scripts
+deployments_scripts/tiff_output/
+site_outputs/
+mosaic_temp.vrt
+*.gpkg-journal
+
+# Exported DB extracts
+map_features_*.csv
+
+# Large binary geo data — keep in S3 / external storage, not git
+*.gpkg
+*.tif
+*.tiff
+
+# Logs
+*.log
+
+# Cluster auth helpers
+kubeconfig
+
+# Service account for Google Sheets API
+deploy-tracker/service_account.json
+

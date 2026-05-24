@@ -1,0 +1,206 @@
+{
+  "deployment": "Kela Site Test 2",
+  "version": "2.4.1",
+  "deployer": "Avi S.",
+  "dry_run": false,
+  "started_at": "2026-03-26T15:13:20.542363+00:00",
+  "finished_at": "2026-03-26T15:35:30.372893+00:00",
+  "wall_clock_minutes": 22.16,
+  "active_wall_clock_minutes": 19.13,
+  "sum_of_steps_minutes": 32.65,
+  "expected_total_minutes": 130,
+  "total_break_minutes": 3.03,
+  "parallel_overlap_minutes": 13.51,
+  "breaks": [
+    {
+      "started_at": "2026-03-26T15:19:02.943586+00:00",
+      "ended_at": "2026-03-26T15:20:55.371267+00:00",
+      "duration_minutes": 1.87,
+      "note": "lunch"
+    },
+    {
+      "started_at": "2026-03-26T15:32:16.836949+00:00",
+      "ended_at": "2026-03-26T15:33:26.214588+00:00",
+      "duration_minutes": 1.16,
+      "note": "asdf"
+    }
+  ],
+  "device_type_summary": {
+    "server": {
+      "name": "Server",
+      "count": 1,
+      "actual_minutes": 11.52,
+      "expected_minutes": 55.0,
+      "completed_steps": 4,
+      "total_steps": 5
+    },
+    "ptz_camera": {
+      "name": "PTZ Camera (Raycam)",
+      "count": 1,
+      "actual_minutes": 15.15,
+      "expected_minutes": 30.0,
+      "completed_steps": 3,
+      "total_steps": 3
+    },
+    "operator_station": {
+      "name": "Operator Station",
+      "count": 1,
+      "actual_minutes": 5.98,
+      "expected_minutes": 45.0,
+      "completed_steps": 3,
+      "total_steps": 4
+    }
+  },
+  "devices": {
+    "server_main": {
+      "name": "Server",
+      "type": "server",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and rack mount",
+          "expected_minutes": 5,
+          "actual_minutes": 1.69,
+          "delta_minutes": -3.31,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-26T15:13:24.057418+00:00",
+          "finished_at": "2026-03-26T15:15:05.535308+00:00"
+        },
+        {
+          "id": "install_os",
+          "name": "Install OS",
+          "expected_minutes": 15,
+          "actual_minutes": 2.27,
+          "delta_minutes": -12.73,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-26T15:15:09.251474+00:00",
+          "finished_at": "2026-03-26T15:17:25.277242+00:00"
+        },
+        {
+          "id": "install_cluster",
+          "name": "Install Kubernetes cluster",
+          "expected_minutes": 10,
+          "actual_minutes": 3.79,
+          "delta_minutes": -6.21,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-26T15:15:10.726686+00:00",
+          "finished_at": "2026-03-26T15:18:57.946030+00:00"
+        },
+        {
+          "id": "deploy_app",
+          "name": "Deploy application stack",
+          "expected_minutes": 15,
+          "actual_minutes": 3.77,
+          "delta_minutes": -11.23,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-26T15:17:29.192208+00:00",
+          "finished_at": "2026-03-26T15:21:15.125524+00:00"
+        },
+        {
+          "id": "load_map",
+          "name": "Load map into server",
+          "expected_minutes": 10,
+          "actual_minutes": 0.0,
+          "delta_minutes": -10.0,
+          "status": "skipped",
+          "notes": "no need",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "camera_south": {
+      "name": "PTZ Camera (Raycam)",
+      "type": "ptz_camera",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 10,
+          "actual_minutes": 1.6,
+          "delta_minutes": -8.4,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-26T15:21:19.654259+00:00",
+          "finished_at": "2026-03-26T15:22:55.717132+00:00"
+        },
+        {
+          "id": "configure_network",
+          "name": "Configure network and ONVIF",
+          "expected_minutes": 10,
+          "actual_minutes": 6.34,
+          "delta_minutes": -3.66,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-26T15:22:59.672588+00:00",
+          "finished_at": "2026-03-26T15:29:20.298938+00:00"
+        },
+        {
+          "id": "register",
+          "name": "Register in platform",
+          "expected_minutes": 10,
+          "actual_minutes": 7.21,
+          "delta_minutes": -2.79,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-26T15:23:00.950188+00:00",
+          "finished_at": "2026-03-26T15:30:13.774905+00:00"
+        }
+      ]
+    },
+    "operator_station_main": {
+      "name": "Operator Station",
+      "type": "operator_station",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 10,
+          "actual_minutes": 0.92,
+          "delta_minutes": -9.08,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-26T15:29:23.294874+00:00",
+          "finished_at": "2026-03-26T15:30:18.469572+00:00"
+        },
+        {
+          "id": "install_os",
+          "name": "Install OS",
+          "expected_minutes": 15,
+          "actual_minutes": 0.0,
+          "delta_minutes": -15.0,
+          "status": "skipped",
+          "notes": "like that",
+          "started_at": null,
+          "finished_at": null
+        },
+        {
+          "id": "install_software",
+          "name": "Install software",
+          "expected_minutes": 10,
+          "actual_minutes": 1.76,
+          "delta_minutes": -8.24,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-26T15:30:21.379695+00:00",
+          "finished_at": "2026-03-26T15:32:06.739681+00:00"
+        },
+        {
+          "id": "software_validation",
+          "name": "Validate software",
+          "expected_minutes": 10,
+          "actual_minutes": 3.3,
+          "delta_minutes": -6.7,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-26T15:32:10.189420+00:00",
+          "finished_at": "2026-03-26T15:35:28.209974+00:00"
+        }
+      ]
+    }
+  }
+}

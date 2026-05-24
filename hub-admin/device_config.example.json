@@ -1,0 +1,36 @@
+{
+  "onvifcams": {
+    "onvifcam_1": {
+      "device_name": "Camera North",
+      "host": "192.168.1.10",
+      "device_port": 80,
+      "location": "32.867177,35.703506",
+      "altitude": 304,
+      "username": "admin",
+      "password": "$ONVIF_PASSWORD"
+    },
+    "onvifcam_2": {
+      "device_name": "Camera South",
+      "host": "192.168.1.11",
+      "device_port": 80,
+      "location": "32.868022,35.702015",
+      "altitude": 300,
+      "username": "admin",
+      "password": "$ONVIF_PASSWORD"
+    }
+  },    
+  "magos": {
+    "magos_1": {
+      "device_name": "Radar 1000",
+      "IpAddress": "192.168.1.20",
+      "device_port": 80,
+      "location": "32.8672,35.70342",
+      "altitude": 2,
+      "pan": 190,
+      "model": "SR-1000-F",
+      "syncEnabled": true,
+      "syncSweepTime": 0,
+      "syncSlot": 0
+    }
+  }
+}

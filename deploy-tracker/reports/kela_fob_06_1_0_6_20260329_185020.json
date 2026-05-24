@@ -1,0 +1,464 @@
+{
+  "deployment": "Kela Fob 06",
+  "version": "1.0.6",
+  "deployer": "Unknown",
+  "dry_run": false,
+  "started_at": "2026-03-29T11:49:53.885076+00:00",
+  "finished_at": "2026-03-29T15:50:20.541375+00:00",
+  "wall_clock_minutes": 240.44,
+  "active_wall_clock_minutes": 202.02,
+  "sum_of_steps_minutes": 246.54,
+  "expected_total_minutes": 270,
+  "total_break_minutes": 38.42,
+  "parallel_overlap_minutes": 44.52,
+  "breaks": [
+    {
+      "started_at": "2026-03-29T13:07:41.031294+00:00",
+      "ended_at": "2026-03-29T13:43:09.317859+00:00",
+      "duration_minutes": 35.47,
+      "note": "lunch"
+    },
+    {
+      "started_at": "2026-03-29T14:49:22.378220+00:00",
+      "ended_at": "2026-03-29T14:52:19.343319+00:00",
+      "duration_minutes": 2.95,
+      "note": ""
+    }
+  ],
+  "device_type_summary": {
+    "server": {
+      "name": "Server",
+      "count": 1,
+      "actual_minutes": 65.15,
+      "expected_minutes": 55.0,
+      "completed_steps": 4,
+      "total_steps": 5
+    },
+    "ptz_camera": {
+      "name": "PTZ Camera (Raycam)",
+      "count": 1,
+      "actual_minutes": 15.71,
+      "expected_minutes": 30.0,
+      "completed_steps": 3,
+      "total_steps": 3
+    },
+    "radar_magos": {
+      "name": "Magos Radar",
+      "count": 4,
+      "actual_minutes": 78.35,
+      "expected_minutes": 60.0,
+      "completed_steps": 11,
+      "total_steps": 12
+    },
+    "pwf": {
+      "name": "PWF",
+      "count": 1,
+      "actual_minutes": 38.06,
+      "expected_minutes": 45.0,
+      "completed_steps": 3,
+      "total_steps": 4
+    },
+    "operator_station": {
+      "name": "Operator Station",
+      "count": 1,
+      "actual_minutes": 32.41,
+      "expected_minutes": 45.0,
+      "completed_steps": 4,
+      "total_steps": 4
+    },
+    "System-wide": {
+      "name": "System-wide",
+      "count": 1,
+      "actual_minutes": 16.87,
+      "expected_minutes": 35.0,
+      "completed_steps": 2,
+      "total_steps": 2
+    }
+  },
+  "devices": {
+    "server_main": {
+      "name": "Server",
+      "type": "server",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and rack mount",
+          "expected_minutes": 5,
+          "actual_minutes": 1.92,
+          "delta_minutes": -3.08,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T11:55:25.026314+00:00",
+          "finished_at": "2026-03-29T11:57:20.009936+00:00"
+        },
+        {
+          "id": "install_os",
+          "name": "Install OS",
+          "expected_minutes": 15,
+          "actual_minutes": 13.28,
+          "delta_minutes": -1.72,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T11:57:26.322665+00:00",
+          "finished_at": "2026-03-29T12:10:43.144587+00:00"
+        },
+        {
+          "id": "install_cluster",
+          "name": "Install Kubernetes cluster",
+          "expected_minutes": 10,
+          "actual_minutes": 31.09,
+          "delta_minutes": 21.09,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T12:17:37.122883+00:00",
+          "finished_at": "2026-03-29T12:48:42.446492+00:00"
+        },
+        {
+          "id": "deploy_app",
+          "name": "Deploy application stack",
+          "expected_minutes": 15,
+          "actual_minutes": 18.86,
+          "delta_minutes": 3.86,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T12:48:46.895910+00:00",
+          "finished_at": "2026-03-29T13:07:38.361749+00:00"
+        },
+        {
+          "id": "load_map",
+          "name": "Load map into server",
+          "expected_minutes": 10,
+          "actual_minutes": 0.0,
+          "delta_minutes": -10.0,
+          "status": "skipped",
+          "notes": "no site yet",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "camera_1": {
+      "name": "PTZ Camera (Raycam)",
+      "type": "ptz_camera",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 10,
+          "actual_minutes": 6.94,
+          "delta_minutes": -3.06,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T12:50:18.247377+00:00",
+          "finished_at": "2026-03-29T12:57:14.613483+00:00"
+        },
+        {
+          "id": "configure_network",
+          "name": "Configure network and ONVIF",
+          "expected_minutes": 10,
+          "actual_minutes": 5.03,
+          "delta_minutes": -4.97,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T12:57:44.718224+00:00",
+          "finished_at": "2026-03-29T13:02:46.483873+00:00"
+        },
+        {
+          "id": "register",
+          "name": "Register in platform",
+          "expected_minutes": 10,
+          "actual_minutes": 3.74,
+          "delta_minutes": -6.26,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T13:43:18.052364+00:00",
+          "finished_at": "2026-03-29T13:47:02.420480+00:00"
+        }
+      ]
+    },
+    "radar_1": {
+      "name": "Magos Radar",
+      "type": "radar_magos",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 5,
+          "actual_minutes": 4.9,
+          "delta_minutes": -0.1,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T13:47:10.633269+00:00",
+          "finished_at": "2026-03-29T13:52:04.933141+00:00"
+        },
+        {
+          "id": "configure",
+          "name": "Configure radar parameters",
+          "expected_minutes": 5,
+          "actual_minutes": 14.1,
+          "delta_minutes": 9.1,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T13:52:09.899135+00:00",
+          "finished_at": "2026-03-29T14:06:15.912279+00:00"
+        },
+        {
+          "id": "register",
+          "name": "Register in platform",
+          "expected_minutes": 5,
+          "actual_minutes": 5.23,
+          "delta_minutes": 0.23,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T14:11:31.686857+00:00",
+          "finished_at": "2026-03-29T14:16:45.600986+00:00"
+        }
+      ]
+    },
+    "radar_2": {
+      "name": "Magos Radar",
+      "type": "radar_magos",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 5,
+          "actual_minutes": 1.14,
+          "delta_minutes": -3.86,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T14:16:51.587484+00:00",
+          "finished_at": "2026-03-29T14:18:00.014948+00:00"
+        },
+        {
+          "id": "configure",
+          "name": "Configure radar parameters",
+          "expected_minutes": 5,
+          "actual_minutes": 14.96,
+          "delta_minutes": 9.96,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T14:18:01.911672+00:00",
+          "finished_at": "2026-03-29T14:32:59.416836+00:00"
+        },
+        {
+          "id": "register",
+          "name": "Register in platform",
+          "expected_minutes": 5,
+          "actual_minutes": 1.86,
+          "delta_minutes": -3.14,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T14:33:01.170666+00:00",
+          "finished_at": "2026-03-29T14:34:52.973218+00:00"
+        }
+      ]
+    },
+    "radar_3": {
+      "name": "Magos Radar",
+      "type": "radar_magos",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 5,
+          "actual_minutes": 1.03,
+          "delta_minutes": -3.97,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T14:34:58.482739+00:00",
+          "finished_at": "2026-03-29T14:36:00.436209+00:00"
+        },
+        {
+          "id": "configure",
+          "name": "Configure radar parameters",
+          "expected_minutes": 5,
+          "actual_minutes": 16.4,
+          "delta_minutes": 11.4,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T14:36:02.834919+00:00",
+          "finished_at": "2026-03-29T14:52:26.703031+00:00"
+        },
+        {
+          "id": "register",
+          "name": "Register in platform",
+          "expected_minutes": 5,
+          "actual_minutes": 2.9,
+          "delta_minutes": -2.1,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T14:52:30.474531+00:00",
+          "finished_at": "2026-03-29T14:55:24.316261+00:00"
+        }
+      ]
+    },
+    "radar_4": {
+      "name": "Magos Radar",
+      "type": "radar_magos",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 5,
+          "actual_minutes": 1.58,
+          "delta_minutes": -3.42,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T15:12:46.755410+00:00",
+          "finished_at": "2026-03-29T15:14:21.688474+00:00"
+        },
+        {
+          "id": "configure",
+          "name": "Configure radar parameters",
+          "expected_minutes": 5,
+          "actual_minutes": 14.25,
+          "delta_minutes": 9.25,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T15:14:25.547888+00:00",
+          "finished_at": "2026-03-29T15:28:40.262530+00:00"
+        },
+        {
+          "id": "register",
+          "name": "Register in platform",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "skipped",
+          "notes": "skipped",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "pwf": {
+      "name": "PWF",
+      "type": "pwf",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 10,
+          "actual_minutes": 5.34,
+          "delta_minutes": -4.66,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T11:49:59.802566+00:00",
+          "finished_at": "2026-03-29T11:55:20.222566+00:00"
+        },
+        {
+          "id": "setup_router",
+          "name": "Setup router (RUTM51) including firmware update",
+          "expected_minutes": 15,
+          "actual_minutes": 15.52,
+          "delta_minutes": 0.52,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T12:01:57.004294+00:00",
+          "finished_at": "2026-03-29T12:17:28.392621+00:00"
+        },
+        {
+          "id": "setup_modem",
+          "name": "Setup modem (OTD500) including firmware update",
+          "expected_minutes": 15,
+          "actual_minutes": 17.2,
+          "delta_minutes": 2.2,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T15:20:14.732605+00:00",
+          "finished_at": "2026-03-29T15:37:26.591014+00:00"
+        },
+        {
+          "id": "setup_switch",
+          "name": "Setup switch (TSW202 / MikroTik) including firmware update",
+          "expected_minutes": 5,
+          "actual_minutes": 0.0,
+          "delta_minutes": -5.0,
+          "status": "skipped",
+          "notes": "no password",
+          "started_at": null,
+          "finished_at": null
+        }
+      ]
+    },
+    "operator_station": {
+      "name": "Operator Station",
+      "type": "operator_station",
+      "steps": [
+        {
+          "id": "unpack",
+          "name": "Unpack and mount",
+          "expected_minutes": 10,
+          "actual_minutes": 3.04,
+          "delta_minutes": -6.96,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T13:59:48.342455+00:00",
+          "finished_at": "2026-03-29T14:02:50.587589+00:00"
+        },
+        {
+          "id": "install_os",
+          "name": "Install OS",
+          "expected_minutes": 15,
+          "actual_minutes": 8.55,
+          "delta_minutes": -6.45,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T14:02:54.122456+00:00",
+          "finished_at": "2026-03-29T14:11:27.190213+00:00"
+        },
+        {
+          "id": "install_software",
+          "name": "Install software",
+          "expected_minutes": 10,
+          "actual_minutes": 17.2,
+          "delta_minutes": 7.2,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T14:55:29.663030+00:00",
+          "finished_at": "2026-03-29T15:12:41.423978+00:00"
+        },
+        {
+          "id": "software_validation",
+          "name": "Validate software",
+          "expected_minutes": 10,
+          "actual_minutes": 3.62,
+          "delta_minutes": -6.38,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T15:14:40.685070+00:00",
+          "finished_at": "2026-03-29T15:18:17.672033+00:00"
+        }
+      ]
+    },
+    "system": {
+      "name": "System-wide",
+      "type": null,
+      "steps": [
+        {
+          "id": "integration_test",
+          "name": "End-to-end integration test",
+          "expected_minutes": 15,
+          "actual_minutes": 8.12,
+          "delta_minutes": -6.88,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T15:33:18.108274+00:00",
+          "finished_at": "2026-03-29T15:41:25.523746+00:00"
+        },
+        {
+          "id": "pack_up",
+          "name": "Pack up and clean up",
+          "expected_minutes": 20,
+          "actual_minutes": 8.75,
+          "delta_minutes": -11.25,
+          "status": "completed",
+          "notes": "",
+          "started_at": "2026-03-29T15:41:31.951197+00:00",
+          "finished_at": "2026-03-29T15:50:16.811521+00:00"
+        }
+      ]
+    }
+  }
+}

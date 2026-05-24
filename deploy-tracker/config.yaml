@@ -1,0 +1,3 @@
+google_sheets:
+  key_file: "./service_account.json"
+  sheet_id: "18kmrlFdxMGtOKLQGldPLGrE7zcP5urO0ERfYyK1eVRI"
