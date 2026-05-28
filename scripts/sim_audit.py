@@ -263,7 +263,12 @@ def enrich_devices_with_ssh(
     """
     import threading
 
-    online = [d for d in devices if d.get("status") == "online"]
+    def is_online(dev: dict) -> bool:
+        # Raw RMS dicts use status=1 (int); processed records use "online" (str)
+        s = dev.get("status")
+        return s == 1 or s == "online"
+
+    online = [d for d in devices if is_online(d)]
     offline_count = len(devices) - len(online)
     print(
         f"SSH enrichment: {len(online)} online device(s) to probe"
@@ -274,7 +279,7 @@ def enrich_devices_with_ssh(
 
     # Mark offline devices immediately
     for dev in devices:
-        if dev.get("status") != "online":
+        if not is_online(dev):
             dev["ssh_slots"] = None
 
     results: dict[int, Optional[list[dict]]] = {}
