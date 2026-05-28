@@ -1,6 +1,7 @@
 .env
 report.json
 report.md
+report.html
 __pycache__/
 *.pyc
 .venv/

@@ -469,6 +469,315 @@ def write_markdown(report: dict, path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# HTML report
+# ---------------------------------------------------------------------------
+
+def write_html(report: dict, path: Path) -> None:  # noqa: C901
+    """Generate a self-contained interactive HTML report."""
+    s = report["summary"]
+    ts = report["generated_at"]
+    droam_queried = s["total_droam_sims"] is not None
+
+    # ---- helpers ----
+    def badge(text: str, colour: str) -> str:
+        return f'<span class="badge bg-{colour} text-wrap">{text}</span>'
+
+    def sim_droam_badge(sim: dict) -> str:
+        v = sim.get("in_droam")
+        if v is True:
+            return badge("✔ Droam", "success")
+        if v is False:
+            return badge("✘ Not in Droam", "danger")
+        return badge("—", "secondary")
+
+    def sim_detail_rows(sim: dict) -> str:
+        di = sim.get("droam_info") or {}
+        rows = [
+            ("ICCID", f"<code>{sim['iccid']}</code>"),
+            ("IMSI", f"<code>{sim['imsi'] or '—'}</code>"),
+            ("Operator", f"{sim['operator'] or '—'} ({sim['operator_number'] or '—'})"),
+            ("SIM state", sim["sim_state"] or "—"),
+            ("Connection", f"{sim['connection_state'] or '—'} / {sim['connection_type'] or '—'}"),
+            ("Network", sim["network_state"] or "—"),
+            ("Mobile IP", sim["mobile_ip"] or "—"),
+            ("Signal", f"{sim['signal_dbm']} dBm &nbsp; RSRP {sim['rsrp']} &nbsp; RSRQ {sim['rsrq']} &nbsp; SINR {sim['sinr']}"),
+        ]
+        if di:
+            tags_str = ", ".join(di.get("tags") or []) or "—"
+            rows += [
+                ("── Droam status", f"{di.get('status') or '—'} / session: {di.get('in_session') or '—'}"),
+                ("── Droam plan", f"{di.get('plan') or '—'} ({di.get('sim_card_type') or '—'})"),
+                ("── Droam IP / APN", f"{di.get('ip') or '—'} / {di.get('apn') or '—'}"),
+                ("── Droam tags", tags_str),
+                ("── Contract exp.", di.get("contract_expiration_at") or "—"),
+            ]
+        return "".join(
+            f"<tr><th class='text-nowrap pe-3 fw-normal text-muted small'>{k}</th><td>{v}</td></tr>"
+            for k, v in rows
+        )
+
+    # ---- build device rows ----
+    device_rows_html = []
+    for dev in report["devices"]:
+        online = dev["status"] == "online"
+        status_badge = badge("● online", "success") if online else badge("○ offline", "secondary")
+        tags_html = " ".join(badge(t, "info") for t in dev["tags"]) if dev["tags"] else "—"
+
+        sims = dev["sims"]
+        # Droam match column: show worst case (any NOT in Droam → red)
+        if not droam_queried or not sims:
+            match_badge = badge("—", "secondary")
+        elif all(s.get("in_droam") for s in sims):
+            match_badge = badge(f"✔ {len(sims)}/{len(sims)}", "success")
+        elif any(s.get("in_droam") for s in sims):
+            matched = sum(1 for s in sims if s.get("in_droam"))
+            match_badge = badge(f"⚠ {matched}/{len(sims)}", "warning")
+        else:
+            match_badge = badge(f"✘ 0/{len(sims)}", "danger")
+
+        # per-slot SIM badges for the main row
+        sim_badges = " ".join(
+            f"{sim_droam_badge(s)}&nbsp;<code class='small'>{s['iccid'][:12]}…</code>"
+            for s in sims
+        ) if sims else "<span class='text-muted small'>no SIM data</span>"
+
+        # expandable detail panel
+        panel_id = f"dev-{dev['id']}"
+        detail_table_rows = "".join(
+            f"<tr><th class='text-nowrap pe-3 fw-normal text-muted small'>{k}</th><td>{v}</td></tr>"
+            for k, v in [
+                ("Model", dev["model"] or "—"),
+                ("Serial", dev["serial"] or "—"),
+                ("MAC", dev["mac"] or "—"),
+                ("IMEI", dev["imei"] or "—"),
+                ("Firmware", dev["firmware"] or "—"),
+                ("WAN IP", dev["wan_ip"] or "—"),
+                ("WAN state", dev["wan_state"] or "—"),
+                ("Created", dev["created_at"] or "—"),
+                ("Last seen", dev["last_connection_at"] or "—"),
+            ]
+        )
+        sim_panels = "".join(
+            f"""<div class='mb-2 p-2 border rounded'>
+                  <strong class='small'>Slot {s['slot']}</strong> &nbsp; {sim_droam_badge(s)}
+                  <table class='table table-sm mb-0 mt-1'>{sim_detail_rows(s)}</table>
+                </div>"""
+            for s in sims
+        ) or "<p class='text-muted small mb-0'>No SIM data.</p>"
+
+        detail_html = f"""
+        <tr class='collapse' id='{panel_id}'>
+          <td colspan='7' class='bg-light border-top-0 pt-0'>
+            <div class='row g-3 p-2'>
+              <div class='col-md-5'>
+                <p class='fw-semibold mb-1 small text-uppercase text-muted'>Device</p>
+                <table class='table table-sm mb-0'>{detail_table_rows}</table>
+              </div>
+              <div class='col-md-7'>
+                <p class='fw-semibold mb-1 small text-uppercase text-muted'>SIMs</p>
+                {sim_panels}
+              </div>
+            </div>
+          </td>
+        </tr>"""
+
+        name_link = (
+            f'<a class="text-decoration-none" data-bs-toggle="collapse" '
+            f'href="#{panel_id}" role="button">'
+            f'{dev["name"]}'
+            f'</a>'
+        )
+        device_rows_html.append(
+            f"<tr data-name='{dev['name'].lower()}' data-status='{dev['status']}'>"
+            f"<td>{status_badge}</td>"
+            f"<td>{name_link}</td>"
+            f"<td class='small text-muted'>{dev['model'] or '—'}</td>"
+            f"<td>{match_badge}</td>"
+            f"<td class='small'>{sim_badges}</td>"
+            f"<td class='small text-muted'>{dev['wan_ip'] or '—'}</td>"
+            f"<td class='small'>{tags_html}</td>"
+            f"</tr>"
+            f"{detail_html}"
+        )
+
+    # ---- orphan Droam SIMs table ----
+    orphans = report.get("droam_sims_not_in_any_teltonika", [])
+    if orphans:
+        orphan_rows = "".join(
+            f"<tr>"
+            f"<td><code class='small'>{o['iccid']}</code></td>"
+            f"<td class='small'>{o.get('msisdn') or '—'}</td>"
+            f"<td class='small'>{o.get('operator') or '—'}</td>"
+            f"<td>{badge(o.get('status') or '—', 'secondary')}</td>"
+            f"<td class='small'>{o.get('plan') or '—'}</td>"
+            f"<td class='small'>{', '.join(o.get('tags') or []) or '—'}</td>"
+            f"<td class='small'>{'Yes' if o.get('is_esim') else 'No'}</td>"
+            f"</tr>"
+            for o in orphans
+        )
+        orphan_section = f"""
+        <h5 class='mt-4 mb-3'>
+          Droam SIMs not installed in any Teltonika device
+          <span class='badge bg-warning text-dark ms-2'>{len(orphans)}</span>
+        </h5>
+        <table class='table table-sm table-hover table-bordered' id='orphanTable'>
+          <thead class='table-light'>
+            <tr>
+              <th>ICCID</th><th>MSISDN</th><th>Operator</th>
+              <th>Status</th><th>Plan</th><th>Tags</th><th>eSIM</th>
+            </tr>
+          </thead>
+          <tbody>{orphan_rows}</tbody>
+        </table>"""
+    else:
+        orphan_section = "<p class='text-success mt-4'>All Droam SIMs are installed in a Teltonika device.</p>"
+
+    # ---- summary cards ----
+    def stat_card(label: str, value: str, colour: str = "primary") -> str:
+        return (
+            f"<div class='col'><div class='card text-center h-100 border-{colour}'>"
+            f"<div class='card-body py-2'>"
+            f"<div class='display-6 fw-bold text-{colour}'>{value}</div>"
+            f"<div class='small text-muted'>{label}</div>"
+            f"</div></div></div>"
+        )
+
+    cards = [
+        stat_card("RMS devices", str(s["total_rms_devices"])),
+        stat_card("SIM slots", str(s["total_rms_sims"])),
+    ]
+    if droam_queried:
+        cards += [
+            stat_card("Droam SIMs", str(s["total_droam_sims"])),
+            stat_card("Matched", str(s["droam_sims_found_in_rms"]), "success"),
+            stat_card("RMS not in Droam", str(s["rms_sims_not_in_droam"]),
+                      "danger" if s["rms_sims_not_in_droam"] else "success"),
+            stat_card("Droam unassigned", str(s["droam_sims_not_in_any_device"]),
+                      "warning" if s["droam_sims_not_in_any_device"] else "success"),
+        ]
+    cards_html = "".join(cards)
+
+    # ---- full page ----
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SIM Audit Report</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <style>
+    body {{ font-family: system-ui, sans-serif; background: #f8f9fa; }}
+    .collapse.show td {{ border-top: none; }}
+    #deviceTable th {{ cursor: pointer; user-select: none; white-space: nowrap; }}
+    #deviceTable th::after {{ content: " ↕"; color: #aaa; font-size: .7em; }}
+    #deviceTable th.asc::after {{ content: " ↑"; color: #333; }}
+    #deviceTable th.desc::after {{ content: " ↓"; color: #333; }}
+    code {{ font-size: .85em; }}
+    .badge {{ font-size: .75em; }}
+  </style>
+</head>
+<body>
+<div class="container-fluid py-4">
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h3 class="mb-0">📡 SIM Audit Report</h3>
+    <span class="text-muted small">Generated: {ts}</span>
+  </div>
+
+  <div class="row row-cols-2 row-cols-md-3 row-cols-lg-6 g-2 mb-4">
+    {cards_html}
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <span class="fw-semibold">Teltonika Devices</span>
+      <div class="d-flex gap-2 flex-wrap">
+        <input id="searchBox" class="form-control form-control-sm" style="width:220px"
+               placeholder="Search name / ICCID…" oninput="filterTable()">
+        <select id="statusFilter" class="form-select form-select-sm" style="width:130px"
+                onchange="filterTable()">
+          <option value="">All status</option>
+          <option value="online">Online only</option>
+          <option value="offline">Offline only</option>
+        </select>
+      </div>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover mb-0" id="deviceTable">
+          <thead class="table-light">
+            <tr>
+              <th onclick="sortTable(0)">Status</th>
+              <th onclick="sortTable(1)">Name</th>
+              <th onclick="sortTable(2)">Model</th>
+              <th onclick="sortTable(3)">Droam</th>
+              <th>SIMs</th>
+              <th onclick="sortTable(5)">WAN IP</th>
+              <th>Tags</th>
+            </tr>
+          </thead>
+          <tbody id="deviceBody">
+            {"".join(device_rows_html)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {orphan_section}
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  // Simple client-side sort
+  let sortCol = -1, sortDir = 1;
+  function sortTable(col) {{
+    const tbody = document.getElementById('deviceBody');
+    const ths = document.querySelectorAll('#deviceTable th');
+    ths.forEach((th, i) => th.classList.remove('asc', 'desc'));
+    if (sortCol === col) {{ sortDir *= -1; }} else {{ sortCol = col; sortDir = 1; }}
+    ths[col].classList.add(sortDir === 1 ? 'asc' : 'desc');
+
+    // collect main rows (non-collapse) and their following collapse rows
+    const rows = [...tbody.querySelectorAll('tr:not(.collapse)')];
+    rows.sort((a, b) => {{
+      const at = (a.cells[col]?.innerText || '').trim().toLowerCase();
+      const bt = (b.cells[col]?.innerText || '').trim().toLowerCase();
+      return at < bt ? -sortDir : at > bt ? sortDir : 0;
+    }});
+    rows.forEach(r => {{
+      tbody.appendChild(r);
+      const next = document.getElementById(r.querySelector('a[href]')?.getAttribute('href')?.slice(1))
+                    ?.closest('tr');
+      if (next) tbody.appendChild(next);
+    }});
+  }}
+
+  function filterTable() {{
+    const q = document.getElementById('searchBox').value.toLowerCase();
+    const st = document.getElementById('statusFilter').value;
+    document.querySelectorAll('#deviceBody tr:not(.collapse)').forEach(row => {{
+      const name = row.dataset.name || '';
+      const status = row.dataset.status || '';
+      const text = row.innerText.toLowerCase();
+      const vis = (!q || name.includes(q) || text.includes(q)) && (!st || status === st);
+      row.style.display = vis ? '' : 'none';
+      // also hide the paired collapse row when filtering
+      const collapseId = row.querySelector('a[href]')?.getAttribute('href')?.slice(1);
+      const collapseRow = collapseId && document.getElementById(collapseId)?.closest('tr');
+      if (collapseRow) collapseRow.style.display = vis ? '' : 'none';
+    }});
+  }}
+</script>
+</body>
+</html>"""
+
+    path.write_text(html, encoding="utf-8")
+    print(f"HTML report   → {path}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -517,6 +826,9 @@ def main() -> None:
 
     md_path = output_dir / "report.md"
     write_markdown(report, md_path)
+
+    html_path = output_dir / "report.html"
+    write_html(report, html_path)
 
     # Quick summary to stdout
     s = report["summary"]
