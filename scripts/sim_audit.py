@@ -7,9 +7,14 @@ Generates a report showing:
   - All Droam SIMs not installed in any Teltonika device
 
 Usage:
-  cp .env.example .env       # fill in your credentials
-  python3 sim_audit.py       # outputs report.json + report.md
+  cp .env.example .env           # fill in your credentials
+  python3 sim_audit.py           # RMS + Droam cross-reference
+  python3 sim_audit.py --ssh     # also SSH into each online device to discover all SIM slots
   python3 sim_audit.py --rms-only  # skip Droam (useful while Droam creds aren't set)
+
+SSH enrichment reads /etc/config/simcard from each online OTD500 via SSH, discovering
+ICCIDs for inactive/standby SIM slots (not visible via the RMS API).
+Credentials are read from SSH_USER / SSH_PASS in .env (defaults: root / no password).
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re as _re_top
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +39,9 @@ RMS_TOKEN = os.environ.get("RMS_API_TOKEN", "")
 DROAM_URL = os.environ.get("DROAM_URL", "")
 DROAM_USERNAME = os.environ.get("DROAM_USERNAME", "")
 DROAM_PASSWORD = os.environ.get("DROAM_PASSWORD", "")
+
+SSH_USER = os.environ.get("SSH_USER", "root")
+SSH_PASS = os.environ.get("SSH_PASS", "") or None  # None = use SSH agent / key
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +140,181 @@ def extract_device_record(dev: dict) -> dict:
         "tags": [t.get("name") for t in (dev.get("tags") or [])],
         "sims": sims,
     }
+
+
+# ---------------------------------------------------------------------------
+# SSH enrichment — read /etc/config/simcard from each device
+# ---------------------------------------------------------------------------
+
+def parse_uci_simcard(text: str) -> list[dict]:
+    """
+    Parse `uci show simcard` output into a list of SIM slot records.
+
+    Each entry has: position (int slot), iccid (str), primary (bool).
+    Slots with no iccid are omitted.
+    """
+    slots: dict[str, dict] = {}
+    current: Optional[str] = None
+
+    for line in text.splitlines():
+        line = line.strip()
+        # section header: simcard.@sim[0]=sim  OR  simcard.@sim[2]=
+        # (the ']=' distinguishes it from key lines like simcard.@sim[0].key=val)
+        m = _re_top.match(r"simcard\.@sim\[(\d+)\]=", line)
+        if m:
+            current = m.group(1)
+            if current not in slots:
+                slots[current] = {}
+            continue
+        if current is None:
+            continue
+        # key=value lines: simcard.@sim[0].iccid='...'
+        m2 = _re_top.match(r"simcard\.@sim\[\d+\]\.(\w+)='?([^']*)'?", line)
+        if m2:
+            key, val = m2.group(1), m2.group(2).strip()
+            slots[current][key] = val
+
+    result = []
+    for slot_data in slots.values():
+        iccid = slot_data.get("iccid", "").strip()
+        if not iccid:
+            continue
+        try:
+            position = int(slot_data.get("position", 0))
+        except ValueError:
+            position = 0
+        result.append({
+            "slot": position,
+            "iccid": iccid,
+            "primary": slot_data.get("primary") == "1",
+            "source": "ssh_uci",
+        })
+
+    return result
+
+
+def normalize_iccid(iccid: str) -> str:
+    """Strip trailing 'F' padding used in some ICCID encodings (ITU-T E.118)."""
+    return iccid.upper().rstrip("F")
+
+
+def fetch_device_slots_via_ssh(
+    host: str,
+    ssh_user: str,
+    ssh_pass: Optional[str],
+    ssh_key: Optional[str],
+    timeout: int = 15,
+) -> Optional[list[dict]]:
+    """
+    SSH into a device and read /etc/config/simcard to discover all SIM slot ICCIDs.
+
+    Returns a list of slot dicts (same shape as parse_uci_simcard output),
+    or None if the connection failed.
+    """
+    try:
+        import paramiko  # type: ignore[import]
+    except ImportError:
+        print(
+            "  WARNING: paramiko not installed — SSH enrichment unavailable.\n"
+            "  Install with: pip install paramiko",
+            file=sys.stderr,
+        )
+        return None
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        connect_kwargs: dict = {
+            "hostname": host,
+            "username": ssh_user,
+            "timeout": timeout,
+            "look_for_keys": ssh_key is None and ssh_pass is None,
+            "allow_agent": ssh_key is None and ssh_pass is None,
+        }
+        if ssh_key:
+            connect_kwargs["key_filename"] = ssh_key
+        if ssh_pass:
+            connect_kwargs["password"] = ssh_pass
+
+        client.connect(**connect_kwargs)
+        _, stdout, _ = client.exec_command("uci show simcard 2>/dev/null", timeout=timeout)
+        text = stdout.read().decode("utf-8", errors="replace")
+        client.close()
+        return parse_uci_simcard(text)
+    except Exception as exc:  # noqa: BLE001
+        print(f"    SSH failed: {exc}", file=sys.stderr)
+        try:
+            client.close()
+        except Exception:
+            pass
+        return None
+
+
+def enrich_devices_with_ssh(
+    devices: list[dict],
+    ssh_user: str,
+    ssh_pass: Optional[str],
+    ssh_key: Optional[str],
+    max_workers: int = 20,
+) -> None:
+    """
+    For each online device, SSH in (in parallel) and merge per-slot ICCIDs from UCI config.
+    Updates devices in-place: adds 'ssh_slots' list (None if SSH failed or device offline).
+    """
+    import threading
+
+    online = [d for d in devices if d.get("status") == "online"]
+    offline_count = len(devices) - len(online)
+    print(
+        f"SSH enrichment: {len(online)} online device(s) to probe"
+        f"{f', {offline_count} offline skipped' if offline_count else ''}"
+        f" (up to {max_workers} parallel connections)…",
+        flush=True,
+    )
+
+    # Mark offline devices immediately
+    for dev in devices:
+        if dev.get("status") != "online":
+            dev["ssh_slots"] = None
+
+    results: dict[int, Optional[list[dict]]] = {}
+    lock = threading.Lock()
+
+    def probe_one(dev: dict) -> None:
+        host = dev.get("name") or dev.get("wan_ip") or ""
+        if not host:
+            with lock:
+                results[dev["id"]] = None
+            return
+        slots = fetch_device_slots_via_ssh(host, ssh_user, ssh_pass, ssh_key)
+        with lock:
+            results[dev["id"]] = slots
+            count = len(results)
+            total = len(online)
+            status = f"✔ {len(slots)} slot(s)" if slots is not None else "✗ SSH failed"
+            print(f"  [{count:>3}/{total}] {host}: {status}", flush=True)
+
+    threads = []
+    semaphore = threading.Semaphore(max_workers)
+
+    def run_with_semaphore(dev: dict) -> None:
+        with semaphore:
+            probe_one(dev)
+
+    for dev in online:
+        t = threading.Thread(target=run_with_semaphore, args=(dev,), daemon=True)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    # Write results back to devices
+    for dev in online:
+        dev["ssh_slots"] = results.get(dev["id"])
+
+    succeeded = sum(1 for v in results.values() if v is not None)
+    print(f"  → SSH enrichment complete: {succeeded}/{len(online)} succeeded\n", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -309,24 +493,67 @@ def normalise_droam_sim(raw: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def build_report(devices: list[dict], droam_sims: list[dict] | None) -> dict:
+    # Build Droam lookup by ICCID. Also index by normalised (F-stripped) ICCID
+    # so we match regardless of trailing-F encoding differences.
     droam_by_iccid: dict[str, dict] = {}
     if droam_sims is not None:
         for sim in droam_sims:
             n = normalise_droam_sim(sim)
-            if n.get("iccid"):
-                droam_by_iccid[n["iccid"]] = n
+            raw_iccid = n.get("iccid", "")
+            if not raw_iccid:
+                continue
+            droam_by_iccid[raw_iccid] = n
+            norm = normalize_iccid(raw_iccid)
+            if norm != raw_iccid:
+                droam_by_iccid[norm] = n
 
-    # Collect all ICCIDs seen in Teltonika devices
+    def droam_lookup(iccid: str) -> Optional[dict]:
+        """Try raw ICCID then normalised (F-stripped) variant."""
+        return droam_by_iccid.get(iccid) or droam_by_iccid.get(normalize_iccid(iccid))
+
+    # Collect all ICCIDs seen across RMS + SSH so we can find orphan Droam SIMs
     seen_iccids: set[str] = set()
 
     device_rows = []
     for dev in devices:
         rec = extract_device_record(dev)
+
+        # Merge SSH-discovered slots into rec["sims"]
+        ssh_slots: Optional[list[dict]] = dev.get("ssh_slots")
+        rec["ssh_enriched"] = ssh_slots is not None
+        if ssh_slots:
+            rms_iccids = {s["iccid"] for s in rec["sims"]}
+            for slot in ssh_slots:
+                slot_iccid = slot["iccid"]
+                # Avoid duplicating the active SIM already from RMS
+                if slot_iccid in rms_iccids or normalize_iccid(slot_iccid) in {
+                    normalize_iccid(i) for i in rms_iccids
+                }:
+                    continue
+                rec["sims"].append({
+                    "iccid": slot_iccid,
+                    "imsi": "",
+                    "operator": "",
+                    "operator_number": "",
+                    "sim_state": "inactive",
+                    "connection_type": "",
+                    "connection_state": "inactive",
+                    "network_state": "",
+                    "mobile_ip": "",
+                    "signal_dbm": None,
+                    "rsrp": None,
+                    "rsrq": None,
+                    "sinr": None,
+                    "slot": slot["slot"],
+                    "source": "ssh_uci",
+                })
+
         for sim in rec["sims"]:
             iccid = sim["iccid"]
             seen_iccids.add(iccid)
+            seen_iccids.add(normalize_iccid(iccid))
             if droam_sims is not None:
-                droam_match = droam_by_iccid.get(iccid)
+                droam_match = droam_lookup(iccid)
                 sim["in_droam"] = droam_match is not None
                 sim["droam_info"] = droam_match
             else:
@@ -336,21 +563,35 @@ def build_report(devices: list[dict], droam_sims: list[dict] | None) -> dict:
 
     orphan_droam_sims: list[dict] = []
     if droam_sims is not None:
+        seen_for_orphan = seen_iccids | {normalize_iccid(i) for i in seen_iccids}
         for iccid, sim_rec in droam_by_iccid.items():
-            if iccid not in seen_iccids:
+            if iccid not in seen_for_orphan and normalize_iccid(iccid) not in seen_for_orphan:
                 orphan_droam_sims.append(sim_rec)
+        # deduplicate (we may have indexed both raw and norm)
+        seen_orphan: set[str] = set()
+        unique_orphans = []
+        for o in orphan_droam_sims:
+            k = o.get("iccid", "")
+            if k not in seen_orphan:
+                seen_orphan.add(k)
+                unique_orphans.append(o)
+        orphan_droam_sims = unique_orphans
 
+    total_sims = sum(len(d["sims"]) for d in device_rows)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": {
             "total_rms_devices": len(device_rows),
-            "total_rms_sims": sum(len(d["sims"]) for d in device_rows),
-            "total_droam_sims": len(droam_by_iccid) if droam_sims is not None else None,
-            "droam_sims_found_in_rms": len(seen_iccids & droam_by_iccid.keys()) if droam_sims is not None else None,
+            "total_rms_sims": total_sims,
+            "total_droam_sims": len({v["iccid"] for v in droam_by_iccid.values()}) if droam_sims is not None else None,
+            "droam_sims_found_in_rms": sum(
+                1 for d in device_rows for s in d["sims"] if s.get("in_droam") is True
+            ) if droam_sims is not None else None,
             "rms_sims_not_in_droam": sum(
-                1 for d in device_rows for s in d["sims"] if s["in_droam"] is False
+                1 for d in device_rows for s in d["sims"] if s.get("in_droam") is False
             ) if droam_sims is not None else None,
             "droam_sims_not_in_any_device": len(orphan_droam_sims) if droam_sims is not None else None,
+            "ssh_enriched": any(d.get("ssh_enriched") for d in device_rows),
         },
         "devices": device_rows,
         "droam_sims_not_in_any_teltonika": orphan_droam_sims,
@@ -484,24 +725,44 @@ def write_html(report: dict, path: Path) -> None:  # noqa: C901
 
     def sim_droam_badge(sim: dict) -> str:
         v = sim.get("in_droam")
+        inactive = sim.get("source") == "ssh_uci"
         if v is True:
-            return badge("✔ Droam", "success")
-        if v is False:
-            return badge("✘ Not in Droam", "danger")
-        return badge("—", "secondary")
+            colour = "success"
+            label = "✔ Droam"
+        elif v is False:
+            colour = "danger"
+            label = "✘ Not in Droam"
+        else:
+            return badge("—", "secondary")
+        if inactive:
+            label += " (inactive slot)"
+        return badge(label, colour)
+
+    def sim_slot_label(sim: dict) -> str:
+        inactive = sim.get("source") == "ssh_uci"
+        slot = sim.get("slot", "?")
+        if inactive:
+            return f"Slot {slot} <span class='text-muted fw-normal'>(inactive — from device config)</span>"
+        return f"Slot {slot}"
 
     def sim_detail_rows(sim: dict) -> str:
         di = sim.get("droam_info") or {}
-        rows = [
+        inactive = sim.get("source") == "ssh_uci"
+        rows: list[tuple[str, str]] = [
             ("ICCID", f"<code>{sim['iccid']}</code>"),
-            ("IMSI", f"<code>{sim['imsi'] or '—'}</code>"),
-            ("Operator", f"{sim['operator'] or '—'} ({sim['operator_number'] or '—'})"),
-            ("SIM state", sim["sim_state"] or "—"),
-            ("Connection", f"{sim['connection_state'] or '—'} / {sim['connection_type'] or '—'}"),
-            ("Network", sim["network_state"] or "—"),
-            ("Mobile IP", sim["mobile_ip"] or "—"),
-            ("Signal", f"{sim['signal_dbm']} dBm &nbsp;&nbsp; RSRP {sim['rsrp']} &nbsp;&nbsp; RSRQ {sim['rsrq']} &nbsp;&nbsp; SINR {sim['sinr']}"),
         ]
+        if not inactive:
+            rows += [
+                ("IMSI", f"<code>{sim.get('imsi') or '—'}</code>"),
+                ("Operator", f"{sim.get('operator') or '—'} ({sim.get('operator_number') or '—'})"),
+                ("SIM state", sim.get("sim_state") or "—"),
+                ("Connection", f"{sim.get('connection_state') or '—'} / {sim.get('connection_type') or '—'}"),
+                ("Network", sim.get("network_state") or "—"),
+                ("Mobile IP", sim.get("mobile_ip") or "—"),
+                ("Signal", f"{sim.get('signal_dbm')} dBm &nbsp;&nbsp; RSRP {sim.get('rsrp')} &nbsp;&nbsp; RSRQ {sim.get('rsrq')} &nbsp;&nbsp; SINR {sim.get('sinr')}"),
+            ]
+        else:
+            rows.append(("Source", "Device UCI config (slot inactive / standby)"))
         if di:
             tags_str = ", ".join(di.get("tags") or []) or "—"
             rows += [
@@ -566,8 +827,8 @@ def write_html(report: dict, path: Path) -> None:  # noqa: C901
             ]
         )
         sim_panels = "".join(
-            f"""<div class='mb-2 p-2 border rounded'>
-                  <strong class='small'>Slot {s['slot']}</strong> &nbsp; {sim_droam_badge(s)}
+            f"""<div class='mb-2 p-2 border rounded{"" if s.get("source") != "ssh_uci" else " border-secondary opacity-75"}'>
+                  <strong class='small'>{sim_slot_label(s)}</strong> &nbsp; {sim_droam_badge(s)}
                   <table class='table table-sm mb-0 mt-1'>{sim_detail_rows(s)}</table>
                 </div>"""
             for s in sims
@@ -674,7 +935,9 @@ def write_html(report: dict, path: Path) -> None:  # noqa: C901
     cards_html = "".join(cards)
 
     model_filter = report.get("model_filter", "")
-    subtitle = f"OTD500 devices only" if model_filter == "OTD500" else (f"model filter: {model_filter}" if model_filter else "all device models")
+    subtitle = "OTD500 devices only" if model_filter == "OTD500" else (f"model filter: {model_filter}" if model_filter else "all device models")
+    if s.get("ssh_enriched"):
+        subtitle += " · SSH-enriched (all SIM slots)"
 
     # ---- full page ----
     html = f"""<!doctype html>
@@ -873,6 +1136,16 @@ def main() -> None:
             "(default: OTD500). Pass an empty string to include all models."
         ),
     )
+    parser.add_argument(
+        "--ssh",
+        action="store_true",
+        help=(
+            "SSH into each online device to read /etc/config/simcard, discovering ICCIDs "
+            "for all SIM slots (not just the active one). "
+            "Credentials come from SSH_USER / SSH_PASS in .env (defaults: root / SSH agent). "
+            "Requires paramiko (pip install paramiko)."
+        ),
+    )
     args = parser.parse_args()
 
     if not RMS_TOKEN:
@@ -900,6 +1173,15 @@ def main() -> None:
             )
         else:
             droam_sims = fetch_droam_sims()
+
+    # --- SSH enrichment ---
+    if args.ssh:
+        enrich_devices_with_ssh(
+            rms_devices,
+            ssh_user=SSH_USER,
+            ssh_pass=SSH_PASS,
+            ssh_key=None,
+        )
 
     # --- Report ---
     report = build_report(rms_devices, droam_sims)

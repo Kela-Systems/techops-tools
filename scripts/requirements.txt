@@ -1,2 +1,5 @@
 requests>=2.31.0
 python-dotenv>=1.0.0
+
+# Optional: required only for --ssh enrichment mode
+paramiko>=3.0.0
