@@ -480,7 +480,7 @@ def write_html(report: dict, path: Path) -> None:  # noqa: C901
 
     # ---- helpers ----
     def badge(text: str, colour: str) -> str:
-        return f'<span class="badge bg-{colour} text-wrap">{text}</span>'
+        return f'<span class="badge bg-{colour}">{text}</span>'
 
     def sim_droam_badge(sim: dict) -> str:
         v = sim.get("in_droam")
@@ -500,7 +500,7 @@ def write_html(report: dict, path: Path) -> None:  # noqa: C901
             ("Connection", f"{sim['connection_state'] or '—'} / {sim['connection_type'] or '—'}"),
             ("Network", sim["network_state"] or "—"),
             ("Mobile IP", sim["mobile_ip"] or "—"),
-            ("Signal", f"{sim['signal_dbm']} dBm &nbsp; RSRP {sim['rsrp']} &nbsp; RSRQ {sim['rsrq']} &nbsp; SINR {sim['sinr']}"),
+            ("Signal", f"{sim['signal_dbm']} dBm &nbsp;&nbsp; RSRP {sim['rsrp']} &nbsp;&nbsp; RSRQ {sim['rsrq']} &nbsp;&nbsp; SINR {sim['sinr']}"),
         ]
         if di:
             tags_str = ", ".join(di.get("tags") or []) or "—"
@@ -521,28 +521,36 @@ def write_html(report: dict, path: Path) -> None:  # noqa: C901
     for dev in report["devices"]:
         online = dev["status"] == "online"
         status_badge = badge("● online", "success") if online else badge("○ offline", "secondary")
-        tags_html = " ".join(badge(t, "info") for t in dev["tags"]) if dev["tags"] else "—"
+        # sort key: "0online" / "1offline" so online sorts first
+        status_sort = "0online" if online else "1offline"
+        tags_html = " ".join(badge(t, "light text-dark border") for t in dev["tags"]) if dev["tags"] else "—"
 
         sims = dev["sims"]
-        # Droam match column: show worst case (any NOT in Droam → red)
+        all_iccids = " ".join(s["iccid"] for s in sims)  # for full-ICCID search
+
+        # Droam match column: colour by worst-case
         if not droam_queried or not sims:
             match_badge = badge("—", "secondary")
+            match_sort = "3"
         elif all(s.get("in_droam") for s in sims):
             match_badge = badge(f"✔ {len(sims)}/{len(sims)}", "success")
+            match_sort = "0"
         elif any(s.get("in_droam") for s in sims):
             matched = sum(1 for s in sims if s.get("in_droam"))
             match_badge = badge(f"⚠ {matched}/{len(sims)}", "warning")
+            match_sort = "1"
         else:
             match_badge = badge(f"✘ 0/{len(sims)}", "danger")
+            match_sort = "2"
 
-        # per-slot SIM badges for the main row
+        # SIM summary for main row (truncated ICCID for display)
         sim_badges = " ".join(
-            f"{sim_droam_badge(s)}&nbsp;<code class='small'>{s['iccid'][:12]}…</code>"
+            f"{sim_droam_badge(s)}&thinsp;<code class='small'>{s['iccid']}</code>"
             for s in sims
         ) if sims else "<span class='text-muted small'>no SIM data</span>"
 
-        # expandable detail panel
-        panel_id = f"dev-{dev['id']}"
+        # Detail panel (uses plain JS toggle, not Bootstrap collapse — avoids display:block on <tr>)
+        panel_id = f"d{dev['id']}"
         detail_table_rows = "".join(
             f"<tr><th class='text-nowrap pe-3 fw-normal text-muted small'>{k}</th><td>{v}</td></tr>"
             for k, v in [
@@ -565,34 +573,36 @@ def write_html(report: dict, path: Path) -> None:  # noqa: C901
             for s in sims
         ) or "<p class='text-muted small mb-0'>No SIM data.</p>"
 
-        detail_html = f"""
-        <tr class='collapse' id='{panel_id}'>
-          <td colspan='7' class='bg-light border-top-0 pt-0'>
-            <div class='row g-3 p-2'>
-              <div class='col-md-5'>
-                <p class='fw-semibold mb-1 small text-uppercase text-muted'>Device</p>
-                <table class='table table-sm mb-0'>{detail_table_rows}</table>
-              </div>
-              <div class='col-md-7'>
-                <p class='fw-semibold mb-1 small text-uppercase text-muted'>SIMs</p>
-                {sim_panels}
-              </div>
-            </div>
-          </td>
-        </tr>"""
+        detail_html = (
+            f"<tr class='detail-row' id='{panel_id}'>"
+            f"<td colspan='7' class='bg-light p-0'>"
+            f"<div class='row g-0 p-3'>"
+            f"<div class='col-md-5 pe-md-3'>"
+            f"<p class='fw-semibold mb-1 small text-uppercase text-muted'>Device</p>"
+            f"<table class='table table-sm mb-0'>{detail_table_rows}</table>"
+            f"</div>"
+            f"<div class='col-md-7 mt-3 mt-md-0'>"
+            f"<p class='fw-semibold mb-1 small text-uppercase text-muted'>SIMs</p>"
+            f"{sim_panels}"
+            f"</div></div></td></tr>"
+        )
 
         name_link = (
-            f'<a class="text-decoration-none" data-bs-toggle="collapse" '
-            f'href="#{panel_id}" role="button">'
-            f'{dev["name"]}'
+            f'<a class="dev-toggle text-decoration-none" href="#" '
+            f'data-target="{panel_id}" onclick="toggleDetail(this);return false;">'
+            f'<span class="toggle-arrow me-1">▶</span>{dev["name"]}'
             f'</a>'
         )
         device_rows_html.append(
-            f"<tr data-name='{dev['name'].lower()}' data-status='{dev['status']}'>"
-            f"<td>{status_badge}</td>"
+            f"<tr class='device-row' "
+            f"data-name='{dev['name'].lower()}' "
+            f"data-status='{dev['status']}' "
+            f"data-iccids='{all_iccids}' "
+            f"data-detail='{panel_id}'>"
+            f"<td data-sort='{status_sort}'>{status_badge}</td>"
             f"<td>{name_link}</td>"
             f"<td class='small text-muted'>{dev['model'] or '—'}</td>"
-            f"<td>{match_badge}</td>"
+            f"<td data-sort='{match_sort}'>{match_badge}</td>"
             f"<td class='small'>{sim_badges}</td>"
             f"<td class='small text-muted'>{dev['wan_ip'] or '—'}</td>"
             f"<td class='small'>{tags_html}</td>"
@@ -615,47 +625,56 @@ def write_html(report: dict, path: Path) -> None:  # noqa: C901
             f"</tr>"
             for o in orphans
         )
-        orphan_section = f"""
-        <h5 class='mt-4 mb-3'>
-          Droam SIMs not installed in any Teltonika device
-          <span class='badge bg-warning text-dark ms-2'>{len(orphans)}</span>
-        </h5>
-        <table class='table table-sm table-hover table-bordered' id='orphanTable'>
-          <thead class='table-light'>
-            <tr>
-              <th>ICCID</th><th>MSISDN</th><th>Operator</th>
-              <th>Status</th><th>Plan</th><th>Tags</th><th>eSIM</th>
-            </tr>
-          </thead>
-          <tbody>{orphan_rows}</tbody>
-        </table>"""
+        orphan_section = (
+            f"<div class='card mt-4'>"
+            f"<div class='card-header fw-semibold'>"
+            f"Droam SIMs not installed in any Teltonika device "
+            f"<span class='badge bg-warning text-dark ms-1'>{len(orphans)}</span>"
+            f"</div>"
+            f"<div class='card-body p-0'>"
+            f"<div class='table-responsive'>"
+            f"<table class='table table-sm table-hover mb-0'>"
+            f"<thead class='table-light'><tr>"
+            f"<th>ICCID</th><th>MSISDN</th><th>Operator</th>"
+            f"<th>Status</th><th>Plan</th><th>Tags</th><th>eSIM</th>"
+            f"</tr></thead>"
+            f"<tbody>{orphan_rows}</tbody>"
+            f"</table></div></div></div>"
+        )
     else:
-        orphan_section = "<p class='text-success mt-4'>All Droam SIMs are installed in a Teltonika device.</p>"
+        orphan_section = (
+            "<div class='alert alert-success mt-4 mb-0'>"
+            "✔ All Droam SIMs are accounted for in a Teltonika device."
+            "</div>"
+        )
 
     # ---- summary cards ----
     def stat_card(label: str, value: str, colour: str = "primary") -> str:
         return (
             f"<div class='col'><div class='card text-center h-100 border-{colour}'>"
-            f"<div class='card-body py-2'>"
-            f"<div class='display-6 fw-bold text-{colour}'>{value}</div>"
+            f"<div class='card-body py-2 px-1'>"
+            f"<div class='h2 fw-bold text-{colour} mb-0'>{value}</div>"
             f"<div class='small text-muted'>{label}</div>"
             f"</div></div></div>"
         )
 
     cards = [
-        stat_card("RMS devices", str(s["total_rms_devices"])),
+        stat_card("Devices", str(s["total_rms_devices"])),
         stat_card("SIM slots", str(s["total_rms_sims"])),
     ]
     if droam_queried:
         cards += [
             stat_card("Droam SIMs", str(s["total_droam_sims"])),
             stat_card("Matched", str(s["droam_sims_found_in_rms"]), "success"),
-            stat_card("RMS not in Droam", str(s["rms_sims_not_in_droam"]),
+            stat_card("RMS gaps", str(s["rms_sims_not_in_droam"]),
                       "danger" if s["rms_sims_not_in_droam"] else "success"),
             stat_card("Droam unassigned", str(s["droam_sims_not_in_any_device"]),
                       "warning" if s["droam_sims_not_in_any_device"] else "success"),
         ]
     cards_html = "".join(cards)
+
+    model_filter = report.get("model_filter", "")
+    subtitle = f"OTD500 devices only" if model_filter == "OTD500" else (f"model filter: {model_filter}" if model_filter else "all device models")
 
     # ---- full page ----
     html = f"""<!doctype html>
@@ -663,43 +682,65 @@ def write_html(report: dict, path: Path) -> None:  # noqa: C901
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SIM Audit Report</title>
+  <title>SIM Audit — {ts[:10]}</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
   <style>
     body {{ font-family: system-ui, sans-serif; background: #f8f9fa; }}
-    .collapse.show td {{ border-top: none; }}
-    #deviceTable th {{ cursor: pointer; user-select: none; white-space: nowrap; }}
-    #deviceTable th::after {{ content: " ↕"; color: #aaa; font-size: .7em; }}
-    #deviceTable th.asc::after {{ content: " ↑"; color: #333; }}
-    #deviceTable th.desc::after {{ content: " ↓"; color: #333; }}
-    code {{ font-size: .85em; }}
-    .badge {{ font-size: .75em; }}
+
+    /* Detail rows: hidden by default, shown via JS (avoids Bootstrap setting display:block on <tr>) */
+    .detail-row {{ display: none; }}
+    .detail-row.open {{ display: table-row; }}
+    .detail-row td {{ border-top: none !important; }}
+
+    /* Sortable column headers */
+    .sortable {{ cursor: pointer; user-select: none; white-space: nowrap; }}
+    .sortable::after {{ content: " ↕"; color: #bbb; font-size: .7em; }}
+    .sortable.asc::after {{ content: " ↑"; color: #333; font-size: .8em; }}
+    .sortable.desc::after {{ content: " ↓"; color: #333; font-size: .8em; }}
+
+    .toggle-arrow {{ font-size: .7em; transition: transform .15s; display: inline-block; }}
+    .open-arrow .toggle-arrow {{ transform: rotate(90deg); }}
+
+    code {{ font-size: .82em; word-break: break-all; }}
+    .badge {{ font-size: .72em; }}
+    #deviceTable td {{ vertical-align: middle; }}
   </style>
 </head>
 <body>
-<div class="container-fluid py-4">
+<div class="container-fluid py-4" style="max-width:1600px">
 
-  <div class="d-flex justify-content-between align-items-center mb-3">
-    <h3 class="mb-0">📡 SIM Audit Report</h3>
-    <span class="text-muted small">Generated: {ts}</span>
+  <div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
+    <div>
+      <h3 class="mb-0">📡 SIM Audit Report</h3>
+      <div class="text-muted small">{subtitle} &middot; generated {ts[:19].replace("T"," ")} UTC</div>
+    </div>
   </div>
 
-  <div class="row row-cols-2 row-cols-md-3 row-cols-lg-6 g-2 mb-4">
+  <div class="row row-cols-2 row-cols-sm-3 row-cols-lg-6 g-2 mb-4">
     {cards_html}
   </div>
 
-  <div class="card mb-4">
-    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+  <div class="card mb-2">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2 py-2">
       <span class="fw-semibold">Teltonika Devices</span>
-      <div class="d-flex gap-2 flex-wrap">
-        <input id="searchBox" class="form-control form-control-sm" style="width:220px"
-               placeholder="Search name / ICCID…" oninput="filterTable()">
-        <select id="statusFilter" class="form-select form-select-sm" style="width:130px"
-                onchange="filterTable()">
+      <div class="d-flex gap-2 flex-wrap align-items-center">
+        <input id="searchBox" class="form-control form-control-sm" style="width:240px"
+               placeholder="Search name or full ICCID…" oninput="applyFilters()">
+        <select id="statusFilter" class="form-select form-select-sm" style="width:140px"
+                onchange="applyFilters()">
           <option value="">All status</option>
           <option value="online">Online only</option>
           <option value="offline">Offline only</option>
         </select>
+        <select id="droamFilter" class="form-select form-select-sm" style="width:160px"
+                onchange="applyFilters()">
+          <option value="">All Droam states</option>
+          <option value="0">Fully matched</option>
+          <option value="1">Partially matched</option>
+          <option value="2">Not in Droam</option>
+        </select>
+        <button class="btn btn-sm btn-outline-secondary" onclick="clearFilters()">Clear</button>
+        <span id="visCount" class="text-muted small"></span>
       </div>
     </div>
     <div class="card-body p-0">
@@ -707,12 +748,12 @@ def write_html(report: dict, path: Path) -> None:  # noqa: C901
         <table class="table table-hover mb-0" id="deviceTable">
           <thead class="table-light">
             <tr>
-              <th onclick="sortTable(0)">Status</th>
-              <th onclick="sortTable(1)">Name</th>
-              <th onclick="sortTable(2)">Model</th>
-              <th onclick="sortTable(3)">Droam</th>
+              <th class="sortable" data-col="0">Status</th>
+              <th class="sortable" data-col="1">Name</th>
+              <th class="sortable" data-col="2">Model</th>
+              <th class="sortable" data-col="3">Droam</th>
               <th>SIMs</th>
-              <th onclick="sortTable(5)">WAN IP</th>
+              <th class="sortable" data-col="5">WAN IP</th>
               <th>Tags</th>
             </tr>
           </thead>
@@ -721,54 +762,85 @@ def write_html(report: dict, path: Path) -> None:  # noqa: C901
           </tbody>
         </table>
       </div>
+      <div id="emptyMsg" class="text-center text-muted py-4" style="display:none">No devices match the current filters.</div>
     </div>
   </div>
 
   {orphan_section}
 
 </div>
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-  // Simple client-side sort
+  // ---- expand / collapse detail rows ----
+  function toggleDetail(link) {{
+    const id = link.dataset.target;
+    const row = document.getElementById(id);
+    const open = row.classList.toggle('open');
+    link.classList.toggle('open-arrow', open);
+  }}
+
+  // ---- sort ----
   let sortCol = -1, sortDir = 1;
-  function sortTable(col) {{
-    const tbody = document.getElementById('deviceBody');
-    const ths = document.querySelectorAll('#deviceTable th');
-    ths.forEach((th, i) => th.classList.remove('asc', 'desc'));
-    if (sortCol === col) {{ sortDir *= -1; }} else {{ sortCol = col; sortDir = 1; }}
-    ths[col].classList.add(sortDir === 1 ? 'asc' : 'desc');
+  document.querySelectorAll('#deviceTable th.sortable').forEach(th => {{
+    th.addEventListener('click', () => {{
+      const col = +th.dataset.col;
+      document.querySelectorAll('#deviceTable th.sortable').forEach(h => h.classList.remove('asc','desc'));
+      sortDir = (sortCol === col) ? -sortDir : 1;
+      sortCol = col;
+      th.classList.add(sortDir === 1 ? 'asc' : 'desc');
 
-    // collect main rows (non-collapse) and their following collapse rows
-    const rows = [...tbody.querySelectorAll('tr:not(.collapse)')];
-    rows.sort((a, b) => {{
-      const at = (a.cells[col]?.innerText || '').trim().toLowerCase();
-      const bt = (b.cells[col]?.innerText || '').trim().toLowerCase();
-      return at < bt ? -sortDir : at > bt ? sortDir : 0;
+      const tbody = document.getElementById('deviceBody');
+      const rows = [...tbody.querySelectorAll('tr.device-row')];
+      rows.sort((a, b) => {{
+        // prefer data-sort attribute, fall back to cell text
+        const cellA = a.cells[col];
+        const cellB = b.cells[col];
+        const at = (cellA?.dataset.sort ?? cellA?.innerText ?? '').trim().toLowerCase();
+        const bt = (cellB?.dataset.sort ?? cellB?.innerText ?? '').trim().toLowerCase();
+        return at < bt ? -sortDir : at > bt ? sortDir : 0;
+      }});
+      rows.forEach(r => {{
+        tbody.appendChild(r);
+        const detailRow = document.getElementById(r.dataset.detail);
+        if (detailRow) tbody.appendChild(detailRow);
+      }});
+      applyFilters(); // re-apply visibility after sort
     }});
-    rows.forEach(r => {{
-      tbody.appendChild(r);
-      const next = document.getElementById(r.querySelector('a[href]')?.getAttribute('href')?.slice(1))
-                    ?.closest('tr');
-      if (next) tbody.appendChild(next);
-    }});
-  }}
+  }});
 
-  function filterTable() {{
-    const q = document.getElementById('searchBox').value.toLowerCase();
+  // ---- filter ----
+  function applyFilters() {{
+    const q = document.getElementById('searchBox').value.trim().toLowerCase();
     const st = document.getElementById('statusFilter').value;
-    document.querySelectorAll('#deviceBody tr:not(.collapse)').forEach(row => {{
-      const name = row.dataset.name || '';
-      const status = row.dataset.status || '';
-      const text = row.innerText.toLowerCase();
-      const vis = (!q || name.includes(q) || text.includes(q)) && (!st || status === st);
-      row.style.display = vis ? '' : 'none';
-      // also hide the paired collapse row when filtering
-      const collapseId = row.querySelector('a[href]')?.getAttribute('href')?.slice(1);
-      const collapseRow = collapseId && document.getElementById(collapseId)?.closest('tr');
-      if (collapseRow) collapseRow.style.display = vis ? '' : 'none';
+    const dm = document.getElementById('droamFilter').value;
+    let vis = 0;
+    document.querySelectorAll('#deviceBody tr.device-row').forEach(row => {{
+      const nameMatch = !q || row.dataset.name.includes(q) || row.dataset.iccids.toLowerCase().includes(q);
+      const statusMatch = !st || row.dataset.status === st;
+      const droamMatch = !dm || (row.querySelector('td[data-sort]')?.dataset.sort ?? '') === dm ||
+                         (row.cells[3]?.dataset.sort ?? '') === dm;
+      const show = nameMatch && statusMatch && droamMatch;
+      row.style.display = show ? '' : 'none';
+      const detailRow = document.getElementById(row.dataset.detail);
+      if (detailRow) {{
+        if (!show) detailRow.classList.remove('open'); // collapse if hidden
+        detailRow.style.display = show ? '' : 'none';
+      }}
+      if (show) vis++;
     }});
+    document.getElementById('visCount').textContent =
+      vis + ' of {s["total_rms_devices"]} device' + ({s["total_rms_devices"]} !== 1 ? 's' : '');
+    document.getElementById('emptyMsg').style.display = vis === 0 ? '' : 'none';
   }}
+
+  function clearFilters() {{
+    document.getElementById('searchBox').value = '';
+    document.getElementById('statusFilter').value = '';
+    document.getElementById('droamFilter').value = '';
+    applyFilters();
+  }}
+
+  // init count on load
+  applyFilters();
 </script>
 </body>
 </html>"""
@@ -793,6 +865,14 @@ def main() -> None:
         default=str(Path(__file__).parent),
         help="Directory to write report files into (default: script directory)",
     )
+    parser.add_argument(
+        "--model",
+        default="OTD500",
+        help=(
+            "Only include devices whose model starts with this prefix "
+            "(default: OTD500). Pass an empty string to include all models."
+        ),
+    )
     args = parser.parse_args()
 
     if not RMS_TOKEN:
@@ -804,6 +884,10 @@ def main() -> None:
 
     # --- RMS ---
     rms_devices = fetch_rms_devices()
+    if args.model:
+        before = len(rms_devices)
+        rms_devices = [d for d in rms_devices if (d.get("model") or "").startswith(args.model)]
+        print(f"  Model filter '{args.model}': {len(rms_devices)} of {before} devices kept\n", flush=True)
 
     # --- Droam ---
     droam_sims: list[dict] | None = None
@@ -819,6 +903,7 @@ def main() -> None:
 
     # --- Report ---
     report = build_report(rms_devices, droam_sims)
+    report["model_filter"] = args.model
 
     json_path = output_dir / "report.json"
     json_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
