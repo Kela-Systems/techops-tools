@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import grpc
 from hub_client import HubClient
 
+from hub_admin.auth import BasicAuthInterceptor, resolve_basic_auth
 from hub_admin.config import HubConfig
 
 
@@ -73,17 +74,36 @@ def _start_port_forward(context: str, namespace: str, port: int) -> subprocess.P
 
 
 @contextlib.contextmanager
-def connect(config: HubConfig, skip_port_forward: bool = False):
-    """Yield a HubConnection. Manages port-forward lifecycle."""
+def connect(
+    config: HubConfig,
+    skip_port_forward: bool = False,
+    api_token: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
+):
+    """Yield a HubConnection. Manages port-forward lifecycle.
+
+    Auth: if `api_token` is given, HubClient exchanges it for a JWT (or uses
+    SPIFFE / HUB_API_TOKEN from the env). Otherwise we attach HTTP Basic auth
+    at the channel level, because Kela hubs run with HUB_BASIC_AUTH=true and
+    accept any non-empty credentials — without an authorization header the
+    RPCs simply hang. Basic creds resolve from args -> HUB_BASIC_AUTH_USER/
+    HUB_BASIC_AUTH_PASSWORD -> a default identifier.
+    """
     pf = None
     if not skip_port_forward:
         pf = _start_port_forward(config.context, config.namespace, config.port)
 
     target = f"localhost:{config.port}"
-    hub_client = HubClient(target)
+    hub_client = HubClient(target, api_token=api_token)
+    channel = hub_client._channel
+    if api_token is None:
+        user, pwd = resolve_basic_auth(username, password)
+        channel = grpc.intercept_channel(channel, BasicAuthInterceptor(user, pwd))
+
     conn = HubConnection(
         hub_client=hub_client,
-        channel=hub_client._channel,
+        channel=channel,
         context=config.context,
         namespace=config.namespace,
         _pf_process=pf,

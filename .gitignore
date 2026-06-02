@@ -29,6 +29,7 @@ env/
 
 # Real device/config files — commit only the *.example.* variants
 hub-admin/device_config.json
+hub-admin/device_config.*.json
 hub-admin/hub-admin.yaml
 
 # Generated outputs from the raster scripts

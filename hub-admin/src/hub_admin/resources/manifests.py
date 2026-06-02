@@ -2,15 +2,22 @@
 
 from google.protobuf.json_format import MessageToDict
 
+import grpc
+from kela.manifest.v1alpha1.manifest_pb2 import (
+    GetManifestRequest,
+    ListManifestsRequest,
+)
+from kela.manifest.v1alpha1.manifest_pb2_grpc import ManifestServiceStub
+
 from hub_admin.models import Manifest
 
 
 class ManifestResource:
-    def __init__(self, hub_client):
-        self._client = hub_client
+    def __init__(self, channel: grpc.Channel):
+        self._stub = ManifestServiceStub(channel)
 
     def list(self) -> list[Manifest]:
-        response = self._client.list_manifests()
+        response = self._stub.ListManifests(ListManifestsRequest())
         return [
             Manifest(
                 manifest_id=sm.manifest_id,
@@ -23,7 +30,7 @@ class ManifestResource:
 
     def get_schemas(self, manifest_id: str) -> tuple[dict | None, dict | None]:
         """Return (integration_config_schema, device_setup_info_schema)."""
-        response = self._client.get_manifest(manifest_id)
+        response = self._stub.GetManifest(GetManifestRequest(manifest_id=manifest_id))
         manifest = response.manifest.manifest
         int_schema = (
             MessageToDict(manifest.integration_config_schema)
@@ -48,7 +55,7 @@ class ManifestResource:
                 if m.manifest_id == manifest_id:
                     return m.name
         try:
-            resp = self._client.get_manifest(manifest_id)
+            resp = self._stub.GetManifest(GetManifestRequest(manifest_id=manifest_id))
             return resp.manifest.manifest.name
         except Exception:
             return manifest_id

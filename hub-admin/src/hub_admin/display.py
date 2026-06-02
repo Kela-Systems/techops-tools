@@ -3,7 +3,13 @@
 from rich.console import Console
 from rich.table import Table
 
-from hub_admin.models import Asset, EntityLink, Integration, Manifest
+from hub_admin.models import (
+    Asset,
+    EntityLink,
+    ExportedIntegration,
+    Integration,
+    Manifest,
+)
 
 console = Console()
 
@@ -28,6 +34,24 @@ def integrations_table(integrations: list[Integration]) -> None:
     table.add_column("Integration ID", style="dim")
     for i, integ in enumerate(integrations, 1):
         table.add_row(str(i), integ.name, str(integ.device_count), integ.id)
+    console.print(table)
+
+
+def export_summary(exported: list[ExportedIntegration], output_path: str) -> None:
+    table = Table(title=f"Exported integrations -> {output_path}")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("Integration", style="cyan")
+    table.add_column("Section", style="green")
+    table.add_column("Devices", justify="right")
+    table.add_column("Integration ID", style="dim")
+    for i, e in enumerate(exported, 1):
+        table.add_row(
+            str(i),
+            e.name,
+            e.section or "[dim](no devices)[/dim]",
+            str(e.device_count),
+            e.id,
+        )
     console.print(table)
 
 

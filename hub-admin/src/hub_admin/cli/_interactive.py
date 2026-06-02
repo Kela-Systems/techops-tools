@@ -205,8 +205,8 @@ def run_interactive(context: str, device_config_path: str | None = None):
     with connect(cfg) as conn:
         console.print(f"Port-forward ready. Connecting via localhost:{cfg.port}...\n")
 
-        manifest_res = ManifestResource(conn.hub_client)
-        int_res = IntegrationResource(conn.hub_client, conn.channel)
+        manifest_res = ManifestResource(conn.channel)
+        int_res = IntegrationResource(conn.channel)
         dev_res = DeviceResource(conn.channel)
         link_res = LinkResource(conn.channel)
 

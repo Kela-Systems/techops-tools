@@ -1,8 +1,14 @@
-"""Entity link management — assets, links, available-link configuration."""
+"""Entity link management — assets, links, available-link configuration.
+
+Assets and asset-links moved from the (removed) `kela.entity.v1alpha1`
+package to `kela.asset.v1alpha1` (`AssetService`). The site-config write
+path (`SiteConfigService` / `SiteConfig.available_links`) is unchanged.
+"""
 
 import grpc
-from kela.entity.v1alpha1.entity_pb2 import ListAssetsRequest, ListLinkedEntitiesRequest
-from kela.entity.v1alpha1.entity_pb2_grpc import EntityServiceStub
+from kela.asset.v1alpha1.asset_pb2 import ListAssetsRequest
+from kela.asset.v1alpha1.asset_service_pb2_grpc import AssetServiceStub
+from kela.asset.v1alpha1.link_pb2 import ListLinkedAssetsRequest
 from kela.system.v1alpha1.system_pb2 import (
     GetSiteConfigRequest,
     SetSiteConfigRequest,
@@ -14,31 +20,26 @@ from hub_admin.models import Asset, EntityLink
 
 class LinkResource:
     def __init__(self, channel: grpc.Channel):
-        self._entity_stub = EntityServiceStub(channel)
+        self._asset_stub = AssetServiceStub(channel)
         self._site_stub = SiteConfigServiceStub(channel)
 
     def list_assets(self) -> list[Asset]:
-        resp = self._entity_stub.ListAssets(ListAssetsRequest())
+        resp = self._asset_stub.ListAssets(ListAssetsRequest())
         return [Asset.from_proto(a) for a in resp.assets]
 
     def list_links(self, assets: list[Asset] | None = None) -> list[EntityLink]:
-        resp = self._entity_stub.ListLinkedEntities(ListLinkedEntitiesRequest())
+        resp = self._asset_stub.ListLinkedAssets(ListLinkedAssetsRequest())
         id_to_name = {a.id: a.name for a in (assets or [])}
         return [
             EntityLink(
-                source_id=link.entity_id,
-                target_id=link.target_entity_id,
-                source_name=id_to_name.get(link.entity_id, link.entity_id[:12]),
+                source_id=link.asset_id,
+                target_id=link.target_asset_id,
+                source_name=id_to_name.get(link.asset_id, link.asset_id[:12]),
                 target_name=id_to_name.get(
-                    link.target_entity_id, link.target_entity_id[:12]
-                ),
-                link_type=(
-                    f"sensor_control({link.link_type.sensor_control})"
-                    if link.link_type.sensor_control
-                    else ""
+                    link.target_asset_id, link.target_asset_id[:12]
                 ),
             )
-            for link in resp.linked_entities
+            for link in resp.linked_assets
         ]
 
     def add_available_link(self, source_id: str, target_id: str) -> bool:

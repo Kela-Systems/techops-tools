@@ -15,6 +15,10 @@ ASSET_TYPE_LABELS = {
     9: "ecm",
     10: "launcher",
     11: "loitering_munition",
+    12: "vtol",
+    13: "speaker",
+    14: "smart_switch",
+    15: "fence",
 }
 
 
@@ -33,6 +37,21 @@ class Integration:
     manifest_id: str | None
     device_count: int
     device_setup_info_schema: dict | None
+
+
+@dataclass
+class ExportedIntegration:
+    """One integration as captured by `integrations export`.
+
+    `section` is the device_config.json section key the integration's devices
+    were written under (None when the integration has no devices).
+    """
+
+    id: str
+    name: str
+    manifest_id: str | None
+    section: str | None
+    device_count: int
 
 
 @dataclass

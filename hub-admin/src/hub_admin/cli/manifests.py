@@ -17,5 +17,5 @@ def list_manifests(
     """List available manifests on the hub."""
     cfg = load_config(context=context)
     with connect(cfg) as conn:
-        res = ManifestResource(conn.hub_client)
+        res = ManifestResource(conn.channel)
         display.manifests_table(res.list())
