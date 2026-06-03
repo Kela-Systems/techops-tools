@@ -96,7 +96,19 @@ def _prompt_add_devices(
                 return
             section = sections[idx]
 
-        results = dev_res.add_from_config(integration_id, section, device_config_path)
+        allowed = dev_res.allowed_keys_from_schema(dev_schema)
+
+        def _on_drop(dev_name: str, dropped: list[str]):
+            console.print(
+                f"    [yellow]Dropped {len(dropped)} field(s) not in "
+                f"'{manifest_name}' schema for {dev_name}:[/yellow] "
+                f"{', '.join(dropped)}"
+            )
+
+        results = dev_res.add_from_config(
+            integration_id, section, device_config_path,
+            allowed_keys=allowed, on_drop=_on_drop,
+        )
         for name, device_id in results:
             console.print(f"    Device created: {name} -> {device_id}")
 

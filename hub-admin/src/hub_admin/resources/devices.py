@@ -2,6 +2,7 @@
 
 import json
 import os
+from collections.abc import Callable
 
 from google.protobuf import struct_pb2
 
@@ -28,8 +29,18 @@ class DeviceResource:
         integration_id: str,
         section_key: str,
         config_path: str,
+        allowed_keys: set[str] | None = None,
+        on_drop: Callable[[str, list[str]], None] | None = None,
     ) -> list[tuple[str, str]]:
-        """Add devices from a config file section. Returns list of (name, device_id)."""
+        """Add devices from a config file section. Returns list of (name, device_id).
+
+        When `allowed_keys` is given (typically derived from the target
+        integration's device_setup_info_schema via `allowed_keys_from_schema`),
+        any setup_info field not in that set is dropped before creating the
+        device — this lets a config exported from one site replay onto another
+        whose manifest schema differs (it would otherwise reject unknown fields
+        with INVALID_ARGUMENT). Dropped fields are reported via `on_drop`.
+        """
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"Device config not found at {config_path}")
 
@@ -48,9 +59,28 @@ class DeviceResource:
                 lat, lng = entry.pop("location").split(",")
                 entry["latitude"] = float(lat.strip())
                 entry["longitude"] = float(lng.strip())
+            if allowed_keys is not None:
+                dropped = sorted(k for k in entry if k not in allowed_keys)
+                for k in dropped:
+                    entry.pop(k)
+                if dropped and on_drop:
+                    on_drop(name, dropped)
             device_id = self.create(integration_id, name, entry)
             results.append((name, device_id))
         return results
+
+    @staticmethod
+    def allowed_keys_from_schema(schema: dict | None) -> set[str] | None:
+        """Allowed setup_info keys from a device_setup_info_schema.
+
+        Returns None when the schema is absent or permits additional
+        properties (the JSON-schema default) — meaning no filtering should be
+        applied. Only when `additionalProperties` is explicitly false do we
+        restrict to the declared `properties`.
+        """
+        if not schema or schema.get("additionalProperties", True):
+            return None
+        return set((schema.get("properties") or {}).keys())
 
     @staticmethod
     def find_matching_section(config_path: str, manifest_name: str) -> str | None:

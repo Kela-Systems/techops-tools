@@ -8,6 +8,7 @@ from rich.console import Console
 from hub_admin.client import connect
 from hub_admin.config import load_config
 from hub_admin.resources.devices import DeviceResource
+from hub_admin.resources.integrations import IntegrationResource
 
 app = typer.Typer(help="Manage devices")
 console = Console()
@@ -43,7 +44,26 @@ def add_from_config(
             console.print(f"Available sections: {', '.join(sections)}")
             section = typer.prompt("Pick a section")
 
-        results = res.add_from_config(integration_id, section, config_path)
+        schema = next(
+            (
+                ig.device_setup_info_schema
+                for ig in IntegrationResource(conn.channel).list()
+                if ig.id == integration_id
+            ),
+            None,
+        )
+        allowed = res.allowed_keys_from_schema(schema)
+
+        def _on_drop(dev_name: str, dropped: list[str]):
+            console.print(
+                f"  [yellow]Dropped {len(dropped)} field(s) not in target "
+                f"schema for {dev_name}:[/yellow] {', '.join(dropped)}"
+            )
+
+        results = res.add_from_config(
+            integration_id, section, config_path,
+            allowed_keys=allowed, on_drop=_on_drop,
+        )
         for name, device_id in results:
             console.print(f"  Device created: {name} -> {device_id}")
 
