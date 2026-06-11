@@ -112,14 +112,16 @@ def show(configs: list[dict]) -> None:
         print("No custom session configuration set — account uses PagerDuty defaults")
         print("(historically ~90 days for web sessions, up to 5 years for mobile).")
         return
+    def fmt(v) -> str:
+        return f"{humanize(v)} ({v}s)" if v is not None else "default (not set)"
+
     print(f"{'platform':<10} {'idle timeout':<22} {'absolute timeout':<22}")
     print("-" * 54)
     for cfg in sorted(configs, key=lambda c: c["type"]):
-        idle, absolute = cfg["idle_session_ttl"], cfg["absolute_session_ttl"]
         print(
             f"{cfg['type']:<10} "
-            f"{humanize(idle) + f' ({idle}s)':<22} "
-            f"{humanize(absolute) + f' ({absolute}s)':<22}"
+            f"{fmt(cfg.get('idle_session_ttl')):<22} "
+            f"{fmt(cfg.get('absolute_session_ttl')):<22}"
         )
 
 
@@ -178,17 +180,16 @@ def main() -> None:
     for platform, (idle, absolute) in updates.items():
         # The API requires both TTLs on every PUT; fill the one not given
         # from the existing configuration.
-        existing = current.get(platform)
+        # The API can also return null TTLs for a platform, so a missing flag
+        # can only be filled from a non-null existing value.
+        existing = current.get(platform) or {}
         if idle is None:
-            if not existing:
-                sys.exit(f"no existing {platform} configuration — specify both "
-                         f"--{platform}-idle and --{platform}-absolute")
-            idle = existing["idle_session_ttl"]
+            idle = existing.get("idle_session_ttl")
         if absolute is None:
-            if not existing:
-                sys.exit(f"no existing {platform} configuration — specify both "
-                         f"--{platform}-idle and --{platform}-absolute")
-            absolute = existing["absolute_session_ttl"]
+            absolute = existing.get("absolute_session_ttl")
+        if idle is None or absolute is None:
+            sys.exit(f"no existing {platform} value to keep — specify both "
+                     f"--{platform}-idle and --{platform}-absolute")
         validate(idle, absolute)
         print(f"Setting {platform}: idle={humanize(idle)}, absolute={humanize(absolute)}")
         confirm(platform, "Updating", args.yes)
