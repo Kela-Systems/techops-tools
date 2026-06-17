@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Magos APU Configurator</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent-hover: #8ba3ff;
+    --green: #34d399;
+    --green-bg: rgba(52,211,153,.12);
+    --yellow: #fbbf24;
+    --yellow-bg: rgba(251,191,36,.12);
+    --red: #f87171;
+    --red-bg: rgba(248,113,113,.10);
+    --blue-bg: rgba(108,140,255,.12);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  .container { max-width: 880px; margin: 0 auto; padding: 28px 24px 60px; }
+  h1 { font-size: 1.35rem; font-weight: 650; }
+  h1 .sub { color: var(--text-dim); font-weight: 400; font-size: .85rem; display: block; margin-top: 2px; }
+  h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); margin-bottom: 12px; }
+
+  button {
+    cursor: pointer; border: none; border-radius: 6px;
+    font-size: .9rem; font-weight: 500; padding: 8px 16px;
+    transition: background .15s, opacity .15s; color: var(--text);
+  }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
+  .btn-outline:hover:not(:disabled) { border-color: var(--text-dim); color: var(--text); }
+
+  input, select {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 8px 12px; font-size: .9rem; outline: none; width: 100%;
+  }
+  input:focus, select:focus { border-color: var(--accent); }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px; margin-bottom: 20px;
+  }
+
+  /* Status banner */
+  .status {
+    display: flex; align-items: center; gap: 16px;
+    border-radius: 12px; padding: 22px 24px; margin-bottom: 20px;
+    border: 1px solid var(--border); background: var(--surface);
+  }
+  .status .dot { width: 16px; height: 16px; border-radius: 50%; flex: 0 0 auto; }
+  .status .txt { flex: 1; }
+  .status .phase { font-size: 1.05rem; font-weight: 600; }
+  .status .msg { color: var(--text-dim); font-size: .9rem; margin-top: 2px; }
+  .pulse { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .spin {
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    animation: spin .8s linear infinite; flex: 0 0 auto;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .s-waiting     { border-color: var(--border); }
+  .s-waiting     .dot { background: var(--text-dim); }
+  .s-detected {
+    border-color: var(--accent);
+    background: linear-gradient(90deg, rgba(108,140,255,.24), rgba(108,140,255,.08));
+    animation: glow 1.3s ease-in-out infinite;
+    padding: 28px 24px;
+  }
+  .s-detected .dot {
+    width: 22px; height: 22px; background: var(--accent);
+    box-shadow: 0 0 0 6px rgba(108,140,255,.18);
+  }
+  .s-detected .phase { font-size: 1.55rem; color: var(--accent-hover); }
+  .s-detected .msg { color: var(--text); font-size: .95rem; }
+  @keyframes glow {
+    0%,100% { box-shadow: 0 0 0 1px var(--accent), 0 0 14px rgba(108,140,255,.30); }
+    50%     { box-shadow: 0 0 0 1px var(--accent), 0 0 30px rgba(108,140,255,.65); }
+  }
+  .s-configuring { border-color: rgba(251,191,36,.5); background: var(--yellow-bg); }
+  .s-configured  { border-color: rgba(52,211,153,.5); background: var(--green-bg); }
+  .s-configured  .dot { background: var(--green); }
+  .s-error       { border-color: rgba(248,113,113,.5); background: var(--red-bg); }
+  .s-error       .dot { background: var(--red); }
+
+  /* Channel selector */
+  .channels { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  .chan {
+    border: 1px solid var(--border); background: var(--surface2);
+    border-radius: 10px; padding: 14px 8px; text-align: center; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .chan:hover { border-color: var(--text-dim); }
+  .chan.sel { border-color: var(--accent); background: var(--blue-bg); }
+  .chan.next { border-color: var(--green); background: var(--green-bg); box-shadow: 0 0 0 1px var(--green); }
+  .chan .nexttag { font-size: .6rem; color: var(--green); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; margin-top: 3px; }
+  .chan .n { font-size: 1.3rem; font-weight: 700; }
+  .chan .ip { font-size: .72rem; color: var(--text-dim); margin-top: 4px; word-break: break-all; }
+  .chan .radar { font-size: .66rem; color: var(--text-dim); margin-top: 3px; opacity: .8; word-break: break-all; }
+
+  .row { display: flex; gap: 12px; align-items: flex-end; }
+  .row > * { flex: 1; }
+  .form-group { margin-bottom: 14px; }
+  .form-group label { display: block; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin-bottom: 6px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .hidden { display: none !important; }
+  .muted { color: var(--text-dim); font-size: .85rem; }
+
+  .settings-summary {
+    display: flex; gap: 16px; flex-wrap: wrap; font-size: .82rem; color: var(--text-dim);
+  }
+  .settings-summary b { color: var(--text); font-weight: 600; }
+  .settings-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .settings-header h3 { margin: 0; }
+
+  /* History */
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th { text-align: left; color: var(--text-dim); font-weight: 500; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: .72rem; font-weight: 600; }
+  .badge-ok { background: var(--green-bg); color: var(--green); }
+  .badge-err { background: var(--red-bg); color: var(--red); }
+  .badge-warn { background: var(--yellow-bg); color: var(--yellow); }
+
+  /* Network preflight warning */
+  .netwarn {
+    border: 1px solid rgba(248,113,113,.5); background: var(--red-bg); color: var(--red);
+    padding: 10px 14px; border-radius: 10px; margin-bottom: 16px; font-size: .85rem;
+  }
+  pre.log {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; font-size: .78rem; color: var(--text-dim);
+    white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto;
+    margin-top: 12px;
+  }
+  .conn { font-size: .75rem; color: var(--text-dim); }
+  .conn.up { color: var(--green); }
+
+  /* Auto-mode toggle */
+  .switch { position: relative; display: inline-block; width: 46px; height: 26px; flex: 0 0 auto; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; inset: 0; background: var(--surface2); border: 1px solid var(--border); border-radius: 26px; transition: .2s; }
+  .slider:before { content: ""; position: absolute; height: 18px; width: 18px; left: 3px; top: 3px; background: var(--text-dim); border-radius: 50%; transition: .2s; }
+  .switch input:checked + .slider { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked + .slider:before { transform: translateX(20px); background: #fff; }
+  .auto-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--surface2); margin-bottom: 16px;
+  }
+  .auto-row.on { border-color: var(--accent); background: var(--blue-bg); }
+  .auto-row .title { font-weight: 600; }
+
+  /* APU identity strip */
+  .identity { display: flex; gap: 18px; flex-wrap: wrap; font-size: .85rem; margin-top: 12px; }
+  .identity span { color: var(--text-dim); }
+  .identity b { color: var(--text); font-weight: 600; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;">
+    <h1>Magos APU Configurator<span class="sub">Plug an APU in &rarr; configure &rarr; unplug &rarr; repeat. The UI stays open for the next one.</span></h1>
+    <span id="conn" class="conn">connecting…</span>
+  </header>
+
+  <div id="netWarn" class="netwarn hidden"></div>
+
+  <!-- STATUS BANNER -->
+  <div id="status" class="status s-waiting">
+    <span id="statusIcon" class="dot"></span>
+    <div class="txt">
+      <div class="phase" id="phaseText">Waiting</div>
+      <div class="msg" id="msgText">Waiting for an APU…</div>
+    </div>
+    <button id="dismissBtn" class="btn-outline hidden" onclick="dismiss()">Dismiss</button>
+  </div>
+
+  <!-- CONFIGURE CARD -->
+  <div class="card">
+    <h3>Target</h3>
+
+    <div class="auto-row" id="cycleRow">
+      <label class="switch"><input type="checkbox" id="cycleToggle" onchange="toggleCycle()"><span class="slider"></span></label>
+      <div style="flex:1;">
+        <div class="title">Cycle mode <span class="muted" style="font-weight:400;">(groups of 4)</span></div>
+        <div class="muted" id="cycleHint">Start a cycle — the 1st APU you plug in becomes channel 0, the 2nd channel 1, and so on, wrapping back to 0 after 4.</div>
+      </div>
+    </div>
+
+    <div class="auto-row" id="autoRow">
+      <label class="switch"><input type="checkbox" id="autoToggle" onchange="toggleAuto()"><span class="slider"></span></label>
+      <div style="flex:1;">
+        <div class="title">Auto-configure on detect</div>
+        <div class="muted" id="autoHint">Pick a target below, then turn this on — every APU that gets plugged in is configured automatically.</div>
+      </div>
+    </div>
+
+    <div class="channels" id="channels"></div>
+
+    <div id="manualWrap" class="hidden" style="margin-top:14px;">
+      <div class="grid2">
+        <div class="form-group">
+          <label>Manual APU IP (plain)</label>
+          <input id="manualIp" placeholder="e.g. 192.168.88.61" />
+        </div>
+        <div class="form-group">
+          <label>Controlled radar IP (optional)</label>
+          <input id="manualRadar" placeholder="e.g. 192.168.88.51" />
+        </div>
+      </div>
+    </div>
+
+    <button id="configureBtn" class="btn-primary" style="margin-top:16px;width:100%;padding:12px;font-size:1rem;" onclick="configure()" disabled>
+      Configure APU
+    </button>
+    <p class="muted" style="margin-top:10px;" id="configHint"></p>
+    <div class="identity hidden" id="identity"></div>
+    <pre id="lastLog" class="log hidden"></pre>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="card">
+    <div class="settings-header">
+      <h3>Shared settings</h3>
+      <button class="btn-outline" id="editSettingsBtn" onclick="toggleSettings()">Edit</button>
+    </div>
+    <div id="settingsSummary" class="settings-summary"></div>
+
+    <div id="settingsForm" class="hidden" style="margin-top:8px;">
+      <div class="grid2">
+        <div class="form-group"><label>Factory hosts (comma-separated)</label><input id="f_host" placeholder="192.168.40.60" /></div>
+        <div class="form-group"><label>Scheme</label>
+          <select id="f_scheme"><option value="http">http</option><option value="https">https</option></select>
+        </div>
+        <div class="form-group"><label>Username</label><input id="f_username" /></div>
+        <div class="form-group"><label>Password</label><input id="f_password" type="password" placeholder="leave blank to keep current" /></div>
+        <div class="form-group"><label>NTP server</label><input id="f_ntp" /></div>
+        <div class="form-group"><label>Timezone</label><input id="f_timezone" placeholder="Asia/Jerusalem" /></div>
+        <div class="form-group"><label>Gateway</label><input id="f_gateway" /></div>
+        <div class="form-group"><label>Primary DNS</label><input id="f_dns" /></div>
+        <div class="form-group"><label>Netmask</label><input id="f_netmask" /></div>
+        <div class="form-group"><label>Interface</label><input id="f_iface" placeholder="port1" /></div>
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <button class="btn-primary" onclick="saveSettings()">Save settings</button>
+        <button class="btn-outline" onclick="toggleSettings()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- HISTORY -->
+  <div class="card">
+    <h3>Configured this session (<span id="histCount">0</span>)</h3>
+    <table>
+      <thead><tr><th>Time</th><th>Model</th><th>Serial</th><th>MAC</th><th>Ch</th><th>APU IP</th><th>Radar</th><th>Status</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="8" class="muted">Nothing configured yet.</td></tr></tbody>
+    </table>
+    <p class="muted" style="margin-top:10px;">Step-by-step logs are saved under <span class="mono">magos-config-ui/logs/</span> (one JSON per APU, plus a rolling <span class="mono">apu-config.log</span>).</p>
+  </div>
+</div>
+
+<script>
+let cfg = {};
+let channelIps = {};
+let radarIps = {};
+let selectedChannel = null;   // "0".."3" or "other"
+let settingsOpen = false;
+let lastPhase = null;
+
+function $(id) { return document.getElementById(id); }
+
+// Escape device-/user-supplied strings before injecting them via innerHTML.
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function statusBadge(h) {
+  if (h.status !== 'ok') return '<span class="badge badge-err">FAILED</span>';
+  if (h.verified) return '<span class="badge badge-ok">OK ✓</span>';
+  return `<span class="badge badge-warn" title="${esc(h.verify_detail || 'not confirmed at the new IP')}">OK (unverified)</span>`;
+}
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/state`);
+  ws.onmessage = (e) => render(JSON.parse(e.data));
+  ws.onopen = () => { $('conn').textContent = 'live'; };
+  ws.onclose = () => {
+    $('conn').textContent = 'reconnecting…';
+    setTimeout(connectWS, 1500);
+  };
+}
+
+function buildChannels() {
+  const wrap = $('channels');
+  wrap.innerHTML = '';
+  Object.entries(channelIps).forEach(([ch, ip]) => {
+    const el = document.createElement('div');
+    el.className = 'chan';
+    el.dataset.ch = ch;
+    const radar = radarIps[ch] ? `<div class="radar">↳ radar ${esc(radarIps[ch])}</div>` : '';
+    el.innerHTML = `<div class="n">${esc(ch)}</div><div class="ip">${esc(ip)}</div>${radar}`;
+    el.onclick = () => selectChannel(ch);
+    wrap.appendChild(el);
+  });
+  const other = document.createElement('div');
+  other.className = 'chan';
+  other.dataset.ch = 'other';
+  other.innerHTML = `<div class="n">⋯</div><div class="ip">manual IP</div>`;
+  other.onclick = () => selectChannel('other');
+  wrap.appendChild(other);
+}
+
+function selectChannel(ch) {
+  selectedChannel = ch;
+  document.querySelectorAll('.chan').forEach(c => c.classList.toggle('sel', c.dataset.ch === ch));
+  $('manualWrap').classList.toggle('hidden', ch !== 'other');
+  updateConfigureBtn();
+  if (window._state && window._state.auto && window._state.auto.enabled) armAuto(true);
+}
+
+function targetBody(enabled) {
+  const body = { enabled };
+  if (selectedChannel === 'other') {
+    body.channel = 'other';
+    body.ip = $('manualIp').value.trim();
+    body.radar_ip = $('manualRadar').value.trim();
+  } else if (selectedChannel !== null) {
+    body.channel = selectedChannel;
+  }
+  return body;
+}
+
+async function armAuto(enabled) {
+  const r = await fetch('/api/auto', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(targetBody(enabled))
+  });
+  const data = await r.json();
+  if (data.error) { alert(data.error); $('autoToggle').checked = false; }
+}
+
+function toggleAuto() {
+  const enabled = $('autoToggle').checked;
+  if (enabled && (selectedChannel === null || (selectedChannel === 'other' && !$('manualIp').value.trim()))) {
+    alert('Pick a channel or enter a manual IP first.');
+    $('autoToggle').checked = false;
+    return;
+  }
+  armAuto(enabled);
+}
+
+async function toggleCycle() {
+  const enabled = $('cycleToggle').checked;
+  const r = await fetch('/api/cycle', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled })
+  });
+  const data = await r.json();
+  if (data.error) { alert(data.error); $('cycleToggle').checked = false; }
+}
+
+function nextChannel(prev) {
+  const keys = Object.keys(channelIps);
+  const idx = keys.indexOf(prev);
+  if (idx >= 0 && idx + 1 < keys.length) return keys[idx + 1];
+  return null;
+}
+
+function updateConfigureBtn() {
+  const s = window._state || {};
+  const autoOn = !!(s.auto && s.auto.enabled);
+  const cycleOn = !!(s.cycle && s.cycle.enabled);
+  const btn = $('configureBtn');
+  // In auto or cycle mode there's no manual button — configuration happens on detect.
+  btn.classList.toggle('hidden', autoOn || cycleOn);
+  const ready = s.phase === 'detected' && !s.busy && selectedChannel !== null
+    && (selectedChannel !== 'other' || $('manualIp').value.trim() !== '');
+  btn.disabled = !ready;
+}
+
+function render(s) {
+  window._state = s;
+  cfg = s.config || {};
+  if (JSON.stringify(channelIps) !== JSON.stringify(s.channel_ips)
+      || JSON.stringify(radarIps) !== JSON.stringify(s.controlled_radar_ips)) {
+    channelIps = s.channel_ips; radarIps = s.controlled_radar_ips || {}; buildChannels();
+  }
+
+  const st = $('status');
+  st.className = 'status s-' + s.phase;
+  const labels = { waiting: 'Waiting for APU', detected: 'New APU detected',
+                   configuring: 'Configuring…', configured: 'Configured ✓', error: 'Error' };
+  $('phaseText').textContent = labels[s.phase] || s.phase;
+  $('msgText').textContent = s.message || '';
+
+  // network preflight warning (laptop not on the factory subnet)
+  const nw = $('netWarn');
+  if (s.net_warning) { nw.textContent = '⚠ ' + s.net_warning; nw.classList.remove('hidden'); }
+  else { nw.classList.add('hidden'); }
+
+  const icon = $('statusIcon');
+  if (s.phase === 'configuring') { icon.className = 'spin'; }
+  else { icon.className = 'dot' + (s.phase === 'waiting' || s.phase === 'detected' ? ' pulse' : ''); }
+
+  if (s.phase === 'detected' && lastPhase !== 'detected') {
+    st.animate(
+      [{ transform: 'scale(1)' }, { transform: 'scale(1.03)' }, { transform: 'scale(1)' }],
+      { duration: 450, easing: 'ease-out' }
+    );
+    st.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  document.title = (s.phase === 'detected' ? '● APU detected — ' : '') + 'Magos APU Configurator';
+
+  $('dismissBtn').classList.toggle('hidden', s.phase !== 'error');
+  $('conn').classList.toggle('up', !!s.detected);
+
+  const auto = s.auto || { enabled: false };
+  const cycle = s.cycle || { enabled: false, index: 0, count: 0 };
+
+  // Cycle mode: auto-advancing channel for groups of 4.
+  $('cycleToggle').checked = !!cycle.enabled;
+  $('cycleRow').classList.toggle('on', !!cycle.enabled);
+  // auto + cycle are mutually exclusive — grey out the other while one is on.
+  $('autoToggle').disabled = !!cycle.enabled;
+  $('cycleToggle').disabled = !!auto.enabled;
+  $('autoRow').style.opacity = cycle.enabled ? '.45' : '';
+  if (cycle.enabled) {
+    const nxt = String(cycle.index);
+    const ip = channelIps[nxt];
+    const radar = radarIps[nxt];
+    $('cycleHint').textContent =
+      `Cycle ON — next APU → channel ${nxt} (APU ${ip}` +
+      (radar ? ` / radar ${radar}` : '') + `). ${cycle.count} configured so far.`;
+  } else {
+    $('cycleHint').textContent =
+      'Start a cycle — the 1st APU you plug in becomes channel 0, the 2nd channel 1, and so on, wrapping back to 0 after 4.';
+  }
+  // highlight the channel the next APU will get
+  document.querySelectorAll('.chan').forEach(c => {
+    const isNext = cycle.enabled && c.dataset.ch === String(cycle.index);
+    c.classList.toggle('next', isNext);
+    let tag = c.querySelector('.nexttag');
+    if (isNext && !tag) { tag = document.createElement('div'); tag.className = 'nexttag'; tag.textContent = 'next'; c.appendChild(tag); }
+    else if (!isNext && tag) { tag.remove(); }
+  });
+
+  $('autoToggle').checked = !!auto.enabled;
+  $('autoRow').classList.toggle('on', !!auto.enabled);
+  if (selectedChannel === null && auto.enabled && (auto.channel || auto.ip)) {
+    if (auto.channel && channelIps[auto.channel]) selectChannel(auto.channel);
+    else if (auto.ip) { selectChannel('other'); $('manualIp').value = auto.ip; if (auto.radar_ip) $('manualRadar').value = auto.radar_ip; }
+  }
+  if (auto.enabled) {
+    const tgt = (auto.channel && channelIps[auto.channel]) ? channelIps[auto.channel] : auto.ip;
+    $('autoHint').textContent = `Auto mode ON — every detected APU will be configured as ${tgt}.`;
+  } else {
+    $('autoHint').textContent = 'Pick a target below, then turn this on — every APU that gets plugged in is configured automatically.';
+  }
+
+  if (!auto.enabled && !cycle.enabled && s.phase === 'configured' && lastPhase === 'configuring'
+      && s.last_result && s.last_result.status === 'ok') {
+    const nxt = nextChannel(s.last_result.channel);
+    if (nxt !== null) selectChannel(nxt);
+  }
+  lastPhase = s.phase;
+
+  const hint = $('configHint');
+  if (s.phase === 'waiting')      hint.textContent = 'No APU reachable at ' + (cfg.hosts || []).join(' / ') + '. Plug one in.';
+  else if (s.phase === 'detected') hint.textContent = 'APU is reachable. Pick a channel, then Configure.';
+  else if (s.phase === 'configured') hint.textContent = 'Unplug this APU and plug in the next one — selection auto-advanced.';
+  else hint.textContent = '';
+  updateConfigureBtn();
+
+  const idEl = $('identity');
+  const lr = s.last_result;
+  if (lr && (lr.serial || lr.model || lr.mac)) {
+    idEl.innerHTML = `
+      <span>model <b>${esc(lr.model || 'unknown')}</b></span>
+      <span>serial <b class="mono">${esc(lr.serial || 'unknown')}</b></span>
+      <span>MAC <b class="mono">${esc(lr.mac || 'unknown')}</b></span>`;
+    idEl.classList.remove('hidden');
+  } else { idEl.classList.add('hidden'); }
+
+  const log = $('lastLog');
+  if (lr && lr.log) {
+    let txt = lr.log;
+    if (lr.error) txt += '\nERROR: ' + lr.error;
+    log.textContent = txt.trim();
+    log.classList.remove('hidden');
+  } else { log.classList.add('hidden'); }
+
+  $('settingsSummary').innerHTML = `
+    <span>hosts <b>${esc((cfg.hosts || []).join(', '))}</b></span>
+    <span>login <b>${esc(cfg.username)}:${s.password_set ? '••••••' : '(unset)'}</b></span>
+    <span>ntp <b>${esc(cfg.ntp)}</b></span>
+    <span>tz <b>${esc(cfg.timezone)}</b></span>
+    <span>gw <b>${esc(cfg.gateway)}</b></span>
+    <span>dns <b>${esc(cfg.dns)}</b></span>
+    <span>mask <b>${esc(cfg.netmask)}</b></span>
+    <span>iface <b>${esc(cfg.iface)}</b></span>`;
+
+  $('histCount').textContent = s.history.length;
+  const body = $('histBody');
+  if (!s.history.length) {
+    body.innerHTML = '<tr><td colspan="8" class="muted">Nothing configured yet.</td></tr>';
+  } else {
+    body.innerHTML = s.history.map(h => `
+      <tr>
+        <td class="muted">${esc(h.time)}</td>
+        <td>${esc(h.model || '—')}</td>
+        <td class="mono">${esc(h.serial || '—')}</td>
+        <td class="mono">${esc(h.mac || '—')}</td>
+        <td>${esc(h.channel)}</td>
+        <td>${esc(h.ip)}</td>
+        <td class="muted">${esc(h.radar_ip || '—')}</td>
+        <td>${statusBadge(h)}</td>
+      </tr>`).join('');
+  }
+}
+
+function toggleSettings() {
+  settingsOpen = !settingsOpen;
+  $('settingsForm').classList.toggle('hidden', !settingsOpen);
+  $('editSettingsBtn').textContent = settingsOpen ? 'Close' : 'Edit';
+  if (settingsOpen) {
+    $('f_host').value = (cfg.hosts || []).join(', ');
+    $('f_scheme').value = cfg.scheme || 'http';
+    $('f_username').value = cfg.username || '';
+    $('f_password').value = '';
+    $('f_ntp').value = cfg.ntp || '';
+    $('f_timezone').value = cfg.timezone || '';
+    $('f_gateway').value = cfg.gateway || '';
+    $('f_dns').value = cfg.dns || '';
+    $('f_netmask').value = cfg.netmask || '';
+    $('f_iface').value = cfg.iface || '';
+  }
+}
+
+async function saveSettings() {
+  const body = {
+    hosts: $('f_host').value.split(',').map(h => h.trim()).filter(Boolean),
+    scheme: $('f_scheme').value,
+    username: $('f_username').value.trim(),
+    ntp: $('f_ntp').value.trim(),
+    timezone: $('f_timezone').value.trim(),
+    gateway: $('f_gateway').value.trim(),
+    dns: $('f_dns').value.trim(),
+    netmask: $('f_netmask').value.trim(),
+    iface: $('f_iface').value.trim(),
+  };
+  const pw = $('f_password').value;
+  if (pw) body.password = pw;
+  await fetch('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  toggleSettings();
+}
+
+async function configure() {
+  if (selectedChannel === null) return;
+  const body = { channel: selectedChannel };
+  if (selectedChannel === 'other') {
+    body.ip = $('manualIp').value.trim();
+    body.radar_ip = $('manualRadar').value.trim();
+  }
+  $('configureBtn').disabled = true;
+  const r = await fetch('/api/configure', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  const data = await r.json();
+  if (data.error) alert(data.error);
+}
+
+async function dismiss() {
+  await fetch('/api/dismiss', { method: 'POST' });
+}
+
+$('manualIp') && $('manualIp').addEventListener('input', updateConfigureBtn);
+connectWS();
+</script>
+</body>
+</html>

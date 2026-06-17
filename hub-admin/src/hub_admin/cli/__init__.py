@@ -2,7 +2,7 @@
 
 import typer
 
-from hub_admin.cli import devices, integrations, links, manifests, server
+from hub_admin.cli import devices, integrations, links, manifests, profile, server
 
 app = typer.Typer(
     name="hub-admin",
@@ -14,6 +14,7 @@ app.add_typer(manifests.app, name="manifests")
 app.add_typer(integrations.app, name="integrations")
 app.add_typer(devices.app, name="devices")
 app.add_typer(links.app, name="links")
+app.add_typer(profile.app, name="profile")
 app.add_typer(server.app, name="server")
 
 

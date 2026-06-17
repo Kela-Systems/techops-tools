@@ -1,0 +1,25 @@
+# OTD500 batch manifest — one row per device.
+#
+# The tool matches a plugged-in device to a row by its LAN MAC (read over ARP
+# from 192.168.1.1, no login required), then logs in with that row's label
+# password and provisions it to `otd-<site_name>`. After login it verifies the
+# device's real serial / IMEI / MAC against the row before writing anything.
+#
+# Required columns: mac, label_password, site_name
+# Optional columns: serial, imei, esim_activation_code, note
+#
+# - mac:                  LAN MAC exactly as printed on the label / RMS export
+#                         (case-insensitive; ':' / '-' / no separator all accepted,
+#                          e.g. 20:97:27:75:FE:E6 or 20972775FEE6).
+# - label_password:       the unique factory password printed on the device.
+# - site_name:            device becomes  otd-<site_name>  (hostname + RMS name).
+# - serial / imei:        used only to VERIFY the right device is plugged in.
+# - esim_activation_code: optional LPA string (LPA:1$smdp.example.com$MATCHING-ID)
+#                         to load an eSIM profile; leave blank to skip.
+#
+# This is the *.example.* template — copy it to manifest.csv and fill in real
+# values. manifest.csv is gitignored (it holds per-device passwords).
+mac,label_password,site_name,serial,imei,esim_activation_code,note
+00:1E:42:AA:BB:01,Xy7Kp2Lm9Qa,haifa-port,1234567890,860123456789012,,first batch
+00:1E:42:AA:BB:02,Zr4Tn8Vc3Wq,ashdod-gate,1234567891,860123456789013,,
+00:1E:42:AA:BB:03,Bd6Hs1Jf5Yu,eilat-south,1234567892,860123456789014,LPA:1$smdp.example.com$ABC-123-DEF,with eSIM

@@ -6,6 +6,7 @@ resource and display layers.
 
 import json
 
+import grpc
 from rich.console import Console
 
 from hub_admin import display
@@ -139,7 +140,18 @@ def _prompt_entity_links(link_res: LinkResource) -> bool:
     if not _confirm("\n  Set up entity links? (y/n): "):
         return False
 
-    assets = link_res.list_assets()
+    try:
+        assets = link_res.list_assets()
+    except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+            console.print(
+                "  [yellow]This hub's server does not support the asset API "
+                "(AssetService is UNIMPLEMENTED). Skipping entity links — the "
+                "hub-server is likely older than this client and needs "
+                "upgrading.[/yellow]\n"
+            )
+            return False
+        raise
     if not assets:
         console.print("  No assets found on this hub.\n")
         return False

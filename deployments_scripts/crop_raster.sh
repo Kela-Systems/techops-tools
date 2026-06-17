@@ -303,7 +303,7 @@ if [[ "$UPLOAD" == true ]]; then
     echo "========================================"
 
     aws sso login --profile "$AWS_PROFILE"
-    aws s3 sync "$SITE_DIR" "s3://kela-gis-data/$SITE_NAME" --profile "$AWS_PROFILE"
+    aws s3 sync "$SITE_DIR" "s3://kela-gis-data/$SITE_NAME" --profile "$AWS_PROFILE" --exclude "*.DS_Store"
 
     echo "Upload complete: s3://kela-gis-data/$SITE_NAME"
 fi

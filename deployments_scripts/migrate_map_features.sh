@@ -39,6 +39,8 @@ Options:
   --dest-pod <pod>        Destination pod name (default: postgresql-0)
   --dest-user <user>      Destination DB user (default: kela)
   --dest-ns <ns>          Destination namespace (default: kela)
+  --dest-hub-id <id>      Destination hub identity for origin_hub_id.
+                          Auto-detected from the hub-server SITE_ID env if omitted.
   --magos-pod <pod>       Magos pod name for zone configs (default: magos-service-0)
   --magos-container <ctr> Magos container name (default: mass)
   --table <name>          Table name on both envs (default: map_features)
@@ -73,6 +75,7 @@ SOURCE_NS="kela"
 DEST_POD="postgresql-0"
 DEST_USER="kela"
 DEST_NS="kela"
+DEST_HUB_ID=""
 MAGOS_POD="magos-service-0"
 MAGOS_CONTAINER="mass"
 TABLE_NAME="map_features"
@@ -91,6 +94,7 @@ while [[ $# -gt 0 ]]; do
     --dest-pod)     DEST_POD="${2:-}";    shift 2;;
     --dest-user)    DEST_USER="${2:-}";   shift 2;;
     --dest-ns)      DEST_NS="${2:-}";     shift 2;;
+    --dest-hub-id)  DEST_HUB_ID="${2:-}"; shift 2;;
     --magos-pod)    MAGOS_POD="${2:-}";   shift 2;;
     --magos-container) MAGOS_CONTAINER="${2:-}"; shift 2;;
     --table)        TABLE_NAME="${2:-}";  shift 2;;
@@ -177,6 +181,30 @@ dest_psql -Atc "SELECT 1;" &>/dev/null \
 log "Both databases are reachable"
 
 # ----------------------------------------------------------
+# Resolve destination hub identity (origin_hub_id)
+#
+# Every map_features row carries origin_hub_id, the federation tag identifying
+# which hub the feature originated from. The destination hub only treats rows
+# whose origin_hub_id matches its own SITE_ID as "local" and loads them; rows
+# tagged with any other value are persisted but filtered out. So migrated rows
+# must be stamped with the destination hub's SITE_ID.
+# ----------------------------------------------------------
+if [[ -z "$DEST_HUB_ID" ]]; then
+  log "Auto-detecting destination hub id from hub-server SITE_ID..."
+  DEST_HUB_ID=$(kubectl get deploy \
+    --context "$DEST_CTX" \
+    -n "$DEST_NS" \
+    hub-server \
+    -o jsonpath='{range .spec.template.spec.containers[*].env[?(@.name=="SITE_ID")]}{.value}{"\n"}{end}' \
+    2>/dev/null | head -1 | tr -d '[:space:]' || true)
+
+  [[ -n "$DEST_HUB_ID" ]] || die "Could not auto-detect destination hub id (SITE_ID) from the hub-server deployment. Pass it explicitly with --dest-hub-id <id>."
+  log "Detected destination hub id: ${DEST_HUB_ID}"
+else
+  log "Using destination hub id: ${DEST_HUB_ID}"
+fi
+
+# ----------------------------------------------------------
 # Pre-flight: verify destination table has expected columns
 # ----------------------------------------------------------
 log "Verifying destination table schema..."
@@ -186,7 +214,7 @@ MISSING_COLS=$(dest_psql -Atc "
     'id','name','classification','description','shape',
     'altitude_hae_meters','altitude_agl_meters','color','creation_time',
     'fill','fill_opacity','show_label','dash_array','icon','icon_size',
-    'active_daily_windows'
+    'active_daily_windows','origin_hub_id'
   ]) AS c
   WHERE c NOT IN (
     SELECT column_name FROM information_schema.columns
@@ -215,6 +243,7 @@ MISSING_COLS=$(dest_psql -Atc "
 #   raw_feature.extra_properties.icon     -> icon (default: map-pin)
 #   raw_feature.extra_properties.iconSize -> icon_size (default: 32)
 #   (always)                              -> active_daily_windows = '[]'
+#   (destination hub SITE_ID)             -> origin_hub_id
 #
 # Mantine CSS variable -> hex color mapping (standard Mantine v7 palette).
 # If your source app uses a custom theme, update the CASE values below.
@@ -304,7 +333,8 @@ SELECT
       THEN (rf->'extra_properties'->>'iconSize')::integer
     ELSE 32
   END AS icon_size,
-  '[]' AS active_daily_windows
+  '[]' AS active_daily_windows,
+  '${DEST_HUB_ID}' AS origin_hub_id
 
 FROM extracted
 SQL
@@ -312,7 +342,7 @@ SQL
 
 TRANSFORM_SQL=$(build_transform_sql)
 
-DEST_COLUMNS="id, name, classification, description, shape, altitude_hae_meters, altitude_agl_meters, color, creation_time, fill, fill_opacity, show_label, dash_array, icon, icon_size, active_daily_windows"
+DEST_COLUMNS="id, name, classification, description, shape, altitude_hae_meters, altitude_agl_meters, color, creation_time, fill, fill_opacity, show_label, dash_array, icon, icon_size, active_daily_windows, origin_hub_id"
 
 # ----------------------------------------------------------
 # Export transformed data from source to a temp CSV file
@@ -345,7 +375,7 @@ kubectl exec \
 ALARM_COUNT=0
 if [[ -n "$ZONES_YAML" && -s "$ZONES_YAML" ]]; then
   log "Generating alarm zone rows..."
-  ALARM_ROWS=$(python3 - "$ZONES_YAML" <<'PYEOF'
+  ALARM_ROWS=$(python3 - "$ZONES_YAML" "$DEST_HUB_ID" <<'PYEOF'
 import sys
 import csv
 import io
@@ -373,6 +403,7 @@ def coords_to_ewkb_hex(coords):
     return buf.hex().upper()
 
 zones_path = sys.argv[1]
+origin_hub_id = sys.argv[2]
 
 with open(zones_path) as f:
     zones_data = yaml.safe_load(f)
@@ -414,6 +445,7 @@ for z in zones:
         "map-pin",        # icon
         "32",             # icon_size
         "[]",             # active_daily_windows
+        origin_hub_id,    # origin_hub_id
     ])
 
 print(out.getvalue(), end="")
@@ -535,7 +567,8 @@ UPSERT_SQL
   echo "COMMIT;"
 } > "$SQL_FILE"
 
-dest_psql -q < "$SQL_FILE"
+dest_psql -v ON_ERROR_STOP=1 -q < "$SQL_FILE" \
+  || die "Upsert into ${TABLE_NAME} failed; transaction rolled back. No rows were migrated."
 
 # Verify row count on destination
 DEST_COUNT=$(dest_psql -Atc "SELECT COUNT(*) FROM ${TABLE_NAME};")

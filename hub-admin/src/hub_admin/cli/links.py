@@ -1,5 +1,6 @@
 """CLI: hub-admin links [list|assets|add]"""
 
+import grpc
 import typer
 from rich.console import Console
 
@@ -12,6 +13,18 @@ app = typer.Typer(help="Manage entity links")
 console = Console()
 
 
+def _guard_unimplemented(e: grpc.RpcError) -> None:
+    """Turn a missing-AssetService error into a clean message + exit."""
+    if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+        console.print(
+            "[yellow]This hub's server does not support the asset API "
+            "(AssetService is UNIMPLEMENTED). The hub-server is likely older "
+            "than this client and needs upgrading.[/yellow]"
+        )
+        raise typer.Exit(1)
+    raise e
+
+
 @app.command("list")
 def list_links(
     context: str = typer.Option("kela-office-01", help="kubectl context"),
@@ -20,8 +33,11 @@ def list_links(
     cfg = load_config(context=context)
     with connect(cfg) as conn:
         res = LinkResource(conn.channel)
-        assets = res.list_assets()
-        links = res.list_links(assets)
+        try:
+            assets = res.list_assets()
+            links = res.list_links(assets)
+        except grpc.RpcError as e:
+            _guard_unimplemented(e)
         display.links_table(links)
 
 
@@ -33,7 +49,11 @@ def list_assets(
     cfg = load_config(context=context)
     with connect(cfg) as conn:
         res = LinkResource(conn.channel)
-        display.assets_table(res.list_assets())
+        try:
+            assets = res.list_assets()
+        except grpc.RpcError as e:
+            _guard_unimplemented(e)
+        display.assets_table(assets)
 
 
 @app.command("add")
@@ -51,7 +71,10 @@ def add_link(
     cfg = load_config(context=context)
     with connect(cfg) as conn:
         res = LinkResource(conn.channel)
-        assets = res.list_assets()
+        try:
+            assets = res.list_assets()
+        except grpc.RpcError as e:
+            _guard_unimplemented(e)
 
         source_id = _resolve_asset(source, assets)
         target_id = _resolve_asset(target, assets)

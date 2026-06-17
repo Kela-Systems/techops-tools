@@ -16,6 +16,8 @@ techops-tools/
 │   ├── crop_raster.sh             Crop ortho + DTM around a lat/lon, optionally push to S3
 │   ├── migrate_map_features.sh    Move map_features between old Platform and Kela HUB
 │   └── pg_query.sh                Run psql against a postgres pod via kubectl exec
+├── magos-config-ui/               Magos AR-300 provisioning: radar + APU CLIs and two FastAPI web UIs
+├── otd-config-ui/                 Teltonika OTD500 batch provisioning: CLI + FastAPI bench UI + RMS register
 ├── hub-admin/                     Small CLI for hub device/integration management (Python package)
 └── deploy-tracker/                Flask app that tracks deployment progress against Google Sheets
 ```
@@ -126,13 +128,183 @@ Run a one-off SQL query (inline, from a file, or interactive psql) against the p
 ./deployments_scripts/pg_query.sh --context prod --db c2-db --interactive
 ```
 
+### `magos-config-ui/`
+
+Everything for provisioning Magos AR-300 radars lives here — both the CLI and the web UI share one device-talking module (`magos_configure.py`).
+
+**CLI (`magos_configure.py`)** — configures a fresh radar over its dashboard HTTP API: logs in, sets a manual NTP server, and switches it from the factory IP to a static one (IP / gateway / DNS). Factory defaults are baked in (`192.168.40.50`, `admin:password`, gateway/DNS `192.168.88.1`, mask `255.255.255.0`, NTP `192.168.88.10`), so the common case is a one-liner. `--interactive` asks which channel the radar is (0&rarr;`.50`, 1&rarr;`.51`, 2&rarr;`.52`, 3&rarr;`.53`, or a manual IP).
+
+```bash
+cd magos-config-ui
+python3 magos_configure.py --interactive
+# or fully explicit:
+python3 magos_configure.py --ip 192.168.88.51 --yes
+```
+
+> Changing the IP drops the connection you're talking over — that's expected. Afterwards the radar lives on its new address.
+
+**Web UI (`app.py`)** — a small FastAPI app around the same client for **bulk-provisioning radars one after another**. It polls the factory IPs (`192.168.40.50` and `192.168.40.60` by default — editable in Settings), shows when a radar is plugged in and which IP it answered on, lets you pick the channel, configures it, then loops back to "waiting" for the next one — the app never shuts down between radars. Shared settings (login, NTP, gateway, DNS, mask) are entered once; only the channel changes per radar, and the selection auto-advances after each success.
+
+- **Auto mode:** flip the *Auto-configure on detect* switch with a channel (or manual IP) armed, and each radar that gets plugged in is configured automatically — no clicking. Plug, wait for green, unplug, repeat.
+- **Identity + logging:** before configuring, it reads the radar's **model / serial / MAC** and shows them in the UI and history. Every step is timestamped and saved under `magos-config-ui/logs/` — a structured JSON per radar (keyed by serial, including the raw API payloads) plus a rolling `magos-config.log`.
+
+```bash
+cd magos-config-ui
+pip install -r requirements.txt
+python app.py            # http://localhost:8001
+```
+
+Your laptop must be on the radar's factory subnet (`192.168.40.x`) to reach it. Live state is pushed over a websocket and a per-session history of configured radars is shown in the UI.
+
+**On a standalone Windows machine:** install [Python 3.11+](https://www.python.org/downloads/) (tick *"Add python.exe to PATH"*), copy the `magos-config-ui/` folder over, and double-click **`run.bat`**. The first run creates a local `.venv` and installs the dependencies (needs internet that once); every run after just launches the app and opens the browser. The PC's network adapter still has to be on the `192.168.40.x` subnet to reach a radar.
+
+#### APU (the AR-300's processing unit)
+
+The same folder also provisions the **APU** (AR Processing Unit), which has a different dashboard API and a fixed factory IP of `192.168.40.60`. It runs **independently** of the radar tool — different CLI, different web app, different port — so you can run both at once.
+
+**CLI (`apu_configure.py`)** — logs in, sets NTP + timezone, points the APU at the radar it controls (`phoenix_ip`), and switches its per-interface networking from the factory IP to a static one. Channels mirror the radar: channel `N` &rarr; APU `192.168.88.6N` controlling radar `192.168.88.5N`. Defaults match a fresh APU (`192.168.40.60`, `admin:password`, gateway/DNS `192.168.88.1`, mask `255.255.255.0`, NTP `192.168.88.10`, timezone `Asia/Jerusalem`).
+
+```bash
+cd magos-config-ui
+python3 apu_configure.py --interactive
+# or fully explicit:
+python3 apu_configure.py --ip 192.168.88.61 --radar-ip 192.168.88.51 --yes
+```
+
+**Web UI (`apu_app.py`)** — the iterative, auto-mode, identity + logging workflow as the radar UI, but for APUs. It watches `192.168.40.60`, and each channel sets both the APU's own IP **and** the controlled-radar IP automatically. Logs land in `magos-config-ui/logs/` (one JSON per APU plus a rolling `apu-config.log`).
+
+- **Cycle mode:** since APUs are deployed in groups of 4, flip *Cycle mode* and just plug them in one at a time — the 1st becomes channel 0, the 2nd channel 1, … wrapping back to 0 after the 4th. No clicking and no per-unit target selection; the UI shows which channel the next APU will get.
+
+```bash
+cd magos-config-ui
+pip install -r requirements.txt
+python apu_app.py        # http://127.0.0.1:8002
+```
+
+On Windows, double-click **`run_apu.bat`** (same first-run venv setup as `run.bat`). Because it's on port `8002`, the radar tool (`run.bat`, port `8001`) and the APU tool can run side by side.
+
+### `otd-config-ui/`
+
+Batch-provisions **Teltonika OTD500** (RutOS) routers. Same iterative bench
+workflow as the magos tools, but driven by a **manifest CSV** so deployment is
+hands-free: plug a device into the laptop (it boots on `192.168.1.1`), the tool
+reads its **LAN MAC over ARP** (no login needed), matches the manifest row, logs
+in with that row's unique factory **label password**, and runs the full
+pipeline. Devices are done one at a time (all share `192.168.1.1`), but with zero
+clicks per device.
+
+Pipeline per device:
+
+```
+login(label_pw) → set password "Kelasys123!" → firmware (latest-stable)
+  → name/hostname otd-<site> → timezone Asia/Jerusalem → all SIMs "4G only"
+  → enable + connect RMS → join Tailscale → [optional] load eSIM profile
+  → verify (re-read every setting off the device and report PASS/FAIL/skip)
+```
+
+**Verification:** as a final step the tool re-queries the device for each thing
+it set (hostname, timezone, per-SIM service, RMS `enable`, Tailscale `100.x` IP,
+firmware) and prints a `── Verification ──` table. A run is only reported `ok`
+when no step failed **and** every in-scope check passes; the CLI exits non-zero
+and the Web UI shows the table (and the per-check PASS/FAIL badges) otherwise.
+
+**Transport:** REST API (`https://192.168.1.1/api`, firmware ≥ 07.06) for auth /
+identity / firmware, and **SSH + UCI** for the config settings (uniform across
+firmware). Both use the same credentials, so once the password is changed
+everything switches over automatically. Firmware-dependent UCI paths are pulled
+out as constants at the top of `teltonika_configure.py` — verify the marked `(*)`
+ones against your units via the [Teltonika dev portal](https://developers.teltonika-networks.com/).
+
+**Why first-boot must be local:** every OTD500 ships behind a *unique* label
+password and forces a change on first login, so RMS zero-touch can't reach it
+until something local logs in and sets the shared password. The bench tool does
+that; RMS then takes over for fleet-scale management.
+
+**CLI (`teltonika_configure.py`)** — provision a single device:
+
+```bash
+cd otd-config-ui
+python3 teltonika_configure.py --site haifa-port --label-password 'Xy7Kp2Lm9Qa'
+python3 teltonika_configure.py --site eilat --label-password '...' --no-firmware
+```
+
+**Web UI (`otd_app.py`)** — the batch bench tool (port `8003`):
+
+```bash
+cd otd-config-ui
+cp site.config.example.json site.config.json   # fill in password, RMS, Tailscale
+cp manifest.example.csv manifest.csv           # mac, label_password, site_name, …
+pip install -r requirements.txt
+python otd_app.py        # http://127.0.0.1:8003
+```
+
+- **Manifest-driven, hands-free:** rows match by MAC; the UI shows a batch
+  checklist (pending / done / failed) with a progress bar. Toggle **Auto** off to
+  click *Configure* per device instead.
+- **Identity verification:** after login it reads the device's real serial / IMEI
+  / MAC and warns on any mismatch with the manifest row *before* writing config.
+- **Tailscale at scale:** with `mint_per_device`, it mints a fresh ephemeral,
+  pre-authorized, tagged auth key per device via the Tailscale API.
+- **Firmware:** `local` (pin a `.bin` in `otd-config-ui/firmware/`), `fota`
+  (device pulls latest-stable), or `rms` (defer — the registered device upgrades
+  itself off the bench). Logs land in `otd-config-ui/logs/` (one JSON per device
+  + a rolling `otd-config.log`).
+- **Waits for mobile data:** FOTA, Tailscale and eSIM need the SIM to have a data
+  connection, which can take a minute+ to attach. With `wait_for_internet` (on by
+  default), the tool polls the modem — logging signal/registration — until it's
+  online before those steps, up to `internet_timeout` seconds. Local-`.bin`
+  firmware and enabling RMS need no internet (RMS connects itself later); if data
+  never comes up, Tailscale's key is still stored in UCI so the device joins on
+  its own once it's online, and eSIM is skipped with a warning.
+
+On Windows, double-click **`run_otd.bat`** (same first-run venv setup as the
+other tools; port `8003`, so all three can run side by side).
+
+**RMS — two halves.** Enabling RMS on the device (UCI `enable=1`) only makes it
+*dial out*; the unit only appears/connects in your account once it's **registered
+there by serial + MAC**. If `rms.api_token` + `rms.company_id` are set in
+`site.config.json`, the bench run now does this automatically as a host-side API
+call (works even before the SIM has data — the device connects on its own once
+online). Registration is idempotent (an "already exists" response counts as OK).
+
+**RMS register (`rms_register.py`)** — the same registration as a standalone
+batch step: bulk-register the whole manifest up front (and optionally attach a
+pending firmware upgrade) so devices self-upgrade the moment they connect.
+
+```bash
+python3 rms_register.py                 # dry-run from manifest.csv
+python3 rms_register.py --apply         # create the devices in RMS
+```
+
+> The PC's adapter must be on the `192.168.1.x` subnet to reach a device. Real
+> `manifest.csv` (holds label passwords), `site.config.json`, and the `firmware/`
+> folder are gitignored — commit only the `*.example.*` templates.
+
 ### `hub-admin/`
 
 Python package that wraps the hub gRPC API for adding/removing radars and ONVIF cameras from a hub. Install with `pip install -e ./hub-admin` (the `hub-admin` script then ends up on your `$PATH`).
 
-Expects a `hub-admin.yaml` next to a `device_config.json` describing the devices; see `hub-admin.example.yaml` and `hub-admin/device_config.example.json`. The real configs are gitignored.
+Expects a `hub-admin.yaml` next to a `device_config.json` describing the devices; see `hub-admin.example.yaml` and `hub-admin/device_config.example.json`. The real configs are gitignored. Every command takes `--context` (the kubectl context to port-forward into).
 
 > Note: depends on internal `hub_client` and `proto_py` packages — those are installed separately in your dev venv.
+
+**Site profiles (`profile` subcommand)** — capture a whole site's setup as one portable bundle and redeploy it. A *profile* contains every integration (its manifest, `integration_config`, and devices) plus the hub's `SiteConfig` (entity links etc.). This is the fast path for "stand up site B exactly like site A".
+
+```bash
+# 1. Export everything from a reference site
+hub-admin profile export --context kela-cuas-06 -o cuas-06.profile.json
+
+# 2. Inspect it offline (no hub connection)
+hub-admin profile show cuas-06.profile.json
+
+# 3. Deploy it onto another context
+hub-admin profile apply cuas-06.profile.json --context kela-cuas-07 --restart
+```
+
+- **Portable across hubs:** on apply, each manifest is matched by *name* on the destination (falling back to the stored manifest ID), so differing per-hub manifest IDs don't matter.
+- **Schema-safe devices:** device `setup_info` is filtered to the destination manifest's schema (same transform as `devices add`), so a profile replays even when manifests differ slightly.
+- **Site settings:** `--site-config` (default on) fully replaces the destination `SiteConfig` and needs a hub restart (`--restart`, or `hub-admin server restart`). Entity links reference site-specific asset IDs — pass `--no-site-config` when deploying to a genuinely different site.
+- Exported `*.profile.json` files can hold device IPs/creds, so they're gitignored; commit only `*.profile.example.json` (see `hub-admin/site.profile.example.json`).
 
 ### `deploy-tracker/`
 
@@ -152,6 +324,10 @@ Files that are **not** in the repo and need to be created locally before things 
 
 | File | What goes in it |
 | --- | --- |
+| `otd-config-ui/manifest.csv` | Per-device MAC / label password / site — see `manifest.example.csv` |
+| `otd-config-ui/site.config.json` | Shared password, RMS token, Tailscale key — see `site.config.example.json` |
+| `cam-config-ui/manifest.csv` | Per-camera MAC / serial / name / target IP — see `manifest.example.csv` |
+| `cam-config-ui/site.config.json` | Shared camera creds + gateway/DNS/NTP/timezone — see `site.config.example.json` |
 | `hub-admin/device_config.json` | Real device IPs / creds — see the `*.example.json` |
 | `hub-admin/hub-admin.yaml` | Real defaults — see the `*.example.yaml` |
 | `deploy-tracker/service_account.json` | Google service account key (download from GCP IAM) |

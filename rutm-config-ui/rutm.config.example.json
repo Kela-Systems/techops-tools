@@ -1,0 +1,48 @@
+{
+  "_comment": "Copy to rutm.config.json (gitignored) and fill in real secrets. These are the shared settings applied to every RUTM08; the site name + label password are typed into the UI per device (no manifest CSV).",
+
+  "host": "192.168.1.1",
+  "username": "admin",
+  "scheme": "https",
+  "insecure": true,
+
+  "new_password": "Kelasys123!",
+  "timezone": "Asia/Jerusalem",
+  "name_prefix": "rut-",
+
+  "_comment_lan": "Applied as the LAST step: the LAN interface moves to lan_ip and the device drops off 192.168.1.1. The tool renews the laptop's DHCP lease and confirms the device answers on the new address. The detection loop also watches lan_ip, so an already-moved router can be re-run (leave the label password empty — it is on the shared password).",
+  "lan_ip": "192.168.88.1",
+
+  "_comment_internet": "FOTA, RMS registration and Tailscale need internet, which a RUTM08 gets over its WAN port — plug WAN into a live uplink on the bench. wait_for_internet makes the tool poll until the link is up (up to internet_timeout seconds) before those steps.",
+  "wait_for_internet": true,
+  "internet_timeout": 180,
+
+  "firmware": {
+    "_comment": "mode = fota (device pulls latest-stable from Teltonika — needs WAN internet), local (upload a pinned .bin from this machine), rms (defer — registered device upgrades itself on first RMS connect), or none. keep_settings must stay true: a settings wipe would reset a moved device back to 192.168.1.1 mid-run.",
+    "mode": "fota",
+    "bin_path": "./firmware/RUTM08_latest-stable.bin",
+    "keep_settings": true,
+    "expected_version": ""
+  },
+
+  "rms": {
+    "enabled": true,
+    "_comment_auth_code": "Optional per-company RMS authentication code. Leave blank if you register devices via the API below — then they connect by serial+MAC without a code.",
+    "auth_code": "",
+    "_comment_api": "api_token must be an RMS Personal Access Token with the 'devices:read' + 'devices:write' scopes, and the account must have 2FA enabled (else the API returns 403). device_series is the RMS device family — 'rutm' for RUTM08; if RMS rejects the registration with an unknown-series error, try 'rut'.",
+    "api_token": "",
+    "company_id": "",
+    "device_series": "rutm"
+  },
+
+  "tailscale": {
+    "enabled": true,
+    "_comment_key": "Either paste a single reusable auth_key, OR set mint_per_device + an api_key/tailnet to mint a fresh pre-authorized key per device via the Tailscale API (recommended).",
+    "auth_key": "",
+    "mint_per_device": true,
+    "api_key": "tskey-api-xxxxx",
+    "tailnet": "example.com",
+    "tags": ["tag:rutm"],
+    "login_server": ""
+  }
+}

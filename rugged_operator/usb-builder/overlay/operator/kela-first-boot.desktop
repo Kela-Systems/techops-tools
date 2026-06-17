@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Kela First-Boot Setup
+Comment=One-time prompt for site name + automated operator-setup
+Exec=/usr/local/bin/kela-first-boot-ui
+Icon=utilities-terminal
+Terminal=false
+X-GNOME-Autostart-enabled=true
+NoDisplay=false
+Hidden=false

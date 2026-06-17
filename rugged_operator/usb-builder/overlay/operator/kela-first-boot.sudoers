@@ -1,0 +1,5 @@
+# /etc/sudoers.d/kela-first-boot
+# One-shot: lets kela invoke the first-boot runner without a password. The
+# runner removes this file once operator-setup.sh succeeds, so persistent
+# privilege escalation is not granted.
+kela ALL=(root) NOPASSWD: /usr/local/sbin/kela-first-boot-run

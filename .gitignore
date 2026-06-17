@@ -32,6 +32,10 @@ hub-admin/device_config.json
 hub-admin/device_config.*.json
 hub-admin/hub-admin.yaml
 
+# Exported site profiles (may contain device IPs/creds) — commit only *.example.*
+*.profile.json
+!*.profile.example.json
+
 # Generated outputs from the raster scripts
 deployments_scripts/tiff_output/
 site_outputs/
@@ -46,8 +50,27 @@ map_features_*.csv
 *.tif
 *.tiff
 
+# OTD500 tool — real per-device manifest (label passwords) + secrets/config
+otd-config-ui/manifest.csv
+otd-config-ui/site.config.json
+otd-config-ui/firmware/
+
+# RUTM08 tool — real secrets/config + firmware images
+rutm-config-ui/rutm.config.json
+rutm-config-ui/firmware/
+
 # Logs
 *.log
+magos-config-ui/logs/
+otd-config-ui/logs/
+rutm-config-ui/logs/
+
+# Rugged operator USB builder — real secrets (live Tailscale auth key; commit
+# only secrets.env.example), ISOs (multi-GB, and the built ISO embeds the auth
+# key), and the offline package pool (~8 GB, regenerable)
+rugged_operator/usb-builder/secrets.env
+*.iso
+rugged_operator/usb-builder/offline-pool/
 
 # Cluster auth helpers
 kubeconfig
@@ -55,3 +78,4 @@ kubeconfig
 # Service account for Google Sheets API
 deploy-tracker/service_account.json
 
+otd-config-ui/logs/

@@ -50,8 +50,28 @@ class DeviceResource:
         if section_key not in device_config:
             raise KeyError(f"Section '{section_key}' not found in config")
 
+        return self.add_devices(
+            integration_id,
+            device_config[section_key],
+            allowed_keys=allowed_keys,
+            on_drop=on_drop,
+        )
+
+    def add_devices(
+        self,
+        integration_id: str,
+        devices: dict,
+        allowed_keys: set[str] | None = None,
+        on_drop: Callable[[str, list[str]], None] | None = None,
+    ) -> list[tuple[str, str]]:
+        """Create devices from an in-memory config section dict.
+
+        Same transform as `add_from_config` (``device_name`` -> gRPC name,
+        ``location`` -> ``latitude``/``longitude``, schema-based key filtering)
+        but sourced from a dict rather than a file — used by both the file-based
+        flow and `ProfileResource.apply`. Returns list of (name, device_id).
+        """
         results = []
-        devices = device_config[section_key]
         for key, entry in devices.items():
             entry = dict(entry)
             name = entry.pop("device_name", key)
