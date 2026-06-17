@@ -9,8 +9,17 @@ Discovered API (base = http://<host>/dshb/v1):
   GET  /networking   -> {ip4Method, ip4Address(CIDR), ip4Gateway, ip4DNS[], ip4OverrideDNS, ...}
   POST /networking   {<full object with edits>}          -> updates IP / gateway / DNS
 
+Firmware >= 3.x adds an RF "Channel" (so neighbouring radars can use different
+frequencies). It lives under a SEPARATE API base and is NOT set over REST:
+  GET  /radar/v1/listVariants -> {"variantList":[{"id":"chan0","description":"Channel 0"},...]}
+  ws(s)://<host>/radar/v1/detections  (the dashboard pushes the channel here)
+     send {"op":"set_params","payload":{"variant":"chanN"},"id":<n>}
+     recv {"op":"ack","inResponseTo":<n>}   (or {"op":"error",...} on failure)
+See MagosClient.set_channel for the exact handshake.
+
 Auth is cookie/session based (login response sets a `session` cookie). We use a
-requests.Session so the cookie jar is reused automatically for later calls.
+requests.Session so the cookie jar is reused automatically for later calls (and
+the same cookie is handed to the channel WebSocket).
 
 Strategy: GET current config, change ONLY the requested fields, POST it back.
 That preserves every other setting on the device.
@@ -40,6 +49,9 @@ it to a static IP, or lets you enter one manually:
   channel 2 -> 192.168.88.52
   channel 3 -> 192.168.88.53
   other     -> manual entry
+Picking a channel (0-3), interactively or via --channel, also sets the radar's
+RF Channel to the matching variant (channel 0 -> chan0, ...) on firmware that
+supports it; older radars without the setting are left untouched.
 
 Password: pass --password, or set MAGOS_PASSWORD, or you'll be prompted when run
 in a terminal (Enter at the prompt keeps the factory default 'password').
@@ -49,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -296,7 +309,12 @@ def fetch_identity(session, base: str, timeout: int, paths=("/system", "/network
 
 class MagosClient:
     def __init__(self, host: str, scheme: str = "http", verify: bool = True, timeout: int = 15):
+        self.host = host
+        self.scheme = scheme
+        self.verify = verify
         self.base = f"{scheme}://{host}/dshb/v1"
+        # Radar-specific config (RF channel etc.) lives under a separate API base.
+        self.radar_base = f"{scheme}://{host}/radar/v1"
         self.s = requests.Session()
         self.s.headers.update({"Content-Type": "application/json"})
         self.s.verify = verify
@@ -334,6 +352,114 @@ class MagosClient:
         if r.status_code not in (200, 204):
             raise MagosError(f"NTP update failed (HTTP {r.status_code}): {r.text[:300]}")
         log.info("NTP server set to %s (timezone %s).", ntp_server, body["timezone"])
+
+    # --- RF channel (firmware >= 3.x) ---------------------------------------
+    def list_variants(self) -> dict:
+        """{variantId: description} of RF channels this radar supports.
+
+        Newer AR-300 firmware exposes an RF "Channel" (called a `variant`
+        internally) so neighbouring radars can transmit on different frequencies.
+        GET /radar/v1/listVariants returns e.g.:
+            {"variantList": [{"id": "chan0", "description": "Channel 0"}, ...]}
+
+        Returns an empty dict on older firmware that has no such endpoint, so
+        callers can treat "no channel support" as a no-op rather than an error.
+        """
+        try:
+            r = self.s.get(f"{self.radar_base}/listVariants", timeout=self.timeout)
+        except requests.exceptions.RequestException:
+            return {}
+        if r.status_code != 200:
+            return {}
+        try:
+            data = r.json()
+        except ValueError:
+            return {}
+        return {v["id"]: v.get("description", v["id"])
+                for v in data.get("variantList", []) if isinstance(v, dict) and "id" in v}
+
+    def set_channel(self, channel: str) -> None:
+        """Set the radar's RF Channel (firmware >= 3.x only).
+
+        Unlike the other settings, the channel is NOT POSTed over REST — the
+        dashboard pushes it over the radar WebSocket. We mirror that exactly:
+
+            ws(s)://<host>/radar/v1/detections
+              send {"op":"set_params","payload":{"variant":"chanN"},"id":<n>}
+              recv {"op":"ack","inResponseTo":<n>}                       (success)
+                or {"op":"error","inResponseTo":<n>,"payload":{"message":...}}
+
+        `channel` may be a plain digit ("0".."3") or a full variant id ("chan0").
+        On firmware that has no RF channel, this logs a note and returns without
+        error, so it is safe to call unconditionally in the provisioning flow.
+
+        Call this BEFORE set_network — changing the IP drops the connection this
+        WebSocket rides on.
+        """
+        variants = self.list_variants()
+        if not variants:
+            log.info("Radar has no RF Channel setting (older firmware); skipping channel step.")
+            return
+
+        variant = str(channel).strip().lower()
+        if variant.isdigit():
+            variant = f"chan{variant}"
+        if variant not in variants:
+            available = ", ".join(f"{vid} ({desc})" for vid, desc in sorted(variants.items()))
+            raise MagosError(f"Radar has no channel '{channel}'. Available: {available}")
+
+        try:
+            from websockets.sync.client import connect as ws_connect
+        except ImportError:
+            raise MagosError("Setting the RF channel needs the 'websockets' package "
+                             "(pip install websockets).")
+
+        ws_scheme = "wss" if self.scheme == "https" else "ws"
+        url = f"{ws_scheme}://{self.host}/radar/v1/detections"
+        cookie = "; ".join(f"{c.name}={c.value}" for c in self.s.cookies)
+        kwargs: dict = {
+            "additional_headers": {"Cookie": cookie} if cookie else {},
+            "open_timeout": self.timeout,
+            "max_size": None,
+        }
+        if ws_scheme == "wss" and not self.verify:
+            import ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            kwargs["ssl"] = ctx
+
+        log.info("Setting RF channel to %s (%s) ...", variant, variants[variant])
+        req_id = 1
+        try:
+            with ws_connect(url, **kwargs) as ws:
+                ws.send(json.dumps(
+                    {"op": "set_params", "payload": {"variant": variant}, "id": req_id}))
+                deadline = time.monotonic() + self.timeout
+                while time.monotonic() < deadline:
+                    try:
+                        raw = ws.recv(timeout=2)
+                    except TimeoutError:
+                        continue
+                    try:
+                        msg = json.loads(raw)
+                    except (ValueError, TypeError):
+                        continue
+                    # The socket also streams detections/heartbeats/etc.; only the
+                    # reply tagged with our request id matters.
+                    if not isinstance(msg, dict) or msg.get("inResponseTo") != req_id:
+                        continue
+                    if msg.get("op") == "ack":
+                        log.info("RF channel set to %s (%s).", variant, variants[variant])
+                        return
+                    if msg.get("op") == "error":
+                        detail = (msg.get("payload") or {}).get("message", "unknown error")
+                        raise MagosError(f"Radar rejected channel {variant}: {detail}")
+        except MagosError:
+            raise
+        except Exception as e:
+            raise MagosError(f"Could not set RF channel over WebSocket: {e}")
+        raise MagosError(f"No ack from radar after setting channel {variant} (timed out).")
 
     # --- networking ---------------------------------------------------------
     def set_network(self, ip_cidr: str, gateway: str, dns: str) -> None:
@@ -382,8 +508,12 @@ class MagosClient:
         raise MagosError("Networking update failed: too many schema-cleanup retries.")
 
 
-def prompt_channel_ip() -> str:
-    """Ask which channel the radar is and return the matching IP (or a manual one)."""
+def prompt_channel_ip() -> tuple[str, str | None]:
+    """Ask which channel the radar is; return (ip, channel).
+
+    `channel` is the chosen channel key ("0".."3") so the caller can also set the
+    radar's RF channel, or None when a manual IP is entered.
+    """
     print("Which channel is this radar?")
     for ch, ip in CHANNEL_IPS.items():
         print(f"  {ch} -> {ip}")
@@ -394,13 +524,13 @@ def prompt_channel_ip() -> str:
         if choice in CHANNEL_IPS:
             ip = CHANNEL_IPS[choice]
             print(f"  Channel {choice} -> {ip}")
-            return ip
+            return ip, choice
         if choice in ("other", "o", "manual", "m"):
             while True:
                 manual = input("Enter IP (plain or CIDR): ").strip()
                 try:
                     ipaddress.ip_interface(manual)  # accepts both plain and CIDR
-                    return manual
+                    return manual, None
                 except ValueError:
                     print("  Not a valid IP address — try again.")
         print("  Please choose 0, 1, 2, 3, or 'other'.")
@@ -419,6 +549,9 @@ def main():
 
     p.add_argument("--interactive", action="store_true",
                    help="ask which channel the radar is (0-3) and pick the IP for you")
+    p.add_argument("--channel",
+                   help="radar RF channel to set on firmware >=3.x (0-3, or a variant id "
+                        "like 'chan0'); interactive/channel selection sets this automatically")
     p.add_argument("--ntp", default=DEFAULT_NTP, help=f"NTP server IP (default: {DEFAULT_NTP})")
     p.add_argument("--timezone", default=DEFAULT_TIMEZONE,
                    help=f"IANA timezone to set with NTP (default: {DEFAULT_TIMEZONE})")
@@ -450,7 +583,9 @@ def main():
             pwd = DEFAULT_PASSWORD
 
     if args.interactive and not args.ip:
-        args.ip = prompt_channel_ip()
+        args.ip, picked_channel = prompt_channel_ip()
+        if args.channel is None:
+            args.channel = picked_channel  # also set the radar's RF channel to match
 
     want_net = args.ip is not None
 
@@ -465,6 +600,11 @@ def main():
         if args.ntp:
             print("Updating NTP...")
             client.set_ntp(args.ntp, args.timezone)
+
+        # Set the RF channel before networking — changing the IP drops the link.
+        if args.channel is not None:
+            print("Setting RF channel...")
+            client.set_channel(args.channel)
 
         if want_net:
             ip_cidr = to_cidr(args.ip, args.netmask)
