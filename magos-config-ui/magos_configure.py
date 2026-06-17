@@ -6,8 +6,16 @@ Discovered API (base = http://<host>/dshb/v1):
   POST /login        {"username","password"}            -> sets a session cookie
   GET  /system       -> {ntpAutomatic, ntpServer, timezone, swComponents, users}
   POST /system       {ntpAutomatic, ntpServer, timezone} -> updates NTP
-  GET  /networking   -> {ip4Method, ip4Address(CIDR), ip4Gateway, ip4DNS[], ip4OverrideDNS, ...}
+  GET  /networking   -> IP / gateway / DNS config (schema varies by firmware, below)
   POST /networking   {<full object with edits>}          -> updates IP / gateway / DNS
+
+Networking schema differs across firmware and set_network handles both:
+  * legacy (flat):   {"ip4Method","ip4Address":"x.x.x.x/NN","ip4Gateway","ip4DNS":[...],...}
+  * firmware >= 3.x: {"netInterfaces":{"port1":{"ip4Method","ip4Address":"x.x.x.x",
+                       "ip4Netmask":"255.255.255.0","ip4Gateway","ip4DNS":[...],...}}, ...}
+                     (per-interface, PLAIN address + separate netmask, not CIDR)
+The POST rejects read-only fields it returned on GET (certificates, mass ports);
+set_network drops exactly those on a 400 and retries.
 
 Firmware >= 3.x adds an RF "Channel" (so neighbouring radars can use different
 frequencies). It lives under a SEPARATE API base and is NOT set over REST:
@@ -114,10 +122,10 @@ def set_log_serial(serial: str | None) -> None:
 # Field names (normalised: lowercased, non-alphanumerics stripped) that the
 # dashboard API may use for each identity attribute. We search the JSON it
 # returns for any of these, so we don't have to hard-code one firmware's schema.
-SERIAL_KEYS = ("serialnumber", "serial", "serialno", "sn", "deviceserial")
+SERIAL_KEYS = ("serialnumber", "serial", "serialno", "sn", "deviceserial", "productserial")
 MAC_KEYS = ("mac", "macaddress", "macaddr", "hwaddr", "hwaddress", "ethernetmac", "ethmac")
 MODEL_KEYS = ("model", "modelname", "productname", "product", "devicemodel",
-              "hardwaremodel", "hwmodel", "devicetype", "boardtype")
+              "hardwaremodel", "hwmodel", "devicetype", "boardtype", "productmodel")
 
 
 # --- AR-300 factory defaults ------------------------------------------------
@@ -274,8 +282,8 @@ def rejected_extra_fields(resp) -> set[str]:
     return extras
 
 
-def fetch_identity(session, base: str, timeout: int, paths=("/system", "/networking",
-                   "/about", "/device", "/info"), label: str = "Device") -> dict:
+def fetch_identity(session, base: str, timeout: int, paths=("/systemStatus", "/system",
+                   "/networking", "/about", "/device", "/info"), label: str = "Device") -> dict:
     """Best-effort serial / MAC / model from a dashboard API (shared by radar + APU).
 
     GETs each path and searches the JSON for known-ish field names. Returns the
@@ -335,7 +343,39 @@ class MagosClient:
 
     # --- identity -----------------------------------------------------------
     def get_identity(self) -> dict:
-        return fetch_identity(self.s, self.base, self.timeout, label="Radar")
+        ident = fetch_identity(self.s, self.base, self.timeout, label="Radar")
+        # On firmware >= 3.x serial+model come from /dshb/v1/systemStatus (covered
+        # by fetch_identity above, and readable even while the radar is in Raw
+        # mode). Only if we still lack the serial AND model do we fall back to the
+        # radar API base — those endpoints can 403 in Raw mode, so we avoid the
+        # extra round-trips whenever systemStatus already answered.
+        if ident["serial"] == "unknown" and ident["model"] == "unknown":
+            raw: dict = {}
+            for path in ("/sensors", "/remoteProductInfo"):
+                try:
+                    r = self.s.get(f"{self.radar_base}{path}", timeout=self.timeout)
+                except requests.exceptions.RequestException:
+                    continue
+                if r.status_code == 200:
+                    try:
+                        raw[path] = r.json()
+                    except ValueError:
+                        pass
+            if raw:
+                found = False
+                for key, keys in (("serial", SERIAL_KEYS), ("mac", MAC_KEYS),
+                                  ("model", MODEL_KEYS)):
+                    if ident[key] == "unknown":
+                        val = _find_field(raw, keys)
+                        if val:
+                            ident[key] = val
+                            found = True
+                ident.setdefault("raw", {}).update(raw)
+                if found:
+                    set_log_serial(ident["serial"])
+                    log.info("Radar identity (radar API): model=%s  serial=%s  MAC=%s",
+                             ident["model"], ident["serial"], ident["mac"])
+        return ident
 
     # --- NTP ----------------------------------------------------------------
     def set_ntp(self, ntp_server: str, timezone: str | None = None) -> None:
@@ -467,11 +507,26 @@ class MagosClient:
         cur.raise_for_status()
         net = cur.json()
 
-        net["ip4Method"] = "manual"
-        net["ip4Address"] = ip_cidr
-        net["ip4Gateway"] = gateway
-        net["ip4OverrideDNS"] = True        # use the DNS we provide
-        net["ip4DNS"] = [dns]               # primary DNS (list; first = primary)
+        iface = ipaddress.ip_interface(ip_cidr)
+        ports = net.get("netInterfaces")
+        if isinstance(ports, dict) and ports:
+            # Firmware >= 3.x: per-interface settings nested under
+            # netInterfaces.<port>, with a PLAIN ip4Address plus a separate
+            # ip4Netmask (older firmware used a single top-level CIDR address).
+            port = ports.get("port1") or next(iter(ports.values()))
+            port["ip4Method"] = "manual"
+            port["ip4Address"] = str(iface.ip)        # plain IP, no /prefix
+            port["ip4Netmask"] = str(iface.netmask)
+            port["ip4Gateway"] = gateway
+            port["ip4OverrideDNS"] = True
+            port["ip4DNS"] = [dns]
+        else:
+            # Legacy flat schema: a single top-level CIDR address.
+            net["ip4Method"] = "manual"
+            net["ip4Address"] = ip_cidr
+            net["ip4Gateway"] = gateway
+            net["ip4OverrideDNS"] = True    # use the DNS we provide
+            net["ip4DNS"] = [dns]           # primary DNS (list; first = primary)
 
         log.info("Applying network: ip=%s gateway=%s primary-DNS=%s", ip_cidr, gateway, dns)
         log.info("(the connection will drop if the IP changes — this is expected)")
@@ -616,7 +671,7 @@ def main():
             print("Updating networking (do this last)...")
             client.set_network(ip_cidr, args.gateway, args.dns)
             verify_device_at(ip_cidr, scheme=args.scheme, username=args.username,
-                             password=pwd, expect_substring=ip_cidr,
+                             password=pwd, expect_substring=args.ip.split("/")[0],
                              verify_tls=not args.insecure)
     except MagosError as e:
         sys.exit(f"ERROR: {e}")

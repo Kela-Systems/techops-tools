@@ -239,8 +239,9 @@ def _net_warning() -> Optional[str]:
             "radars cannot be detected. Set the adapter to a static 192.168.40.x address.")
 
 
-def do_configure(ip: str, host: str, avoid_serial: Optional[str] = None) -> dict:
-    """Run login -> identity -> NTP -> networking -> verify. Never raises.
+def do_configure(ip: str, host: str, avoid_serial: Optional[str] = None,
+                 channel: Optional[str] = None) -> dict:
+    """Run login -> identity -> NTP -> RF channel -> networking -> verify. Never raises.
 
     Returns identity (SN/MAC/model), the per-step log, and the raw API payloads
     used for identity (handy for spotting real field names on new firmware).
@@ -249,6 +250,10 @@ def do_configure(ip: str, host: str, avoid_serial: Optional[str] = None) -> dict
     If `avoid_serial` matches the device's serial, the run is skipped — auto
     mode passes the last configured serial so a unit that briefly reappears on
     the factory IP (slow to apply its new address) isn't configured twice.
+
+    When `channel` is a channel number ("0".."3"), the radar's RF channel is set
+    to the matching variant before the IP change (firmware >= 3.x; older radars
+    are left untouched). Manual-IP runs ("other"/None) don't touch the channel.
     """
     ip_cidr = to_cidr(ip, cfg["netmask"])
     collector = _StepCollector()
@@ -278,10 +283,13 @@ def do_configure(ip: str, host: str, avoid_serial: Optional[str] = None) -> dict
         else:
             if cfg["ntp"]:
                 client.set_ntp(cfg["ntp"], cfg["timezone"])
+            # Set the RF channel before networking — the IP change drops the link.
+            if channel in CHANNEL_IPS:
+                client.set_channel(channel)
             client.set_network(ip_cidr, cfg["gateway"], cfg["dns"])
             vres = verify_device_at(ip_cidr, scheme=cfg["scheme"],
                                     username=cfg["username"], password=cfg["password"],
-                                    expect_substring=ip_cidr,
+                                    expect_substring=ip.split("/")[0],
                                     verify_tls=not cfg["insecure"])
             verified = vres["verified"]
             verify_detail = vres["detail"]
@@ -348,7 +356,7 @@ async def _run_configuration(channel: str, ip: str, host: str,
     avoid = state["last_ok_serial"] if guard_repeat else None
 
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, do_configure, ip, host, avoid)
+    result = await loop.run_in_executor(None, do_configure, ip, host, avoid, channel)
     ident = result["identity"]
 
     if result["skipped"]:

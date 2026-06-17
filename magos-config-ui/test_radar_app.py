@@ -27,11 +27,13 @@ class FakeDevice:
         self.serial = serial
         self.ok = ok
         self.runs = []  # (ip, serial) per actual configuration
+        self.channels = []  # channel passed per actual configuration
 
-    def __call__(self, ip, host, avoid_serial=None):
+    def __call__(self, ip, host, avoid_serial=None, channel=None):
         if avoid_serial and self.serial == avoid_serial:
             return fake_result(ip, self.serial, skipped=True)
         self.runs.append((ip, self.serial))
+        self.channels.append(channel)
         return fake_result(ip, self.serial, ok=self.ok)
 
 
@@ -93,6 +95,7 @@ def test_auto_mode_configures_on_detect(device):
     radar.state["auto"] = {"enabled": True, "channel": "2", "ip": None}
     poll(HOST)
     assert device.runs == [("192.168.88.52", "SN-001")]
+    assert device.channels == ["2"]  # RF channel passed through to do_configure
     assert radar.state["phase"] == "configured"
 
 
