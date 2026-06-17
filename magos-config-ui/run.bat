@@ -33,14 +33,18 @@ if not defined PY (
     exit /b 1
 )
 
-REM First-run setup: create the venv and install dependencies.
+REM First-run setup: create the venv (and upgrade pip) only when it's missing.
 if not exist ".venv\Scripts\python.exe" (
     echo Creating virtual environment ^(first run only^)...
     %PY% -m venv .venv || (echo Could not create the virtual environment. & pause & exit /b 1)
-    echo Installing dependencies...
     ".venv\Scripts\python.exe" -m pip install --upgrade pip
-    ".venv\Scripts\python.exe" -m pip install -r requirements.txt || (echo Dependency install failed. & pause & exit /b 1)
 )
+
+REM Sync dependencies every run so requirements.txt changes are picked up. This
+REM is a near-instant no-op when everything is already installed; needs internet
+REM only when something actually changed.
+echo Checking dependencies...
+".venv\Scripts\python.exe" -m pip install -r requirements.txt || (echo Dependency install failed. & pause & exit /b 1)
 
 echo.
 echo Starting Magos Radar Configurator - a browser window will open at http://localhost:8001
