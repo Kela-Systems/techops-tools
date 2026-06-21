@@ -1,0 +1,34 @@
+{
+  "_comment": "Copy to raythink.config.json (gitignored). Shared settings applied to every Raythink camera; the config profile (LAN/Cellular) and the static-IP octet are chosen in the UI per camera (no manifest).",
+
+  "host": "192.168.1.123",
+  "username": "admin",
+  "scheme": "http",
+  "insecure": true,
+
+  "_comment_pw": "Factory login is admin/admin; the tool changes it to new_password. A re-run of a half-configured camera falls back to new_password automatically.",
+  "initial_password": "admin",
+  "new_password": "Kelafield123!",
+
+  "ntp_server": "192.168.88.10",
+
+  "static": {
+    "_comment": "The camera moves to subnet_prefix.<octet> as the LAST step (the connection drops; the tool reconnects on the new address and renews the laptop's DHCP lease). octet is chosen in the UI: 'manual' = type it, 'cycle' = auto 30 -> 31 -> ... -> 50 -> 30. default_mode sets which the UI opens on.",
+    "subnet_prefix": "192.168.88",
+    "gateway": "192.168.88.1",
+    "netmask": "255.255.255.0",
+    "octet_min": 30,
+    "octet_max": 50,
+    "default_mode": "manual"
+  },
+
+  "_comment_profiles": "Each profile is a config JSON exported from a reference camera (Setup > System > Export). Import replays each config table via setConfig. Real profiles/*.json are gitignored; commit only the *.example.json templates. Keep the device's Network/IP table OUT of these files — the tool sets the static IP and NTP itself, after the import.",
+  "profiles": {
+    "lan": "profiles/lan.json",
+    "cellular": "profiles/cellular.json"
+  },
+
+  "_comment_timeouts": "import_reboot_timeout: seconds to wait for the camera to come back if a config import reboots it. ip_move_timeout: seconds to wait for the camera to answer on its new static IP.",
+  "import_reboot_timeout": 180,
+  "ip_move_timeout": 120
+}

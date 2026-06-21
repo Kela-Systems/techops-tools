@@ -1,7 +1,7 @@
 # Bench provisioning tools
 
 Everything that runs on the **Windows bench PC** to provision devices, one
-plug-in at a time. All four tools share the same workflow — *plug a device in →
+plug-in at a time. All the tools share the same workflow — *plug a device in →
 it's detected → configure → unplug → repeat* — and the same look, so learning
 one teaches you all of them.
 
@@ -22,18 +22,19 @@ double-click differs.
    - **Windows:** `START HERE.bat`
    - **macOS:** `start-bench.command` (it opens in Terminal)
 
-   It launches all four tools and opens the dashboard in your browser.
+   It launches all the tools and opens the dashboard in your browser.
 3. On the dashboard, click the tool for whatever you're plugging in. A green dot
    means that tool is up; grey means it's still starting (first run installs
    dependencies — give it a moment) or stopped.
 
 ```
-double-click launcher  →  dashboard  ┌──────────────────────────────────────────┐
+double-click launcher  →  dashboard  ┌───────────────────────────────────────────┐
                                      │  ● Magos Radar       :8001   192.168.40.x │
                                      │  ● Magos APU         :8002   192.168.40.x │
                                      │  ● Teltonika OTD500  :8003   192.168.1.x  │
                                      │  ● Teltonika RUTM08  :8004   192.168.1.x  │
-                                     └──────────────────────────────────────────┘
+                                     │  ● Raythink Camera   :8005   192.168.1.x  │
+                                     └───────────────────────────────────────────┘
 ```
 
 To run just one tool, open its folder and double-click its own launcher —
@@ -56,10 +57,11 @@ console window (Windows) or press Ctrl+C / close the Terminal tab (macOS).
 | `magos-config-ui/` | Magos **APU** | 8002 | `run_apu` | factory IP `192.168.40.60` |
 | `otd-config-ui/` | Teltonika **OTD500** | 8003 | `run_otd` | manifest-driven, factory `192.168.1.1` |
 | `rutm-config-ui/` | Teltonika **RUTM08** | 8004 | `run_rutm` | no manifest, factory `192.168.1.1` |
+| `raythink-config-ui/` | Raythink **thermal camera** | 8005 | `run_raythink` | no manifest, factory `192.168.1.123`, RPC2 API |
 
 Every launcher ships in two forms — `run_*.bat` (Windows) and `run_*.command`
 (macOS) — that do the same thing. The ports are fixed and don't collide, so all
-four can run side by side.
+the tools can run side by side.
 
 ## For engineers
 
@@ -68,14 +70,16 @@ four can run side by side.
   detection-loop wrapper, WebSocket state feed, step logging) and the Teltonika
   RutOS device client (`bench_core` top level). The OTD and RUTM apps install it
   editable (`-e ../bench-core[ui]`), which is why the tool folders must stay
-  siblings inside `bench/`.
+  siblings inside `bench/`. The Raythink camera tool reuses the same bench-UI
+  base but ships its own device client (`raythink_camera.py`, a Dahua-OEM RPC2
+  JSON client) instead of the Teltonika one — proof the base is protocol-agnostic.
 - Each tool's launcher (`run_*.bat` / `run_*.command`) creates a per-tool `.venv`
   on first run and re-syncs `requirements.txt` every run (a near-instant no-op
   once installed).
 - The master launchers (`START HERE.bat` / `start-bench.command`) set
   `BENCH_NO_BROWSER=1` before launching the tools so only the dashboard opens a
   tab; running a single tool's launcher directly still opens its own tab. On
-  macOS the four tools run as background jobs in the launcher's Terminal window,
+  macOS the tools run as background jobs in the launcher's Terminal window,
   and Ctrl+C there stops them all.
 - Tests: the Magos apps ship `pytest` state-machine tests
   (`magos-config-ui/test_*.py`) that run with no hardware.

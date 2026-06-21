@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Raythink Camera Configurator</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --surface2: #232733; --border: #2e3345;
+    --text: #e1e4ed; --text-dim: #8b90a0; --accent: #6c8cff; --accent-hover: #8ba3ff;
+    --green: #34d399; --green-bg: rgba(52,211,153,.12); --yellow: #fbbf24;
+    --yellow-bg: rgba(251,191,36,.12); --red: #f87171; --red-bg: rgba(248,113,113,.10);
+    --blue-bg: rgba(108,140,255,.12);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5; min-height: 100vh; }
+  .container { max-width: 920px; margin: 0 auto; padding: 28px 24px 60px; }
+  h1 { font-size: 1.35rem; font-weight: 650; }
+  h1 .sub { color: var(--text-dim); font-weight: 400; font-size: .85rem; display: block; margin-top: 2px; }
+  h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); margin-bottom: 12px; }
+  button { cursor: pointer; border: none; border-radius: 6px; font-size: .9rem; font-weight: 500;
+    padding: 8px 16px; transition: background .15s, opacity .15s; color: var(--text); }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
+  .btn-outline:hover:not(:disabled) { border-color: var(--text-dim); color: var(--text); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 22px; margin-bottom: 20px; }
+  .status { display: flex; align-items: center; gap: 16px; border-radius: 12px; padding: 22px 24px;
+    margin-bottom: 20px; border: 1px solid var(--border); background: var(--surface); }
+  .status .dot { width: 16px; height: 16px; border-radius: 50%; flex: 0 0 auto; }
+  .status .txt { flex: 1; }
+  .status .phase { font-size: 1.05rem; font-weight: 600; }
+  .status .msg { color: var(--text-dim); font-size: .9rem; margin-top: 2px; }
+  .pulse { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .spin { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border);
+    border-top-color: var(--accent); animation: spin .8s linear infinite; flex: 0 0 auto; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .s-waiting .dot { background: var(--text-dim); }
+  .s-detected { border-color: var(--accent); background: linear-gradient(90deg, rgba(108,140,255,.24), rgba(108,140,255,.08));
+    animation: glow 1.3s ease-in-out infinite; padding: 28px 24px; }
+  .s-detected .dot { width: 22px; height: 22px; background: var(--accent); box-shadow: 0 0 0 6px rgba(108,140,255,.18); }
+  .s-detected .phase { font-size: 1.5rem; color: var(--accent-hover); }
+  @keyframes glow { 0%,100% { box-shadow: 0 0 0 1px var(--accent), 0 0 14px rgba(108,140,255,.30); }
+    50% { box-shadow: 0 0 0 1px var(--accent), 0 0 30px rgba(108,140,255,.65); } }
+  .s-configuring { border-color: rgba(251,191,36,.5); background: var(--yellow-bg); }
+  .s-configured { border-color: rgba(52,211,153,.5); background: var(--green-bg); }
+  .s-configured .dot { background: var(--green); }
+  .s-error { border-color: rgba(248,113,113,.5); background: var(--red-bg); }
+  .s-error .dot { background: var(--red); }
+  .conn { font-size: .75rem; color: var(--text-dim); }
+  .conn.up { color: var(--green); }
+  .hidden { display: none !important; }
+  .muted { color: var(--text-dim); font-size: .85rem; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th { text-align: left; color: var(--text-dim); font-weight: 500; font-size: .72rem; text-transform: uppercase;
+    letter-spacing: .05em; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: .72rem; font-weight: 600; }
+  .badge-ok { background: var(--green-bg); color: var(--green); }
+  .badge-err { background: var(--red-bg); color: var(--red); }
+  .badge-pend { background: var(--surface2); color: var(--text-dim); }
+  table.verify { margin-top: 12px; }
+  pre.log { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+    font-size: .78rem; color: var(--text-dim); white-space: pre-wrap; word-break: break-word;
+    max-height: 240px; overflow: auto; margin-top: 12px; }
+  .identity { display: flex; gap: 18px; flex-wrap: wrap; font-size: .85rem; margin-top: 12px; }
+  .identity b { color: var(--text); font-weight: 600; }
+  .settings-summary { display: flex; gap: 16px; flex-wrap: wrap; font-size: .82rem; color: var(--text-dim); }
+  .settings-summary b { color: var(--text); font-weight: 600; }
+  .pill { display:inline-block; font-size:.78rem; color:var(--text-dim); margin-right:14px; }
+  .pill b { color: var(--text); }
+  .form-card { border-color: var(--accent); }
+  .form-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+  .field { display: flex; flex-direction: column; gap: 5px; flex: 1 1 180px; }
+  .field label { font-size: .78rem; color: var(--text-dim); min-height: 1.1em; }
+  .field input, .field select { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-size: .95rem; padding: 9px 12px; outline: none; height: 40px; }
+  .field input:focus, .field select:focus { border-color: var(--accent); }
+  .field .hint { font-size: .73rem; color: var(--text-dim); min-height: 1.1em; }
+  .field-actions { flex: 0 0 auto; }
+  .btn-row { display: flex; gap: 10px; }
+  .btn-row button { height: 40px; }
+  .preview { font-size: .82rem; color: var(--text-dim); margin-top: 10px; }
+  .preview b { color: var(--text); }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { background: var(--surface2); color: var(--text-dim); border-radius: 0; padding: 9px 18px; }
+  .seg button:hover:not(.active) { color: var(--text); }
+  .seg button.active { background: var(--accent); color: #fff; }
+  .seg button + button { border-left: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<div class="container">
+  <header style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;">
+    <h1>Raythink Camera Configurator<span class="sub">Connect a camera (192.168.1.123) &rarr; pick profile + IP &rarr; configured &rarr; next.</span></h1>
+    <span id="conn" class="conn">connecting…</span>
+  </header>
+
+  <div id="status" class="status s-waiting">
+    <span id="statusIcon" class="dot"></span>
+    <div class="txt">
+      <div class="phase" id="phaseText">Waiting</div>
+      <div class="msg" id="msgText">…</div>
+    </div>
+    <button id="dismissBtn" class="btn-outline hidden" onclick="dismiss()">Dismiss</button>
+  </div>
+
+  <!-- IP ASSIGNMENT (always visible — choose any time, even before a camera) -->
+  <div class="card">
+    <h3>IP assignment</h3>
+    <div class="seg" id="ipModeSeg">
+      <button type="button" data-mode="manual" onclick="setMode('manual')">Manual</button>
+      <button type="button" data-mode="cycle" onclick="setMode('cycle')">Cycle 30&rarr;50&rarr;30</button>
+    </div>
+    <div class="preview" id="ipModeHint">&nbsp;</div>
+  </div>
+
+  <!-- DEVICE FORM (visible while a camera is detected and idle) -->
+  <div class="card form-card" id="formCard" style="display:none;">
+    <h3>New camera</h3>
+    <div class="form-row">
+      <div class="field">
+        <label for="profile">Config profile</label>
+        <select id="profile" onchange="updatePreview()"></select>
+        <span class="hint">Imported via Setup &gt; System &gt; Import.</span>
+      </div>
+      <div class="field" id="octetField">
+        <label for="octet">Static IP (last octet)</label>
+        <input id="octet" type="number" inputmode="numeric" autocomplete="off"
+               oninput="updatePreview()" onkeydown="if(event.key==='Enter')submitConfigure()">
+        <span class="hint" id="octetHint">&nbsp;</span>
+      </div>
+      <div class="field field-actions">
+        <label aria-hidden="true">&nbsp;</label>
+        <div class="btn-row">
+          <button id="goBtn" class="btn-primary" onclick="submitConfigure()">Configure</button>
+        </div>
+      </div>
+    </div>
+    <div class="preview" id="namePreview"></div>
+  </div>
+
+  <!-- LIVE PROGRESS (visible while configuring) -->
+  <div class="card" id="liveCard" style="display:none;">
+    <h3>Progress log</h3>
+    <pre id="liveLog" class="log" style="margin-top:0;max-height:300px;"></pre>
+  </div>
+
+  <!-- LAST RESULT -->
+  <div class="card" id="resultCard" style="display:none;">
+    <h3>Last camera</h3>
+    <div class="identity" id="identity"></div>
+    <table class="verify hidden" id="verifyTable">
+      <thead><tr><th>check</th><th>result</th></tr></thead>
+      <tbody id="verifyBody"></tbody>
+    </table>
+    <pre id="lastLog" class="log hidden"></pre>
+  </div>
+
+  <!-- SESSION HISTORY -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <h3 style="margin:0;">This session</h3>
+      <button class="btn-outline" onclick="reloadAll()">Reload config</button>
+    </div>
+    <div style="margin-bottom:8px;">
+      <span class="pill">done <b id="cDone">0</b></span>
+      <span class="pill">failed <b id="cErr">0</b></span>
+    </div>
+    <table>
+      <thead><tr><th>Status</th><th>Camera</th><th>Profile</th><th>IP</th><th>Serial</th><th>FW</th><th>Took</th><th>Time</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="8" class="muted">No cameras configured yet.</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- SETTINGS SUMMARY -->
+  <div class="card">
+    <h3>Shared settings (raythink.config.json)</h3>
+    <div id="settingsSummary" class="settings-summary"><span class="muted">No config loaded.</span></div>
+    <p class="muted" style="margin-top:10px;">Per-camera logs are saved under <span class="mono">raythink-config-ui/logs/</span> (one JSON per camera + a rolling <span class="mono">raythink-config.log</span>).</p>
+  </div>
+</div>
+
+<script>
+let lastPhase = null;
+let lastFormMac = null;   // clear the form when a different camera is connected
+let profilesLoaded = '';  // re-fill the profile <select> only when the list changes
+let curState = {};
+function $(id){ return document.getElementById(id); }
+function fmtDur(sec){ return Math.floor(sec/60) + ':' + String(sec%60).padStart(2,'0'); }
+
+function connectWS(){
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/state`);
+  ws.onmessage = (e)=> render(JSON.parse(e.data));
+  ws.onopen = ()=> $('conn').textContent = 'live';
+  ws.onclose = ()=>{ $('conn').textContent = 'reconnecting…'; setTimeout(connectWS, 1500); };
+}
+
+async function reloadAll(){ await fetch('/api/reload', {method:'POST'}); }
+async function dismiss(){ await fetch('/api/dismiss', {method:'POST'}); }
+
+async function setMode(mode){
+  await fetch('/api/ip-mode', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({mode})});
+}
+
+async function submitConfigure(){
+  const mode = curState.ip_mode || 'manual';
+  const body = { profile: $('profile').value, ip_mode: mode };
+  if (mode === 'manual'){
+    const v = parseInt($('octet').value, 10);
+    if (isNaN(v)){ $('octet').focus(); return; }
+    body.octet = v;
+  }
+  $('goBtn').disabled = true;
+  const r = await fetch('/api/configure', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)});
+  const d = await r.json();
+  if (d.error){ alert(d.error); $('goBtn').disabled = false; }
+}
+
+function updatePreview(){
+  const s = curState;
+  const prefix = s.subnet_prefix || '192.168.88';
+  const cycle = s.ip_mode === 'cycle';
+  const octet = cycle ? s.cycle_next : parseInt($('octet').value, 10);
+  $('octetHint').textContent = `allowed ${s.octet_min}–${s.octet_max}`;
+  const ipOk = octet != null && !isNaN(octet) && octet >= s.octet_min && octet <= s.octet_max;
+  const ip = ipOk ? `${prefix}.${octet}` : '—';
+  $('namePreview').innerHTML = `Will set IP <b>${ip}</b>, NTP <b>${s.ntp_server||'—'}</b>, `
+    + `gateway <b>${s.gateway||'—'}</b>, and change the password.`;
+}
+
+function renderIpMode(s){
+  const mode = s.ip_mode || 'manual';
+  const prefix = s.subnet_prefix || '192.168.88';
+  document.querySelectorAll('#ipModeSeg button').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === mode));
+  $('ipModeHint').innerHTML = mode === 'cycle'
+    ? `Next camera gets <b>${prefix}.${s.cycle_next}</b>, then auto-advances on each success (wraps ${s.octet_max}&rarr;${s.octet_min}).`
+    : `Enter the last octet (${s.octet_min}&ndash;${s.octet_max}) for each camera.`;
+}
+
+function fillProfiles(s){
+  const key = (s.profiles||[]).join('|');
+  if (key === profilesLoaded) return;
+  profilesLoaded = key;
+  const sel = $('profile');
+  sel.innerHTML = (s.profiles||[]).map(p=>`<option value="${p}">${p}</option>`).join('')
+    || '<option value="">(no profiles configured)</option>';
+}
+
+function render(s){
+  curState = s;
+  const st = $('status');
+  st.className = 'status s-' + s.phase;
+  const labels = { waiting:'Waiting', detected:'Camera detected',
+    configuring:'Configuring…', configured:'Configured ✓', error:'Error' };
+  let phaseLabel = labels[s.phase] || s.phase;
+  if (s.phase === 'configuring' && s.run_seconds != null)
+    phaseLabel = `Configuring… ${fmtDur(s.run_seconds)}`;
+  $('phaseText').textContent = phaseLabel;
+  $('msgText').textContent = s.message || '';
+
+  const icon = $('statusIcon');
+  icon.className = s.phase === 'configuring' ? 'spin'
+    : 'dot' + ((s.phase === 'waiting' || s.phase === 'detected') ? ' pulse' : '');
+
+  $('conn').classList.toggle('up', !!s.detected);
+  $('dismissBtn').classList.toggle('hidden', s.phase !== 'error' && s.phase !== 'configured');
+
+  // IP-assignment toggle (always visible)
+  renderIpMode(s);
+
+  // device form: shown while detected and idle; reset when a new camera appears
+  const showForm = s.phase === 'detected' && !s.busy;
+  const fc = $('formCard');
+  if (showForm){
+    fillProfiles(s);
+    fc.style.display = '';
+    $('octetField').style.display = (s.ip_mode === 'cycle') ? 'none' : '';
+    if (s.active_mac && s.active_mac !== lastFormMac){
+      lastFormMac = s.active_mac;
+      if (s.ip_mode === 'manual' && !$('octet').value) $('octet').value = s.cycle_next || s.octet_min || '';
+    }
+    $('goBtn').disabled = false;
+    updatePreview();
+  } else {
+    fc.style.display = 'none';
+  }
+
+  // live progress log
+  const lc = $('liveCard'), ll = $('liveLog');
+  if (s.phase === 'configuring' && (s.live_steps || []).length){
+    lc.style.display = '';
+    const txt = s.live_steps.map(t => `[${t.time}] [${t.sn}] ${t.msg}`).join('\n');
+    if (ll.textContent !== txt){
+      const atBottom = ll.scrollHeight - ll.scrollTop - ll.clientHeight < 40;
+      ll.textContent = txt;
+      if (atBottom) ll.scrollTop = ll.scrollHeight;
+    }
+  } else lc.style.display = 'none';
+
+  if (s.phase === 'detected' && lastPhase !== 'detected')
+    st.animate([{transform:'scale(1)'},{transform:'scale(1.03)'},{transform:'scale(1)'}],{duration:450,easing:'ease-out'});
+  document.title = (s.phase === 'detected' ? '● ' : '') + 'Raythink Camera Configurator';
+  lastPhase = s.phase;
+
+  // session counts + history
+  const c = s.counts || {done:0,error:0};
+  $('cDone').textContent = c.done; $('cErr').textContent = c.error;
+  const body = $('histBody');
+  const rows = s.history || [];
+  if (!rows.length){
+    body.innerHTML = '<tr><td colspan="8" class="muted">No cameras configured yet.</td></tr>';
+  } else {
+    const badge = (st)=> st==='ok' ? '<span class="badge badge-ok">DONE</span>'
+      : '<span class="badge badge-err">FAILED</span>';
+    body.innerHTML = rows.map(r=>`<tr>
+      <td>${badge(r.status)}</td><td>${r.hostname||''}</td>
+      <td>${r.profile||'—'}</td>
+      <td class="mono">${r.ip||'—'}</td>
+      <td class="mono">${r.serial||'—'}</td><td>${r.firmware||'—'}</td>
+      <td>${r.duration_s!=null?fmtDur(r.duration_s):'—'}</td>
+      <td class="muted">${r.time||''}</td></tr>`).join('');
+  }
+
+  // last result
+  const lr = s.last_result;
+  if (lr){
+    $('resultCard').style.display = '';
+    $('identity').innerHTML = `
+      <span>camera <b>${lr.hostname||'—'}</b></span>
+      <span>profile <b>${lr.profile||'—'}</b></span>
+      <span>IP <b class="mono">${lr.ip||'—'}</b></span>
+      <span>serial <b class="mono">${lr.serial||'—'}</b></span>
+      <span>fw <b class="mono">${lr.firmware||'—'}</b></span>` +
+      (lr.duration_s != null ? `<span>took <b>${fmtDur(lr.duration_s)}</b></span>` : '');
+    const vt = $('verifyTable'), vb = $('verifyBody');
+    if (lr.verification && lr.verification.length){
+      const mark = (ok)=> ok===true ? '<span class="badge badge-ok">PASS</span>'
+        : ok===false ? '<span class="badge badge-err">FAIL</span>'
+        : '<span class="badge badge-pend">skip</span>';
+      vb.innerHTML = lr.verification.map(c=>
+        `<tr><td>${mark(c.ok)} ${c.item}</td><td class="mono">${c.actual}</td></tr>`).join('');
+      vt.classList.remove('hidden');
+    } else vt.classList.add('hidden');
+    const lg = $('lastLog');
+    let txt = lr.log || '';
+    if (lr.error) txt += '\nERROR: ' + lr.error;
+    if (txt.trim()){ lg.textContent = txt.trim(); lg.classList.remove('hidden'); } else lg.classList.add('hidden');
+  } else { $('resultCard').style.display = 'none'; }
+
+  // settings summary
+  const cfg = s.config || {};
+  if (Object.keys(cfg).length){
+    const stt = cfg.static || {};
+    $('settingsSummary').innerHTML = `
+      <span>factory IP <b>${cfg.host||'192.168.1.123'}</b></span>
+      <span>IP range <b>${s.subnet_prefix||'192.168.88'}.${s.octet_min}–${s.octet_max}</b></span>
+      <span>gateway <b>${s.gateway||'—'}</b></span>
+      <span>netmask <b>${s.netmask||'—'}</b></span>
+      <span>NTP <b>${s.ntp_server||'—'}</b></span>
+      <span>password <b>${cfg.new_password||'(unset)'}</b></span>
+      <span>profiles <b>${(s.profiles||[]).join(', ')||'—'}</b></span>`;
+  }
+}
+connectWS();
+</script>
+</body>
+</html>

@@ -9,6 +9,7 @@
 #    Magos APU        -> http://127.0.0.1:8002   (adapter on 192.168.40.x)
 #    Teltonika OTD500 -> http://127.0.0.1:8003   (adapter on 192.168.1.x)
 #    Teltonika RUTM08 -> http://127.0.0.1:8004   (adapter on 192.168.1.x)
+#    Raythink Camera  -> http://127.0.0.1:8005   (adapter on 192.168.1.x)
 #
 #  First run creates each tool's .venv and installs deps (needs internet that
 #  once). To run just one tool, double-click its own run_*.command instead.
@@ -37,6 +38,7 @@ echo "Preparing tools (first run installs dependencies, ~1 min)..."
 setup_tool "magos-config-ui"
 setup_tool "otd-config-ui"
 setup_tool "rutm-config-ui"
+setup_tool "raythink-config-ui"
 
 # ── Step 2: start the servers in the background ─────────────────────────────
 pids=()
@@ -63,6 +65,7 @@ start "Magos Radar"      "magos-config-ui" "app.py"
 start "Magos APU"        "magos-config-ui" "apu_app.py"
 start "Teltonika OTD500" "otd-config-ui"   "otd_app.py"
 start "Teltonika RUTM08" "rutm-config-ui"  "rutm_app.py"
+start "Raythink Camera"  "raythink-config-ui" "raythink_app.py"
 
 # Give the servers a moment to come up (cold start is ~5s), then open the
 # dashboard once. The dashboard re-polls, so any tool still warming up will flip
@@ -71,6 +74,6 @@ sleep 6
 open "launcher/index.html" 2>/dev/null || true
 
 echo
-echo "All four tools are running. Dashboard: launcher/index.html"
+echo "All five tools are running. Dashboard: launcher/index.html"
 echo "Leave this window open. Press Ctrl+C to stop everything."
 wait

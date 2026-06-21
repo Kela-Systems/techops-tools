@@ -1,0 +1,5 @@
+# The bench-UI base lives in the local bench-core package (installed editable).
+# It pins requests as a dependency, and the [ui] extra pulls in the pinned
+# fastapi/uvicorn/websockets web stack. The Raythink camera client talks plain
+# RPC2 JSON over requests — no SSH, so paramiko isn't needed.
+-e ../bench-core[ui]
