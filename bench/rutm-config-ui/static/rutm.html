@@ -78,13 +78,17 @@
   .pill b { color: var(--text); }
   /* device form */
   .form-card { border-color: var(--accent); }
-  .form-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+  .form-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
   .field { display: flex; flex-direction: column; gap: 5px; flex: 1 1 220px; }
-  .field label { font-size: .78rem; color: var(--text-dim); }
+  .field label { font-size: .78rem; color: var(--text-dim); min-height: 1.1em; }
   .field input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-    color: var(--text); font-size: .95rem; padding: 9px 12px; outline: none; }
+    color: var(--text); font-size: .95rem; padding: 9px 12px; outline: none; height: 40px; }
   .field input:focus { border-color: var(--accent); }
-  .field .hint { font-size: .73rem; color: var(--text-dim); }
+  .field .hint { font-size: .73rem; color: var(--text-dim); min-height: 1.1em; }
+  /* action buttons sit in their own field so they line up with the inputs */
+  .field-actions { flex: 0 0 auto; }
+  .btn-row { display: flex; gap: 10px; }
+  .btn-row button { height: 40px; }
   .preview { font-size: .82rem; color: var(--text-dim); margin-top: 10px; }
   .preview b { color: var(--text); }
 </style>
@@ -121,7 +125,12 @@
                onkeydown="if(event.key==='Enter')submitConfigure()">
         <span class="hint">Leave empty if the router was provisioned before (shared password).</span>
       </div>
-      <button id="goBtn" class="btn-primary" onclick="submitConfigure()">Configure</button>
+      <div class="field field-actions">
+        <label aria-hidden="true">&nbsp;</label>
+        <div class="btn-row">
+          <button id="goBtn" class="btn-primary" onclick="submitConfigure()">Configure</button>
+        </div>
+      </div>
     </div>
     <div class="preview" id="namePreview"></div>
   </div>
