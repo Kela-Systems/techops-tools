@@ -51,19 +51,19 @@ map_features_*.csv
 *.tiff
 
 # OTD500 tool — real per-device manifest (label passwords) + secrets/config
-otd-config-ui/manifest.csv
-otd-config-ui/site.config.json
-otd-config-ui/firmware/
+bench/otd-config-ui/manifest.csv
+bench/otd-config-ui/site.config.json
+bench/otd-config-ui/firmware/
 
 # RUTM08 tool — real secrets/config + firmware images
-rutm-config-ui/rutm.config.json
-rutm-config-ui/firmware/
+bench/rutm-config-ui/rutm.config.json
+bench/rutm-config-ui/firmware/
 
 # Logs
 *.log
-magos-config-ui/logs/
-otd-config-ui/logs/
-rutm-config-ui/logs/
+bench/magos-config-ui/logs/
+bench/otd-config-ui/logs/
+bench/rutm-config-ui/logs/
 
 # Rugged operator USB builder — real secrets (live Tailscale auth key; commit
 # only secrets.env.example), ISOs (multi-GB, and the built ISO embeds the auth
@@ -77,5 +77,3 @@ kubeconfig
 
 # Service account for Google Sheets API
 deploy-tracker/service_account.json
-
-otd-config-ui/logs/

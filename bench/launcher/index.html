@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kela Bench — Device Provisioning</title>
+<style>
+  :root {
+    --bg: #0e1116; --card: #1a1f29; --card-hover: #222936;
+    --text: #e6edf3; --muted: #8b95a3; --line: #2a3140;
+    --up: #2ea043; --down: #6e7681; --accent: #2f81f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; align-items: center; padding: 48px 20px;
+  }
+  h1 { font-size: 26px; font-weight: 650; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 32px; }
+  .grid {
+    display: grid; gap: 16px; width: 100%; max-width: 760px;
+    grid-template-columns: repeat(2, 1fr);
+  }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px; text-decoration: none; color: inherit; display: flex;
+    flex-direction: column; gap: 10px; transition: background .15s, border-color .15s, transform .05s;
+  }
+  .card:hover { background: var(--card-hover); border-color: var(--accent); }
+  .card:active { transform: translateY(1px); }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--down);
+         flex: none; transition: background .2s; box-shadow: 0 0 0 0 rgba(46,160,67,.5); }
+  .dot.up { background: var(--up); }
+  .name { font-size: 17px; font-weight: 600; }
+  .device { color: var(--muted); font-size: 13px; }
+  .meta { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+  .port { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+  .status { font-size: 12px; color: var(--down); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .status.up { color: var(--up); }
+  .tip { color: var(--muted); font-size: 13px; margin-top: 32px; max-width: 620px; text-align: center; }
+  .tip code { background: #161b22; padding: 1px 6px; border-radius: 5px; color: var(--text); }
+</style>
+</head>
+<body>
+  <h1>Kela Bench</h1>
+  <p class="sub">Device provisioning — pick the tool for what you're plugging in.</p>
+
+  <div class="grid" id="grid"></div>
+
+  <p class="tip">
+    Each tool keeps running in its own console window — leave them open.
+    A grey dot means that server isn't up yet (give it a few seconds on the
+    first run while it installs), or that you launched this dashboard without
+    <code>START HERE.bat</code>.
+  </p>
+
+<script>
+  const TOOLS = [
+    { name: "Magos Radar",      device: "AR-300 radar",        port: 8001, subnet: "192.168.40.x" },
+    { name: "Magos APU",        device: "AR processing unit",  port: 8002, subnet: "192.168.40.x" },
+    { name: "Teltonika OTD500", device: "OTD500 router",       port: 8003, subnet: "192.168.1.x"  },
+    { name: "Teltonika RUTM08", device: "RUTM08 router",       port: 8004, subnet: "192.168.1.x"  },
+  ];
+
+  const grid = document.getElementById("grid");
+  const cards = TOOLS.map(t => {
+    const url = `http://127.0.0.1:${t.port}/`;
+    const a = document.createElement("a");
+    a.className = "card";
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.innerHTML = `
+      <div class="row">
+        <span class="dot"></span>
+        <span class="name">${t.name}</span>
+      </div>
+      <div class="device">${t.device} &middot; adapter on ${t.subnet}</div>
+      <div class="meta">
+        <span class="port">127.0.0.1:${t.port}</span>
+        <span class="status">offline</span>
+      </div>`;
+    grid.appendChild(a);
+    return { ...t, url, dot: a.querySelector(".dot"), status: a.querySelector(".status") };
+  });
+
+  // Best-effort reachability: a no-cors fetch resolves if the server answers
+  // (even though we can't read the opaque response) and rejects if the
+  // connection is refused. Good enough to drive the up/down dot.
+  async function ping(tool) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 1500);
+    try {
+      await fetch(tool.url, { mode: "no-cors", signal: ctrl.signal, cache: "no-store" });
+      setState(tool, true);
+    } catch (_) {
+      setState(tool, false);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function setState(tool, up) {
+    tool.dot.classList.toggle("up", up);
+    tool.status.classList.toggle("up", up);
+    tool.status.textContent = up ? "running" : "offline";
+  }
+
+  function pollAll() { cards.forEach(ping); }
+  pollAll();
+  setInterval(pollAll, 3000);
+</script>
+</body>
+</html>

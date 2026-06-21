@@ -1,4 +1,0 @@
-# The shared device client + bench-UI base live in the local teltonika-provision
-# package (installed editable). It pins requests + paramiko as dependencies, and
-# the [ui] extra pulls in the pinned fastapi/uvicorn/websockets web stack.
--e ../teltonika-provision[ui]
