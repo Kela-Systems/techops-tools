@@ -15,7 +15,7 @@ techops-tools/
 │   ├── launcher/                  The dashboard landing page
 │   ├── bench-core/                Shared package: bench-UI base + Teltonika device client
 │   ├── magos-config-ui/           Magos AR-300 radar (:8001) + APU (:8002)
-│   ├── otd-config-ui/             Teltonika OTD500 (:8003), manifest-driven
+│   ├── otd-config-ui/             Teltonika OTD500 (:8003), ad-hoc + optional batch
 │   └── rutm-config-ui/            Teltonika RUTM08 (:8004), no manifest
 │
 ├── raster_to_gpkg.py              Convert TIFFs in a folder into an InspireCRS84Quad GeoPackage
@@ -191,7 +191,7 @@ Files that are **not** in the repo and must be created locally before things wor
 
 | File | What goes in it |
 | --- | --- |
-| `bench/otd-config-ui/manifest.csv` | Per-device MAC / label password / site — see `manifest.example.csv` |
+| `bench/otd-config-ui/manifest.csv` | Optional Batch-mode device list (site / MAC / label password) — built in the UI or from `manifest.example.csv` |
 | `bench/otd-config-ui/site.config.json` | Shared password, RMS token, Tailscale key — see `site.config.example.json` |
 | `bench/rutm-config-ui/rutm.config.json` | RMS token, Tailscale key, firmware mode — see `rutm.config.example.json` |
 | `hub-admin/device_config.json` | Real device IPs / creds — see the `*.example.json` |

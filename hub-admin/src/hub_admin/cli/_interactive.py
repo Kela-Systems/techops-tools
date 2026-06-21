@@ -145,12 +145,12 @@ def _prompt_entity_links(link_res: LinkResource) -> bool:
     except grpc.RpcError as e:
         if e.code() == grpc.StatusCode.UNIMPLEMENTED:
             console.print(
-                "  [yellow]This hub's server does not support the asset API "
-                "(AssetService is UNIMPLEMENTED). Skipping entity links — the "
-                "hub-server is likely older than this client and needs "
-                "upgrading.[/yellow]\n"
+                "  [yellow]This hub's server does not support asset discovery "
+                "(AssetService is UNIMPLEMENTED) — it is likely older than this "
+                "client. Entity links can still be configured manually by asset "
+                "ID.[/yellow]\n"
             )
-            return False
+            return _prompt_entity_links_manual(link_res)
         raise
     if not assets:
         console.print("  No assets found on this hub.\n")
@@ -159,7 +159,11 @@ def _prompt_entity_links(link_res: LinkResource) -> bool:
     display.assets_table(assets)
     links = link_res.list_links(assets)
     display.links_table(links)
+    return _prompt_entity_links_browse(link_res, assets)
 
+
+def _prompt_entity_links_browse(link_res: LinkResource, assets: list) -> bool:
+    """Interactive link setup driven by the asset table (modern hubs)."""
     any_added = False
     while True:
         choice = input("  Source asset # (or Enter to finish): ").strip()
@@ -203,6 +207,61 @@ def _prompt_entity_links(link_res: LinkResource) -> bool:
                     f"  [yellow]Already configured:[/yellow] "
                     f"{source.name} -> {target.name}"
                 )
+        except Exception as e:
+            console.print(f"  [red]ERROR updating site config: {e}[/red]")
+
+        if not _confirm("\n  Add another link? (y/n): "):
+            break
+
+    if any_added:
+        console.print(
+            "  [bold]NOTE:[/bold] Entity link changes require a hub server "
+            "restart to take effect."
+        )
+    print()
+    return any_added
+
+
+def _prompt_entity_links_manual(link_res: LinkResource) -> bool:
+    """Fallback link entry by raw asset ID for hubs without AssetService.
+
+    The site-config write path (``SiteConfigService.available_links``) is
+    unchanged across hub versions, so links can still be persisted when asset
+    discovery is unavailable — the operator just supplies the asset IDs.
+    """
+    if not _confirm("  Configure entity links manually by asset ID? (y/n): "):
+        return False
+
+    any_added = False
+    while True:
+        source_id = input("  Source asset ID (or Enter to finish): ").strip()
+        if not source_id:
+            break
+        target_id = input("  Target asset ID (or Enter to cancel): ").strip()
+        if not target_id:
+            continue
+
+        try:
+            added = link_res.add_available_link(source_id, target_id)
+            if added:
+                any_added = True
+                console.print(
+                    f"  [green]Configured:[/green] {source_id} -> {target_id}"
+                )
+            else:
+                console.print(
+                    f"  [yellow]Already configured:[/yellow] "
+                    f"{source_id} -> {target_id}"
+                )
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                console.print(
+                    "  [red]This hub also lacks the site config API "
+                    "(SiteConfigService is UNIMPLEMENTED); entity links cannot "
+                    "be configured. The hub-server needs upgrading.[/red]\n"
+                )
+                return any_added
+            console.print(f"  [red]ERROR updating site config: {e}[/red]")
         except Exception as e:
             console.print(f"  [red]ERROR updating site config: {e}[/red]")
 

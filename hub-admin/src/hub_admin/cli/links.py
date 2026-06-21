@@ -73,11 +73,20 @@ def add_link(
         res = LinkResource(conn.channel)
         try:
             assets = res.list_assets()
+            source_id = _resolve_asset(source, assets)
+            target_id = _resolve_asset(target, assets)
         except grpc.RpcError as e:
-            _guard_unimplemented(e)
-
-        source_id = _resolve_asset(source, assets)
-        target_id = _resolve_asset(target, assets)
+            if e.code() != grpc.StatusCode.UNIMPLEMENTED:
+                raise
+            # Older hub without AssetService: skip name resolution and use the
+            # arguments as raw asset IDs. The site-config write path below is
+            # unchanged across hub versions, so the link can still be persisted.
+            console.print(
+                "[yellow]Asset discovery unavailable on this hub "
+                "(AssetService is UNIMPLEMENTED); treating SOURCE/TARGET as raw "
+                "asset IDs.[/yellow]"
+            )
+            source_id, target_id = source, target
 
         added = res.add_available_link(source_id, target_id)
         if added:

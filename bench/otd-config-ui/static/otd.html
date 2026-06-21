@@ -26,6 +26,9 @@
   .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
   .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
   .btn-outline:hover:not(:disabled) { border-color: var(--text-dim); color: var(--text); }
+  .btn-danger { background: transparent; border: 1px solid rgba(248,113,113,.4); color: var(--red); }
+  .btn-danger:hover:not(:disabled) { background: var(--red-bg); }
+  .btn-sm { padding: 4px 10px; font-size: .78rem; }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 22px; margin-bottom: 20px; }
   .status { display: flex; align-items: center; gap: 16px; border-radius: 12px; padding: 22px 24px;
     margin-bottom: 20px; border: 1px solid var(--border); background: var(--surface); }
@@ -60,7 +63,7 @@
   table { width: 100%; border-collapse: collapse; font-size: .85rem; }
   th { text-align: left; color: var(--text-dim); font-weight: 500; font-size: .72rem; text-transform: uppercase;
     letter-spacing: .05em; padding: 6px 10px; border-bottom: 1px solid var(--border); }
-  td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
   tr:last-child td { border-bottom: none; }
   tr.active td { background: var(--blue-bg); }
   .badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: .72rem; font-weight: 600; }
@@ -80,9 +83,6 @@
     background: var(--text-dim); border-radius: 50%; transition: .2s; }
   .switch input:checked + .slider { background: var(--accent); border-color: var(--accent); }
   .switch input:checked + .slider:before { transform: translateX(20px); background: #fff; }
-  .toprow { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border: 1px solid var(--border);
-    border-radius: 10px; background: var(--surface2); margin-bottom: 16px; }
-  .toprow.on { border-color: var(--accent); background: var(--blue-bg); }
   .progress { height: 8px; border-radius: 6px; background: var(--surface2); overflow: hidden; margin: 6px 0 14px; }
   .progress > i { display: block; height: 100%; background: var(--green); transition: width .3s; }
   .pill { display:inline-block; font-size:.78rem; color:var(--text-dim); margin-right:14px; }
@@ -92,13 +92,35 @@
   .warn { color: var(--yellow); font-size: .82rem; margin-top: 8px; }
   .settings-summary { display: flex; gap: 16px; flex-wrap: wrap; font-size: .82rem; color: var(--text-dim); }
   .settings-summary b { color: var(--text); font-weight: 600; }
+  /* mode switch */
+  .modeswitch { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .modeswitch button { background: transparent; color: var(--text-dim); border-radius: 0; padding: 7px 16px; }
+  .modeswitch button.on { background: var(--accent); color: #fff; }
+  /* device form */
+  .form-card { border-color: var(--accent); }
+  .form-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 5px; flex: 1 1 220px; }
+  .field label { font-size: .78rem; color: var(--text-dim); }
+  .field input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-size: .95rem; padding: 9px 12px; outline: none; width: 100%; }
+  .field input:focus { border-color: var(--accent); }
+  .field .hint { font-size: .73rem; color: var(--text-dim); }
+  .field-sm { flex: 1 1 140px; }
+  .preview { font-size: .82rem; color: var(--text-dim); margin-top: 10px; }
+  .preview b { color: var(--text); }
 </style>
 </head>
 <body>
 <div class="container">
-  <header style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;">
-    <h1>OTD500 Configurator<span class="sub">Plug in &rarr; matched by MAC &rarr; auto-provisioned &rarr; unplug &rarr; repeat.</span></h1>
-    <span id="conn" class="conn">connecting…</span>
+  <header style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;gap:14px;">
+    <h1>OTD500 Configurator<span class="sub" id="subTitle">Plug in &rarr; enter site name + label password &rarr; configured &rarr; unplug &rarr; repeat.</span></h1>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+      <span id="conn" class="conn">connecting…</span>
+      <div class="modeswitch">
+        <button id="modeAdhoc" onclick="setMode('adhoc')">Ad-hoc</button>
+        <button id="modeBatch" onclick="setMode('batch')">Batch</button>
+      </div>
+    </div>
   </header>
 
   <div id="status" class="status s-waiting">
@@ -107,8 +129,30 @@
       <div class="phase" id="phaseText">Waiting</div>
       <div class="msg" id="msgText">…</div>
     </div>
-    <button id="configBtn" class="btn-primary hidden" onclick="configure()">Configure</button>
+    <button id="configBtn" class="btn-primary hidden" onclick="configureMatched()">Configure</button>
     <button id="dismissBtn" class="btn-outline hidden" onclick="dismiss()">Dismiss</button>
+  </div>
+
+  <!-- DEVICE FORM (ad-hoc detected, or batch capture of an unmatched device) -->
+  <div class="card form-card" id="formCard" style="display:none;">
+    <h3 id="formTitle">New device</h3>
+    <div class="form-row">
+      <div class="field">
+        <label for="fSite">Site name</label>
+        <input id="fSite" type="text" autocomplete="off" placeholder="haifa-port"
+               oninput="updatePreview()" onkeydown="if(event.key==='Enter')submitConfigure()">
+        <span class="hint" id="dupHint">&nbsp;</span>
+      </div>
+      <div class="field">
+        <label for="fPw">Label password (factory)</label>
+        <input id="fPw" type="password" autocomplete="off" placeholder="from the device sticker"
+               onkeydown="if(event.key==='Enter')submitConfigure()">
+        <span class="hint">Leave empty if the device is already on the shared password.</span>
+      </div>
+      <button id="goBtn" class="btn-primary" onclick="submitConfigure()">Configure</button>
+      <button id="saveBatchBtn" class="btn-outline hidden" onclick="saveToBatch()">Save to batch</button>
+    </div>
+    <div class="preview" id="namePreview"></div>
   </div>
 
   <!-- LIVE PROGRESS (visible while configuring) -->
@@ -117,14 +161,15 @@
     <pre id="liveLog" class="log" style="margin-top:0;max-height:300px;"></pre>
   </div>
 
-  <!-- BATCH PROGRESS -->
-  <div class="card">
+  <!-- BATCH PANEL (batch mode only) -->
+  <div class="card" id="batchCard" style="display:none;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
       <h3 style="margin:0;">Batch progress</h3>
       <div>
         <label class="switch" style="vertical-align:middle;"><input type="checkbox" id="autoToggle" checked onchange="toggleAuto()"><span class="slider"></span></label>
         <span class="muted" style="margin:0 14px 0 6px;">Auto</span>
-        <button class="btn-outline" onclick="reloadAll()">Reload manifest</button>
+        <button class="btn-outline btn-sm" onclick="openAdd()">+ Add device</button>
+        <button class="btn-outline btn-sm" onclick="reloadAll()">Reload</button>
       </div>
     </div>
     <div class="progress"><i id="progBar" style="width:0%"></i></div>
@@ -134,9 +179,44 @@
       <span class="pill">failed <b id="cErr">0</b></span>
       <span class="pill">pending <b id="cPend">0</b></span>
     </div>
+
+    <!-- inline row editor (add / edit) -->
+    <div id="rowEditor" class="card" style="display:none;background:var(--surface2);margin-bottom:14px;">
+      <h3 id="editorTitle">Add device</h3>
+      <div class="form-row">
+        <div class="field field-sm"><label>Site name *</label><input id="eSite" type="text" placeholder="haifa-port"></div>
+        <div class="field field-sm"><label>MAC</label><input id="eMac" type="text" placeholder="optional — filled at the bench"></div>
+        <div class="field field-sm"><label>Label password</label><input id="ePw" type="password" autocomplete="off" placeholder="blank = keep / shared"></div>
+        <div class="field field-sm"><label>Serial</label><input id="eSerial" type="text" placeholder="optional"></div>
+        <div class="field field-sm"><label>IMEI</label><input id="eImei" type="text" placeholder="optional"></div>
+        <div class="field field-sm"><label>eSIM code</label><input id="eEsim" type="text" placeholder="optional LPA string"></div>
+        <div class="field field-sm"><label>Note</label><input id="eNote" type="text" placeholder="optional"></div>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:10px;">
+        <button id="editorSave" class="btn-primary" onclick="saveEditor()">Save</button>
+        <button class="btn-outline" onclick="closeEditor()">Cancel</button>
+      </div>
+    </div>
+
     <table>
-      <thead><tr><th>Status</th><th>Device name</th><th>MAC</th><th>Serial</th><th>FW</th><th>Note</th></tr></thead>
-      <tbody id="manBody"><tr><td colspan="6" class="muted">No manifest loaded. Copy manifest.example.csv &rarr; manifest.csv and click Reload.</td></tr></tbody>
+      <thead><tr><th>Status</th><th>Device name</th><th>MAC</th><th>Serial</th><th>FW</th><th>Note</th><th></th></tr></thead>
+      <tbody id="manBody"><tr><td colspan="7" class="muted">No batch yet. Click “+ Add device”, or plug a device in to capture it.</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- SESSION HISTORY (ad-hoc mode only) -->
+  <div class="card" id="histCard" style="display:none;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <h3 style="margin:0;">This session</h3>
+      <button class="btn-outline btn-sm" onclick="reloadAll()">Reload config</button>
+    </div>
+    <div style="margin-bottom:8px;">
+      <span class="pill">done <b id="hDone">0</b></span>
+      <span class="pill">failed <b id="hErr">0</b></span>
+    </div>
+    <table>
+      <thead><tr><th>Status</th><th>Device name</th><th>MAC</th><th>Serial</th><th>FW</th><th>Took</th><th>Time</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="7" class="muted">No devices configured yet.</td></tr></tbody>
     </table>
   </div>
 
@@ -162,8 +242,13 @@
 
 <script>
 let lastPhase = null;
+let lastFormMac = null;   // clear the device form when a different device is plugged in
+let editId = null;        // null = add, else editing this row id
+let curState = {};
 function $(id){ return document.getElementById(id); }
 function fmtDur(sec){ return Math.floor(sec/60) + ':' + String(sec%60).padStart(2,'0'); }
+function slug(s){ return (s||'').trim().toLowerCase().replace(/[^a-z0-9-]/g,'-').replace(/^-+|-+$/g,''); }
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 function connectWS(){
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -173,24 +258,108 @@ function connectWS(){
   ws.onclose = ()=>{ $('conn').textContent = 'reconnecting…'; setTimeout(connectWS, 1500); };
 }
 
-async function toggleAuto(){
-  await fetch('/api/auto', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({enabled: $('autoToggle').checked})});
+async function post(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body || {})});
+  return r.json();
 }
-async function reloadAll(){ await fetch('/api/reload', {method:'POST'}); }
-async function dismiss(){ await fetch('/api/dismiss', {method:'POST'}); }
-async function configure(){
+
+async function setMode(m){ await post('/api/mode', {mode: m}); }
+async function toggleAuto(){ await post('/api/auto', {enabled: $('autoToggle').checked}); }
+async function reloadAll(){ await post('/api/reload'); }
+async function dismiss(){ await post('/api/dismiss'); }
+
+// status-card button: configure the currently matched batch row (or retry / re-run)
+async function configureMatched(){
   $('configBtn').disabled = true;
-  const r = await fetch('/api/configure', {method:'POST'});
-  const d = await r.json();
+  const d = await post('/api/configure', {});
   if (d.error) alert(d.error);
 }
 
+// device form: ad-hoc Configure, or batch "Save & configure" of an unmatched device
+async function submitConfigure(){
+  const site = $('fSite').value.trim();
+  if (!site){ $('fSite').focus(); return; }
+  $('goBtn').disabled = true; $('saveBatchBtn').disabled = true;
+  const d = await post('/api/configure', {site_name: site, label_password: $('fPw').value});
+  if (d.error){ alert(d.error); $('goBtn').disabled = false; $('saveBatchBtn').disabled = false; }
+}
+
+// batch capture without configuring now: just record the row (with its live MAC)
+async function saveToBatch(){
+  const site = $('fSite').value.trim();
+  if (!site){ $('fSite').focus(); return; }
+  $('saveBatchBtn').disabled = true; $('goBtn').disabled = true;
+  const d = await post('/api/batch/add',
+    {site_name: site, label_password: $('fPw').value, mac: curState.active_mac || ''});
+  if (d.error) alert(d.error);
+  $('saveBatchBtn').disabled = false; $('goBtn').disabled = false;
+}
+
+// ── batch row editor ────────────────────────────────────────────────────────
+function fillEditor(r){
+  $('eSite').value = r ? (r.site_name||'') : '';
+  $('eMac').value  = r ? (r.mac_display||'') : '';
+  $('ePw').value   = '';
+  $('eSerial').value = r ? (r.serial||'') : '';
+  $('eImei').value   = r ? (r.imei||'') : '';
+  $('eEsim').value   = r ? (r.esim_activation_code||'') : '';
+  $('eNote').value   = r ? (r.note||'') : '';
+  $('ePw').placeholder = (r && r.has_password) ? '•••••• (leave blank to keep)' : 'blank = shared password';
+}
+function openAdd(){ editId = null; $('editorTitle').textContent = 'Add device'; fillEditor(null); $('rowEditor').style.display=''; $('eSite').focus(); }
+function openEdit(id){
+  const r = (curState.manifest||[]).find(x=>x.id===id); if(!r) return;
+  editId = id; $('editorTitle').textContent = 'Edit device'; fillEditor(r); $('rowEditor').style.display=''; $('eSite').focus();
+}
+function closeEditor(){ $('rowEditor').style.display='none'; editId = null; }
+async function saveEditor(){
+  const site = $('eSite').value.trim();
+  if (!site){ $('eSite').focus(); return; }
+  const body = {site_name: site, mac: $('eMac').value, label_password: $('ePw').value,
+    serial: $('eSerial').value, imei: $('eImei').value, esim_activation_code: $('eEsim').value,
+    note: $('eNote').value};
+  $('editorSave').disabled = true;
+  let d;
+  if (editId){ body.id = editId; d = await post('/api/batch/edit', body); }
+  else { d = await post('/api/batch/add', body); }
+  $('editorSave').disabled = false;
+  if (d.error){ alert(d.error); return; }
+  closeEditor();
+}
+async function delRow(id, name){
+  if (!confirm(`Remove ${name||'this row'} from the batch?`)) return;
+  const d = await post('/api/batch/delete', {id});
+  if (d.error) alert(d.error);
+}
+
+function updatePreview(){
+  const prefix = curState.name_prefix || 'otd-';
+  const sl = slug($('fSite').value);
+  $('namePreview').innerHTML = sl
+    ? `Will be named <b>${prefix}${sl}</b> (hostname, RMS, Tailscale).` : '';
+  const dup = (curState.history||[]).some(h => h.status==='ok' && h.site_name &&
+    slug(h.site_name) === sl && sl);
+  $('dupHint').innerHTML = dup ? '&#9888; this site name was already used this session' : '&nbsp;';
+  $('dupHint').style.color = dup ? 'var(--yellow)' : '';
+}
+
 function render(s){
+  curState = s;
+  const mode = s.mode || 'adhoc';
+  const batch = mode === 'batch';
+
+  // mode switch + subtitle
+  $('modeAdhoc').classList.toggle('on', !batch);
+  $('modeBatch').classList.toggle('on', batch);
+  $('subTitle').textContent = batch
+    ? 'Batch: plug in → matched by MAC → provisioned → unplug → repeat. Edit the list below.'
+    : 'Plug in → enter site name + label password → configured → unplug → repeat.';
+
   const st = $('status');
   st.className = 'status s-' + s.phase;
-  const labels = { waiting:'Waiting', detected:'Device matched', unmatched:'Unmatched device',
-    configuring:'Configuring…', configured:'Configured ✓', error:'Error' };
+  const labels = { waiting:'Waiting', detected: batch ? 'Device matched' : 'Device detected',
+    unmatched:'Unmatched device', configuring:'Configuring…', configured:'Configured ✓', error:'Error' };
   let phaseLabel = labels[s.phase] || s.phase;
   if (s.phase === 'configuring' && s.run_seconds != null)
     phaseLabel = `Configuring… ${fmtDur(s.run_seconds)}`;
@@ -202,11 +371,11 @@ function render(s){
     : 'dot' + ((s.phase === 'waiting' || s.phase === 'detected') ? ' pulse' : '');
 
   $('conn').classList.toggle('up', !!s.detected);
-  // Configure / Retry / Run again: shown whenever a matched device is plugged
-  // in and idle — covers manual mode, retry-after-error (e.g. no mobile data
-  // in time), and re-running an already-done device.
-  const activeRow = (s.manifest || []).find(r => r.mac === s.active_mac);
-  const showBtn = s.detected && activeRow && !s.busy && s.phase !== 'configuring' &&
+
+  // status-card Configure/Retry/Run-again button — batch mode only, for a matched
+  // device that is idle (manual mode, retry-after-error, or re-running a done row).
+  const activeRow = batch ? (s.manifest || []).find(r => r.mac && r.mac === s.active_mac) : null;
+  const showBtn = batch && s.detected && activeRow && !s.busy && s.phase !== 'configuring' &&
     (s.phase === 'error' || s.phase === 'configured' || !s.auto || activeRow.status !== 'pending');
   $('configBtn').classList.toggle('hidden', !showBtn);
   $('configBtn').textContent = s.phase === 'error' ? 'Retry'
@@ -214,7 +383,27 @@ function render(s){
     : 'Configure';
   $('configBtn').disabled = s.busy;
   $('dismissBtn').classList.toggle('hidden', s.phase !== 'error');
-  $('autoToggle').checked = !!s.auto;
+
+  // device form: ad-hoc (detected) or batch capture (unmatched). Cleared on MAC change.
+  const showForm = !s.busy && ((!batch && s.phase === 'detected') || (batch && s.phase === 'unmatched'));
+  const fc = $('formCard');
+  if (showForm){
+    if (fc.style.display === 'none'){ fc.style.display = ''; setTimeout(()=>$('fSite').focus(), 50); }
+    if (s.active_mac && s.active_mac !== lastFormMac){
+      $('fSite').value = ''; $('fPw').value = ''; updatePreview();
+      lastFormMac = s.active_mac;
+    }
+    $('formTitle').textContent = batch
+      ? `Unmatched device — add to batch (MAC ${s.active_mac || 'unknown'})`
+      : 'New device';
+    $('goBtn').textContent = batch ? 'Save & configure' : 'Configure';
+    $('goBtn').disabled = false;
+    $('saveBatchBtn').classList.toggle('hidden', !batch);
+    $('saveBatchBtn').disabled = false;
+    updatePreview();
+  } else {
+    fc.style.display = 'none';
+  }
 
   // live progress log
   const lc = $('liveCard'), ll = $('liveLog');
@@ -233,76 +422,113 @@ function render(s){
   document.title = (s.phase === 'detected' || s.phase === 'unmatched' ? '● ' : '') + 'OTD500 Configurator';
   lastPhase = s.phase;
 
-  // counts + progress
-  const c = s.counts || {total:0,done:0,error:0,pending:0};
-  $('cTotal').textContent = c.total; $('cDone').textContent = c.done;
-  $('cErr').textContent = c.error; $('cPend').textContent = c.pending;
-  $('progBar').style.width = c.total ? Math.round(100*(c.done)/c.total) + '%' : '0%';
+  // panels: batch table vs ad-hoc session history
+  $('batchCard').style.display = batch ? '' : 'none';
+  $('histCard').style.display = batch ? 'none' : '';
 
-  // manifest table
+  const c = s.counts || {};
+  if (batch){
+    $('cTotal').textContent = c.total||0; $('cDone').textContent = c.done||0;
+    $('cErr').textContent = c.error||0; $('cPend').textContent = c.pending||0;
+    $('progBar').style.width = c.total ? Math.round(100*(c.done||0)/c.total) + '%' : '0%';
+    $('autoToggle').checked = !!s.auto;
+    renderBatch(s);
+  } else {
+    $('hDone').textContent = c.done||0; $('hErr').textContent = c.error||0;
+    renderHistory(s);
+  }
+
+  renderLastResult(s);
+  renderSettings(s);
+}
+
+function renderBatch(s){
   const body = $('manBody');
   const rows = s.manifest || [];
   if (!rows.length){
-    body.innerHTML = '<tr><td colspan="6" class="muted">No manifest loaded. Copy manifest.example.csv &rarr; manifest.csv and click Reload.</td></tr>';
-  } else {
-    const badge = (st)=> st==='done' ? '<span class="badge badge-ok">DONE</span>'
-      : st==='error' ? '<span class="badge badge-err">FAILED</span>'
-      : '<span class="badge badge-pend">pending</span>';
-    body.innerHTML = rows.map(r=>{
-      const isActive = s.active_mac && r.mac === s.active_mac;
-      const name = 'otd-' + (r.site_name||'').toLowerCase().replace(/[^a-z0-9-]/g,'-');
-      const fw = r.result && r.result.firmware ? r.result.firmware : '—';
-      const ser = r.result && r.result.serial ? r.result.serial : '—';
-      return `<tr class="${isActive?'active':''}">
-        <td>${badge(r.status)}</td><td>${name}</td>
-        <td class="mono">${r.mac_display||''}</td>
-        <td class="mono">${ser}</td><td>${fw}</td>
-        <td class="muted">${r.note||''}</td></tr>`;
-    }).join('');
+    body.innerHTML = '<tr><td colspan="7" class="muted">No batch yet. Click “+ Add device”, or plug a device in to capture it.</td></tr>';
+    return;
   }
+  const badge = (st)=> st==='done' ? '<span class="badge badge-ok">DONE</span>'
+    : st==='error' ? '<span class="badge badge-err">FAILED</span>'
+    : '<span class="badge badge-pend">pending</span>';
+  const prefix = s.name_prefix || 'otd-';
+  body.innerHTML = rows.map(r=>{
+    const isActive = s.active_mac && r.mac && r.mac === s.active_mac;
+    const name = prefix + slug(r.site_name);
+    const fw = r.result && r.result.firmware ? r.result.firmware : '—';
+    const ser = (r.result && r.result.serial) ? r.result.serial : (r.serial || '—');
+    const mac = r.mac_display || '<span class="muted">— planned —</span>';
+    return `<tr class="${isActive?'active':''}">
+      <td>${badge(r.status)}</td><td>${esc(name)}</td>
+      <td class="mono">${mac}</td>
+      <td class="mono">${esc(ser)}</td><td>${esc(fw)}</td>
+      <td class="muted">${esc(r.note||'')}</td>
+      <td style="white-space:nowrap;text-align:right;">
+        <button class="btn-outline btn-sm" onclick="openEdit('${r.id}')">Edit</button>
+        <button class="btn-danger btn-sm" onclick="delRow('${r.id}','${esc(name)}')">✕</button>
+      </td></tr>`;
+  }).join('');
+}
 
-  // last result
+function renderHistory(s){
+  const body = $('histBody');
+  const rows = s.history || [];
+  if (!rows.length){
+    body.innerHTML = '<tr><td colspan="7" class="muted">No devices configured yet.</td></tr>';
+    return;
+  }
+  const badge = (st)=> st==='ok' ? '<span class="badge badge-ok">DONE</span>'
+    : '<span class="badge badge-err">FAILED</span>';
+  body.innerHTML = rows.map(r=>`<tr>
+    <td>${badge(r.status)}</td><td>${esc(r.hostname||'')}</td>
+    <td class="mono">${esc(r.mac||'')}</td>
+    <td class="mono">${esc(r.serial||'—')}</td><td>${esc(r.firmware||'—')}</td>
+    <td>${r.duration_s!=null?fmtDur(r.duration_s):'—'}</td>
+    <td class="muted">${esc(r.time||'')}</td></tr>`).join('');
+}
+
+function renderLastResult(s){
   const lr = s.last_result;
-  if (lr){
-    $('resultCard').style.display = '';
-    $('identity').innerHTML = `
-      <span>name <b>${lr.hostname||'—'}</b></span>
-      <span>model <b>${lr.model||'—'}</b></span>
-      <span>serial <b class="mono">${lr.serial||'—'}</b></span>
-      <span>fw <b class="mono">${lr.firmware||'—'}</b></span>
-      <span>imei <b class="mono">${lr.imei||'—'}</b></span>` +
-      (lr.duration_s != null ? `<span>took <b>${fmtDur(lr.duration_s)}</b></span>` : '');
-    const wb = $('warnBox');
-    if (lr.warnings && lr.warnings.length){ wb.textContent = '⚠ ' + lr.warnings.join('  •  '); wb.classList.remove('hidden'); }
-    else wb.classList.add('hidden');
-    const vt = $('verifyTable'), vb = $('verifyBody');
-    if (lr.verification && lr.verification.length){
-      const mark = (ok)=> ok===true ? '<span class="badge badge-ok">PASS</span>'
-        : ok===false ? '<span class="badge badge-err">FAIL</span>'
-        : '<span class="badge badge-pend">skip</span>';
-      vb.innerHTML = lr.verification.map(c=>
-        `<tr><td>${mark(c.ok)} ${c.item}</td><td class="mono">${c.actual}</td></tr>`).join('');
-      vt.classList.remove('hidden');
-    } else vt.classList.add('hidden');
-    const lg = $('lastLog');
-    let txt = lr.log || '';
-    if (lr.error) txt += '\nERROR: ' + lr.error;
-    if (txt.trim()){ lg.textContent = txt.trim(); lg.classList.remove('hidden'); } else lg.classList.add('hidden');
-  } else { $('resultCard').style.display = 'none'; }
+  if (!lr){ $('resultCard').style.display = 'none'; return; }
+  $('resultCard').style.display = '';
+  $('identity').innerHTML = `
+    <span>name <b>${esc(lr.hostname||'—')}</b></span>
+    <span>model <b>${esc(lr.model||'—')}</b></span>
+    <span>serial <b class="mono">${esc(lr.serial||'—')}</b></span>
+    <span>fw <b class="mono">${esc(lr.firmware||'—')}</b></span>
+    <span>imei <b class="mono">${esc(lr.imei||'—')}</b></span>` +
+    (lr.duration_s != null ? `<span>took <b>${fmtDur(lr.duration_s)}</b></span>` : '');
+  const wb = $('warnBox');
+  if (lr.warnings && lr.warnings.length){ wb.textContent = '⚠ ' + lr.warnings.join('  •  '); wb.classList.remove('hidden'); }
+  else wb.classList.add('hidden');
+  const vt = $('verifyTable'), vb = $('verifyBody');
+  if (lr.verification && lr.verification.length){
+    const mark = (ok)=> ok===true ? '<span class="badge badge-ok">PASS</span>'
+      : ok===false ? '<span class="badge badge-err">FAIL</span>'
+      : '<span class="badge badge-pend">skip</span>';
+    vb.innerHTML = lr.verification.map(c=>
+      `<tr><td>${mark(c.ok)} ${esc(c.item)}</td><td class="mono">${esc(c.actual)}</td></tr>`).join('');
+    vt.classList.remove('hidden');
+  } else vt.classList.add('hidden');
+  const lg = $('lastLog');
+  let txt = lr.log || '';
+  if (lr.error) txt += '\nERROR: ' + lr.error;
+  if (txt.trim()){ lg.textContent = txt.trim(); lg.classList.remove('hidden'); } else lg.classList.add('hidden');
+}
 
-  // settings summary
+function renderSettings(s){
   const cfg = s.config || {};
-  if (Object.keys(cfg).length){
-    const fw = cfg.firmware || {}; const rms = cfg.rms || {}; const ts = cfg.tailscale || {};
-    $('settingsSummary').innerHTML = `
-      <span>host <b>${cfg.host||'192.168.1.1'}</b></span>
-      <span>timezone <b>${cfg.timezone||'—'}</b></span>
-      <span>password <b>${cfg.new_password||'(unset)'}</b></span>
-      <span>firmware <b>${fw.mode||'none'}</b></span>
-      <span>4G-only <b>${cfg.sim_4g_only?'yes':'no'}</b></span>
-      <span>RMS <b>${rms.enabled?'on':'off'}</b></span>
-      <span>Tailscale <b>${ts.enabled?'on':'off'}</b></span>`;
-  }
+  if (!Object.keys(cfg).length) return;
+  const fw = cfg.firmware || {}; const rms = cfg.rms || {}; const ts = cfg.tailscale || {};
+  $('settingsSummary').innerHTML = `
+    <span>host <b>${esc(cfg.host||'192.168.1.1')}</b></span>
+    <span>timezone <b>${esc(cfg.timezone||'—')}</b></span>
+    <span>password <b>${esc(cfg.new_password||'(unset)')}</b></span>
+    <span>firmware <b>${esc(fw.mode||'none')}</b></span>
+    <span>4G-only <b>${cfg.sim_4g_only?'yes':'no'}</b></span>
+    <span>RMS <b>${rms.enabled?'on':'off'}</b></span>
+    <span>Tailscale <b>${ts.enabled?'on':'off'}</b></span>`;
 }
 connectWS();
 </script>
