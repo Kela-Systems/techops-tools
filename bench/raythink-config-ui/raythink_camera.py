@@ -29,6 +29,7 @@ through configManager.setConfig. import_config() does the same.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -118,6 +119,7 @@ class RaythinkCameraClient:
         self.password: Optional[str] = None
         self.encryption = "Default"
         self.realm = ""
+        self.hash_uppercase = True   # which hex case the device accepted at login
 
     # --- transport ----------------------------------------------------------
     def _port(self) -> int:
@@ -197,6 +199,7 @@ class RaythinkCameraClient:
             if second.get("result"):
                 self.session = second.get("session", self.session) or self.session
                 self.password = password
+                self.hash_uppercase = uppercase
                 log.info("Logged in as '%s' (encryption=%s, hex=%s).",
                          self.username, self.encryption, "UPPER" if uppercase else "lower")
                 return
@@ -259,15 +262,58 @@ class RaythinkCameraClient:
         return identity
 
     # --- password -----------------------------------------------------------
+    def _stored_hash(self, password: str, uppercase: bool) -> str:
+        """The form Dahua stores a credential in: MD5(user:realm:password) hex
+        (case per firmware), or Base64(user:password) for Basic auth. This is
+        what userManager.modifyPassword/addUser expect in pwd/pwdOld — NOT the
+        plaintext, and NOT the random-salted login hash."""
+        u = self.username
+        if self.encryption == "Basic":
+            return base64.b64encode(f"{u}:{password}".encode("utf-8")).decode("ascii")
+        h = _sha256 if self.encryption == "DigestSHA256" else _md5
+        digest = h(f"{u}:{self.realm}:{password}")
+        return digest.upper() if uppercase else digest
+
+    def _password_forms(self, new_pw: str, old_pw: str) -> list[tuple[str, str, str]]:
+        """(pwd, pwdOld, label) candidates for modifyPassword, best guess first:
+        the realm hash in the hex case login used, the other case, then plaintext
+        (some firmwares accept it). Both fields always use the same form."""
+        out: list[tuple[str, str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for up in (self.hash_uppercase, not self.hash_uppercase):
+            pair = (self._stored_hash(new_pw, up), self._stored_hash(old_pw, up))
+            if pair not in seen:
+                seen.add(pair)
+                out.append((*pair, f"md5 {'UPPER' if up else 'lower'}"))
+        if (new_pw, old_pw) not in seen:
+            out.append((new_pw, old_pw, "plaintext"))
+        return out
+
     def modify_password(self, new_password: str, old_password: str) -> None:
         """Change the admin password and re-login under it. Idempotent: if we are
-        already authenticated on new_password, do nothing."""
+        already authenticated on new_password, do nothing. The device wants the
+        passwords hashed (error 611 on plaintext), so we try the hashed form
+        first and fall back; only the correct form succeeds, so retrying is
+        safe."""
         if self.password == new_password:
             log.info("Password already set to the target; skipping.")
             return
         log.info("Changing the admin password ...")
-        self._rpc("userManager.modifyPassword",
-                  {"name": self.username, "pwd": new_password, "pwdOld": old_password})
+        last_err: dict = {}
+        for pwd, pwd_old, label in self._password_forms(new_password, old_password):
+            resp = self._rpc("userManager.modifyPassword",
+                             {"name": self.username, "pwd": pwd, "pwdOld": pwd_old},
+                             raise_on_error=False)
+            if resp.get("result"):
+                log.info("Password change accepted (form=%s).", label)
+                break
+            last_err = (resp.get("error", {}) or {})
+            log.info("Password change rejected for form=%s (%s %s); trying next.",
+                     label, last_err.get("code"), last_err.get("message", ""))
+        else:
+            raise CameraError(
+                f"userManager.modifyPassword failed: "
+                f"{last_err.get('code')} {last_err.get('message', '')}".strip())
         # The session usually survives, but re-login to be certain everything
         # downstream runs under the new password.
         self.password = new_password
