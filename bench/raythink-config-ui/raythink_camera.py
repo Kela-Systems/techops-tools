@@ -14,8 +14,9 @@ Protocol, reverse-engineered from the camera's own scripts:
          "login challenge!") with {realm, random, encryption, session}.
       2. global.login again, password =
              MD5( user:random:MD5(user:realm:password) )   (encryption "Default")
-         carrying the session + authorityType. Lowercase hex, exactly as the
-         web's getAuth() computes it.
+         carrying the session + authorityType. Dahua's getAuth() uses UPPERCASE
+         hex on most firmwares (a few use lowercase), so login() tries UPPER
+         first and falls back to lower before giving up.
   * Every later call is POST /RPC2 with {method, params, id, session}; success
     is a truthy "result". configManager.getConfig({name}) -> params.table;
     configManager.setConfig({name, table, options:[]}) writes it back.
@@ -145,52 +146,72 @@ class RaythinkCameraClient:
         return data
 
     # --- auth ---------------------------------------------------------------
-    def _auth_hash(self, password: str, realm: str, random: str, encryption: str) -> str:
+    def _auth_hash(self, password: str, realm: str, random: str, encryption: str,
+                   uppercase: bool = True) -> str:
+        """Compute the RPC2 login hash. Dahua's getAuth() hashes
+        user:realm:password, then user:random:<that>, in hex. The hex *case*
+        differs by firmware, so the caller picks UPPER or lower."""
         u = self.username
-        if encryption == "Default":
-            return _md5(f"{u}:{random}:{_md5(f'{u}:{realm}:{password}')}")
-        if encryption == "DigestSHA256":
-            return _sha256(f"{u}:{random}:{_sha256(f'{u}:{realm}:{password}')}")
-        # "Basic" / unknown: fall back to the raw password (over HTTPS only).
-        return password
+        if encryption == "Basic":  # raw password (HTTPS only); case is moot
+            return password
+        h = _sha256 if encryption == "DigestSHA256" else _md5
+        inner = h(f"{u}:{realm}:{password}")
+        if uppercase:
+            inner = inner.upper()
+        outer = h(f"{u}:{random}:{inner}")
+        return outer.upper() if uppercase else outer
 
-    def login(self, password: str) -> None:
-        """Two-step RPC2 login. Stores the session + the working password.
-        Raises CameraError on failure (with a clear message for a locked
-        account)."""
+    def _challenge(self) -> dict:
+        """Fire the empty-password global.login to get {realm, random,
+        encryption, session}. The random is single-use on some firmwares, so we
+        re-challenge for every hash attempt."""
         first = self._rpc("global.login",
                           {"userName": self.username, "password": "",
                            "clientType": "Web3.0", "loginType": "Direct"},
                           url="/RPC2_Login", session=0, raise_on_error=False)
-        p = first.get("params", {}) or {}
         self.session = first.get("session", 0) or 0
-        first_err = (first.get("error", {}) or {}).get("code")
-        if first_err == ERR_LOCKED:
+        if (first.get("error", {}) or {}).get("code") == ERR_LOCKED:
             raise CameraError("Account is locked (too many failed logins) — wait ~5 min, then retry.")
+        p = first.get("params", {}) or {}
         self.encryption = p.get("encryption", "Default")
         self.realm = p.get("realm", "") or self.realm
-        random = p.get("random", "")
-        if not random:
+        if not p.get("random"):
             raise CameraError(f"No login challenge from the device: {first.get('error') or first}")
+        return p
 
-        auth = self._auth_hash(password, self.realm, random, self.encryption)
-        second = self._rpc("global.login",
-                          {"userName": self.username, "password": auth,
-                           "clientType": "Web3.0", "loginType": "Direct",
-                           "authorityType": self.encryption},
-                          url="/RPC2_Login", raise_on_error=False)
-        if not second.get("result"):
+    def login(self, password: str) -> None:
+        """Two-step RPC2 login. Stores the session + the working password. Dahua
+        firmwares disagree on the hash's hex case, so we try UPPER (the common
+        case) then lower before concluding the password is wrong. Raises
+        CameraError on failure (with a clear message for a locked account)."""
+        last_code = None
+        last_raw = None
+        for uppercase in (True, False):
+            p = self._challenge()
+            auth = self._auth_hash(password, self.realm, p["random"], self.encryption, uppercase)
+            second = self._rpc("global.login",
+                              {"userName": self.username, "password": auth,
+                               "clientType": "Web3.0", "loginType": "Direct",
+                               "authorityType": self.encryption},
+                              url="/RPC2_Login", raise_on_error=False)
+            if second.get("result"):
+                self.session = second.get("session", self.session) or self.session
+                self.password = password
+                log.info("Logged in as '%s' (encryption=%s, hex=%s).",
+                         self.username, self.encryption, "UPPER" if uppercase else "lower")
+                return
             code = (second.get("error", {}) or {}).get("code")
+            last_code, last_raw = code, (second.get("error") or second)
             if code == ERR_LOCKED:
                 raise CameraError("Account is locked (too many failed logins) — wait ~5 min, then retry.")
             if code == ERR_USER_INVALID:
                 raise CameraError(f"Login failed: user '{self.username}' not valid.")
-            if code == ERR_PASSWORD_INVALID:
-                raise CameraError("Login failed: wrong password.")
-            raise CameraError(f"Login failed: {second.get('error') or second}")
-        self.session = second.get("session", self.session) or self.session
-        self.password = password
-        log.info("Logged in as '%s' (encryption=%s).", self.username, self.encryption)
+            if self.encryption == "Basic":
+                break  # hex case is irrelevant for Basic auth; no point retrying
+
+        if last_code == ERR_PASSWORD_INVALID:
+            raise CameraError("Login failed: wrong password (device rejected the hash for both hex cases).")
+        raise CameraError(f"Login failed: {last_raw}")
 
     def close(self) -> None:
         if self.password is not None:
