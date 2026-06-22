@@ -7,9 +7,9 @@ for one camera (one at a time — the profile and the final IP octet are chosen 
 the UI / on the CLI):
 
   login(admin/admin) -> set password "Kelafield123!" -> import config profile
-    (LAN or Cellular) -> set NTP 192.168.88.10 -> set static IP 192.168.88.XX
-    (LAST — drops the connection; confirmed by reaching the camera on the new
-    address) -> verify
+    (LAN or Cellular) -> set NTP 192.168.88.10 + sync clock to PC time -> set
+    static IP 192.168.88.XX (LAST — drops the connection; confirmed by reaching
+    the camera on the new address) -> verify
 
 The IP move runs last for the same reason as the RUTM08 LAN move: the moment it
 applies, the camera leaves 192.168.1.123. Because a full config import can reset
@@ -130,8 +130,11 @@ def configure_camera(client: RaythinkCameraClient, *, profile_name: str,
 
     _step("import-config", do_import)
 
-    # 4. NTP.
+    # 4. Date & Time: point NTP at the bench server AND sync the clock to the
+    # PC now (the web UI's "Sync to PC time" button), so the camera has the right
+    # time immediately even before its first NTP poll.
     _step("ntp", lambda: client.set_ntp(ntp_server))
+    _step("sync-time", client.sync_time_to_pc)
 
     # 5. Static IP — LAST. After this the camera answers on target_ip, not
     # 192.168.1.123. set_static_ip never raises after the write; it returns a

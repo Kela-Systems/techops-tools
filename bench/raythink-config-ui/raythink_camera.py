@@ -36,6 +36,7 @@ import logging
 import socket
 import sys
 import time
+from datetime import datetime
 from typing import Optional
 
 try:
@@ -419,6 +420,24 @@ class RaythinkCameraClient:
         table["UpdatePeriod"] = int(update_period)
         self._rpc("configManager.setConfig", {"name": "NTP", "table": table, "options": []})
         log.info("NTP set.")
+
+    def sync_time_to_pc(self) -> None:
+        """Set the camera clock to this PC's current local time — the web UI's
+        Setup > System > General > Date & Time 'Sync to PC' button. Dahua RPC is
+        global.setCurrentTime {"time": "YYYY-MM-DD HH:MM:SS"} (local wall clock,
+        like the browser sends). Tries the plain form, then with a tolerance, to
+        cover firmware variants."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log.info("Syncing the camera clock to PC time (%s) ...", now)
+        resp = self._rpc("global.setCurrentTime", {"time": now}, raise_on_error=False)
+        if not resp.get("result"):
+            resp = self._rpc("global.setCurrentTime", {"time": now, "tolerance": 5},
+                             raise_on_error=False)
+        if not resp.get("result"):
+            err = resp.get("error", {}) or {}
+            raise CameraError(f"setCurrentTime failed: "
+                              f"{err.get('code')} {err.get('message', '')}".strip())
+        log.info("Camera clock set to %s.", now)
 
     # --- static IP (LAST: drops the connection) -----------------------------
     def set_static_ip(self, ip: str, netmask: str, gateway: str, wait: int = 120) -> dict:
