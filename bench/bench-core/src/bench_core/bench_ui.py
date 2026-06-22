@@ -386,9 +386,38 @@ class BenchConfigurator:
     def dismiss_message(self) -> str:
         return "Plug in the next device…"
 
+    def _install_loop_exception_handler(self) -> None:
+        """Silence the spurious 'forcibly closed' tracebacks Windows logs when a
+        browser drops a connection mid-flight.
+
+        Each page polls /api/state and holds a 1s-cadence WebSocket, and the
+        launcher dashboard fires an aborting no-cors fetch at every port every
+        few seconds — so tabs closing, refreshes, and reconnects routinely reset
+        connections the server hasn't finished writing to. On Windows asyncio's
+        ProactorEventLoop reports that as `ConnectionResetError: [WinError 10054]`
+        straight to the loop's default exception handler, dumping a noisy (but
+        harmless) traceback. We drop just that case and defer everything else to
+        the default handler so real errors are untouched."""
+        loop = asyncio.get_running_loop()
+        default_handler = loop.get_exception_handler()
+
+        def handler(lp, context):
+            exc = context.get("exception")
+            # WinError 10054 surfaces as ConnectionResetError; also catch the
+            # broader ConnectionError family (aborted/closed) from a dropped peer.
+            if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)):
+                return
+            if default_handler is not None:
+                default_handler(lp, context)
+            else:
+                lp.default_exception_handler(context)
+
+        loop.set_exception_handler(handler)
+
     def build_app(self) -> FastAPI:
         @contextlib.asynccontextmanager
         async def lifespan(_app: FastAPI):
+            self._install_loop_exception_handler()
             poller = asyncio.create_task(self._poll_loop())
             try:
                 yield
