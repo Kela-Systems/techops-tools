@@ -33,10 +33,12 @@ import base64
 import hashlib
 import json
 import logging
+import os
+import re
 import socket
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 try:
@@ -510,11 +512,106 @@ class RaythinkCameraClient:
         return {"item": "static IP", "expected": ip,
                 "actual": f"no answer on {ip} after {wait}s (laptop subnet?)", "ok": False}
 
+    # --- ONVIF (a SEPARATE credential store from the system user) -----------
+    # IMPORTANT: ONVIF keeps its own credential, distinct from the system/web
+    # account. ONVIF PasswordDigest = Base64(SHA1(nonce+created+password)) needs
+    # the device to hold a recoverable password, which the system account (stored
+    # as MD5(user:realm:pass)) is not — so userManager.modifyPassword does NOT
+    # change the ONVIF password. Verified on a live unit: a normally-provisioned
+    # camera still had ONVIF admin/admin after its web password became the target.
+    # We therefore set it explicitly over the standard ONVIF SetUser op.
+    _ONVIF_WSSE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
+    _ONVIF_WSU = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"
+    _ONVIF_T_DIGEST = ("http://docs.oasis-open.org/wss/2004/01/"
+                       "oasis-200401-wss-username-token-profile-1.0#PasswordDigest")
+    _ONVIF_T_B64 = ("http://docs.oasis-open.org/wss/2004/01/"
+                    "oasis-200401-wss-soap-message-security-1.0#Base64Binary")
+    _ONVIF_DEVICE_NS = "http://www.onvif.org/ver10/device/wsdl"
+
+    @staticmethod
+    def _xml_escape(text: str) -> str:
+        return (text.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+    def _onvif_call(self, password: str, body_xml: str, action: str) -> tuple[Optional[int], str]:
+        """One authenticated ONVIF SOAP call to the device service. Returns
+        (http_status, response_text); status is None on a transport error."""
+        url = f"{self.scheme}://{self.host}/onvif/device_service"
+        nonce = os.urandom(16)
+        created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        digest = base64.b64encode(
+            hashlib.sha1(nonce + created.encode() + password.encode()).digest()).decode()
+        env = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+            f'xmlns:tds="{self._ONVIF_DEVICE_NS}" xmlns:tt="http://www.onvif.org/ver10/schema">'
+            f'<s:Header><Security s:mustUnderstand="1" xmlns="{self._ONVIF_WSSE}"><UsernameToken>'
+            f'<Username>{self._xml_escape(self.username)}</Username>'
+            f'<Password Type="{self._ONVIF_T_DIGEST}">{digest}</Password>'
+            f'<Nonce EncodingType="{self._ONVIF_T_B64}">{base64.b64encode(nonce).decode()}</Nonce>'
+            f'<Created xmlns="{self._ONVIF_WSU}">{created}</Created>'
+            '</UsernameToken></Security></s:Header>'
+            f'<s:Body>{body_xml}</s:Body></s:Envelope>')
+        try:
+            r = self.s.post(url, data=env.encode("utf-8"),
+                            headers={"Content-Type": "application/soap+xml; charset=utf-8; "
+                                     f'action="{action}"'},
+                            timeout=self.timeout)
+        except requests.exceptions.RequestException as e:
+            return None, f"request failed ({e})"
+        return r.status_code, (r.text or "")
+
+    def onvif_get_users(self, password: str) -> tuple[bool, str, list[str]]:
+        """Authenticated ONVIF GetUsers. Proves the ONVIF credential works and
+        returns the ONVIF user list. Returns (ok, detail, usernames)."""
+        code, text = self._onvif_call(password, "<tds:GetUsers/>",
+                                      f"{self._ONVIF_DEVICE_NS}/GetUsers")
+        if code == 200 and "GetUsersResponse" in text:
+            users = re.findall(r"Username>([^<]+)<", text)
+            return True, f"authenticated (users: {', '.join(users) or '?'})", users
+        if code is None:
+            return False, f"ONVIF {text}", []
+        if "NotAuthorized" in text:
+            return False, "ONVIF rejected the credentials (NotAuthorized)", []
+        return False, f"unexpected ONVIF reply (HTTP {code}): {text[:120]}", []
+
+    def set_onvif_password(self, new_password: str, current_candidates: list[str]) -> None:
+        """Set the ONVIF 'admin' user's password to new_password via the standard
+        ONVIF SetUser op (the web UI's Setup > System > Account > ONVIF User).
+        Idempotent: if ONVIF already authenticates on new_password, do nothing.
+        Otherwise authenticate with the first working candidate (the factory ONVIF
+        password is 'admin') and change it. Raises CameraError on failure."""
+        ok, _detail, _users = self.onvif_get_users(new_password)
+        if ok:
+            log.info("ONVIF password already set to the target; skipping.")
+            return
+        current = None
+        for pw in [p for p in current_candidates if p]:
+            ok, _d, _u = self.onvif_get_users(pw)
+            if ok:
+                current = pw
+                break
+        if current is None:
+            raise CameraError(
+                "could not authenticate ONVIF with any known password (tried: "
+                + ", ".join(repr(p) for p in current_candidates if p) + ")")
+        log.info("Setting the ONVIF admin password ...")
+        body = (f"<tds:SetUser><tds:User><tt:Username>{self._xml_escape(self.username)}</tt:Username>"
+                f"<tt:Password>{self._xml_escape(new_password)}</tt:Password>"
+                f"<tt:UserLevel>Administrator</tt:UserLevel></tds:User></tds:SetUser>")
+        code, text = self._onvif_call(current, body, f"{self._ONVIF_DEVICE_NS}/SetUser")
+        if not (code == 200 and "SetUserResponse" in text):
+            raise CameraError(f"ONVIF SetUser failed (HTTP {code}): {text[:160]}")
+        ok, detail, _u = self.onvif_get_users(new_password)
+        if not ok:
+            raise CameraError(f"ONVIF password did not take after SetUser: {detail}")
+        log.info("ONVIF password set (%s).", detail)
+
     # --- verification -------------------------------------------------------
     def verify_configuration(self, *, new_password: str, ntp_server: str,
                              ip: str, netmask: str, gateway: str,
-                             profile_name: str = "", imported: Optional[dict] = None
-                             ) -> list[dict]:
+                             profile_name: str = "", imported: Optional[dict] = None,
+                             check_onvif: bool = True) -> list[dict]:
         """Re-read the settings we changed and confirm they took. Runs AFTER the
         IP move, so it talks to the device on its new address (we are already
         re-pointed there). Returns {item, expected, actual, ok} rows."""
@@ -527,6 +624,12 @@ class RaythinkCameraClient:
         add("admin password", new_password,
             "in use" if self.password == new_password else (self.password or "unknown"),
             self.password == new_password)
+
+        # ONVIF user: a separate credential we set explicitly; confirm it answers
+        # an authenticated ONVIF call with admin/new_password.
+        if check_onvif:
+            ok, detail, _users = self.onvif_get_users(new_password)
+            add(f"ONVIF login ({self.username})", new_password, detail, ok)
 
         if profile_name:
             applied = len((imported or {}).get("applied", []))

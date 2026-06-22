@@ -8,6 +8,7 @@ the UI / on the CLI):
 
   login(admin/admin) -> set password "Kelafield123!" -> import config profile
     (LAN or Cellular) -> set NTP 192.168.88.10 + sync clock to PC time -> set
+    the ONVIF user password (separate credential, via ONVIF SetUser) -> set
     static IP 192.168.88.XX (LAST — drops the connection; confirmed by reaching
     the camera on the new address) -> verify
 
@@ -135,6 +136,12 @@ def configure_camera(client: RaythinkCameraClient, *, profile_name: str,
     # time immediately even before its first NTP poll.
     _step("ntp", lambda: client.set_ntp(ntp_server))
     _step("sync-time", client.sync_time_to_pc)
+
+    # 4b. ONVIF user — a SEPARATE credential from the web/system account, so the
+    # password change above does not touch it. Set it over ONVIF SetUser; the
+    # factory ONVIF password is the same default as the web login ('admin').
+    _step("onvif-user",
+          lambda: client.set_onvif_password(new_pw, [initial_pw, "admin", new_pw]))
 
     # 5. Static IP — LAST. After this the camera answers on target_ip, not
     # 192.168.1.123. set_static_ip never raises after the write; it returns a
