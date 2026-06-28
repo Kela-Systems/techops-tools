@@ -169,6 +169,13 @@
   }
   .auto-row.on { border-color: var(--accent); background: var(--blue-bg); }
   .auto-row .title { font-weight: 600; }
+  .cycle-start { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+  .cycle-start label { font-size: .72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+  .cycle-start select {
+    background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 10px; font-size: .9rem;
+  }
+  .cycle-start select:disabled { opacity: .5; }
 
   /* Radar identity strip */
   .identity { display: flex; gap: 18px; flex-wrap: wrap; font-size: .85rem; margin-top: 12px; }
@@ -204,7 +211,11 @@
       <label class="switch"><input type="checkbox" id="cycleToggle" onchange="toggleCycle()"><span class="slider"></span></label>
       <div style="flex:1;">
         <div class="title">Cycle mode <span class="muted" style="font-weight:400;">(groups of 4)</span></div>
-        <div class="muted" id="cycleHint">Start a cycle — the 1st radar you plug in becomes channel 0, the 2nd channel 1, and so on, wrapping back to 0 after 4.</div>
+        <div class="muted" id="cycleHint">Start a cycle — the 1st radar you plug in becomes the start channel, the next the channel after it, and so on, wrapping back around after 4.</div>
+      </div>
+      <div class="cycle-start">
+        <label for="cycleStart">Start at</label>
+        <select id="cycleStart" onchange="updateCycleHint()"></select>
       </div>
     </div>
 
@@ -320,6 +331,19 @@ function buildChannels() {
   other.innerHTML = `<div class="n">⋯</div><div class="ip">manual IP</div>`;
   other.onclick = () => selectChannel('other');
   wrap.appendChild(other);
+
+  const start = $('cycleStart');
+  if (start) {
+    const prev = start.value;
+    start.innerHTML = '';
+    Object.keys(channelIps).forEach(ch => {
+      const opt = document.createElement('option');
+      opt.value = ch;
+      opt.textContent = `channel ${ch}`;
+      start.appendChild(opt);
+    });
+    if (prev && channelIps[prev] !== undefined) start.value = prev;
+  }
 }
 
 function selectChannel(ch) {
@@ -356,10 +380,20 @@ function toggleAuto() {
   armAuto(enabled);
 }
 
+function updateCycleHint() {
+  const cycle = (window._state && window._state.cycle) || { enabled: false };
+  if (cycle.enabled) return;   // running-cycle hint is owned by render()
+  const start = $('cycleStart').value || '0';
+  $('cycleHint').textContent =
+    `Start a cycle at channel ${start} — each radar you plug in takes the next channel, wrapping back around after 4.`;
+}
+
 async function toggleCycle() {
   const enabled = $('cycleToggle').checked;
+  const body = { enabled };
+  if (enabled) body.start_channel = $('cycleStart').value;
   const r = await fetch('/api/cycle', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled })
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   });
   const data = await r.json();
   if (data.error) { alert(data.error); $('cycleToggle').checked = false; }
@@ -435,14 +469,17 @@ function render(s) {
   // auto + cycle are mutually exclusive — grey out the other while one is on.
   $('autoToggle').disabled = !!cycle.enabled;
   $('cycleToggle').disabled = !!auto.enabled;
+  // The start channel is locked while a cycle is running (or auto is on).
+  $('cycleStart').disabled = !!cycle.enabled || !!auto.enabled;
   $('autoRow').style.opacity = cycle.enabled ? '.45' : '';
   if (cycle.enabled) {
-    const nxt = String(cycle.index);
+    const nxt = Object.keys(channelIps)[cycle.index] ?? String(cycle.index);
     $('cycleHint').textContent =
       `Cycle ON — next radar → channel ${nxt} (${channelIps[nxt]}). ${cycle.count} configured so far.`;
   } else {
+    const start = $('cycleStart').value || '0';
     $('cycleHint').textContent =
-      'Start a cycle — the 1st radar you plug in becomes channel 0, the 2nd channel 1, and so on, wrapping back to 0 after 4.';
+      `Start a cycle at channel ${start} — each radar you plug in takes the next channel, wrapping back around after 4.`;
   }
   // highlight the channel the next radar will get
   document.querySelectorAll('.chan').forEach(c => {

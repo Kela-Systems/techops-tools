@@ -166,6 +166,25 @@ def test_auto_and_cycle_are_mutually_exclusive():
     assert radar.state["auto"]["enabled"] is False
 
 
+def test_cycle_defaults_to_channel_zero():
+    radar.set_cycle(True)
+    assert radar.state["cycle"]["index"] == 0
+    radar.set_cycle(False)
+
+
+def test_cycle_starts_from_requested_channel():
+    radar.set_cycle(True, start_channel="2")
+    assert radar.state["cycle"]["enabled"] is True
+    assert radar.state["cycle"]["index"] == radar.cycle_channels.index("2")
+    radar.set_cycle(False)
+
+
+def test_cycle_rejects_unknown_start_channel():
+    res = radar.set_cycle(True, start_channel="9")
+    assert "error" in res
+    assert radar.state["cycle"]["enabled"] is False
+
+
 @pytest.fixture
 def clock(monkeypatch):
     """A controllable monotonic clock so idle-timeout tests don't really wait."""

@@ -83,6 +83,7 @@ class AutoBody(BaseModel):
 
 class CycleBody(BaseModel):
     enabled: bool
+    start_channel: Optional[str] = None
 
 
 class ApuBench(MagosBench):
@@ -211,7 +212,7 @@ class ApuBench(MagosBench):
 
         @app.post("/api/cycle")
         async def set_cycle(body: CycleBody):
-            return self.set_cycle(body.enabled)
+            return self.set_cycle(body.enabled, body.start_channel)
 
     def print_banner(self) -> None:
         print(f"  factory IP   : {self._hosts_str()}  (your laptop must be on that subnet)")

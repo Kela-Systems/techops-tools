@@ -409,12 +409,20 @@ class MagosBench:
             self.state["message"] = self._idle_message("Auto mode off.")
         return self.public_state()
 
-    def set_cycle(self, enabled: bool) -> dict:
+    def set_cycle(self, enabled: bool, start_channel: Optional[str] = None) -> dict:
         if enabled:
+            channels = self.cycle_channels
+            start_index = 0
+            if start_channel not in (None, ""):
+                sc = str(start_channel).strip()
+                if sc not in channels:
+                    return {"error": f"Unknown start channel '{sc}'. "
+                                     f"Pick one of: {', '.join(channels)}."}
+                start_index = channels.index(sc)
             self._last_activity = self._now()       # arm restarts the idle clock
-            self.state["cycle"] = {"enabled": True, "index": 0, "count": 0}
+            self.state["cycle"] = {"enabled": True, "index": start_index, "count": 0}
             self.state["auto"] = self._initial_auto()
-            first = self.cycle_channels[0]
+            first = channels[start_index]
             self.state["message"] = self._cycle_start_message(first)
         else:
             self.state["cycle"]["enabled"] = False
