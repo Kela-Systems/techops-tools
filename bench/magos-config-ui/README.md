@@ -74,6 +74,11 @@ configured to it automatically.
 Both modes refuse to reconfigure the same unit if it briefly reappears on the
 factory IP (matched by serial number) — so unplug each one before the next.
 
+Both modes also disarm themselves automatically after **10 minutes with nothing
+plugged in**, so a mode left on by mistake won't silently reconfigure a unit
+that gets plugged in much later. The dashboard shows a message when this
+happens; just toggle the mode back on to resume.
+
 ## Command-line use
 
 Both device clients also run standalone, without the web UI:

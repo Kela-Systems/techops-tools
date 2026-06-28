@@ -5,11 +5,14 @@ device, so they run with no hardware and no network. Run with:
     .venv/bin/python -m pytest
 """
 import asyncio
+import contextlib
+from types import SimpleNamespace
 
 import pytest
 
 import app as radar_mod
-from magos_bench import MISS_THRESHOLD
+import magos_bench
+from magos_bench import AUTO_IDLE_TIMEOUT_SEC, MISS_THRESHOLD
 
 radar = radar_mod.configurator
 
@@ -161,6 +164,79 @@ def test_auto_and_cycle_are_mutually_exclusive():
     assert radar.state["cycle"]["enabled"] is False
     radar.set_cycle(True)
     assert radar.state["auto"]["enabled"] is False
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """A controllable monotonic clock so idle-timeout tests don't really wait."""
+    now = {"t": 1000.0}
+    monkeypatch.setattr(radar, "_now", lambda: now["t"])
+    radar._last_activity = now["t"]
+    return now
+
+
+def test_auto_mode_disarms_after_idle(clock):
+    radar.state["auto"] = {"enabled": True, "channel": "0", "ip": None}
+    poll(None)                                  # idle, but not long enough yet
+    assert radar.state["auto"]["enabled"] is True
+    clock["t"] += AUTO_IDLE_TIMEOUT_SEC
+    poll(None)
+    assert radar.state["auto"]["enabled"] is False
+    assert radar.state["phase"] == "waiting"
+
+
+def test_cycle_mode_disarms_after_idle(clock):
+    radar.state["cycle"] = {"enabled": True, "index": 2, "count": 2}
+    clock["t"] += AUTO_IDLE_TIMEOUT_SEC
+    poll(None)
+    assert radar.state["cycle"]["enabled"] is False
+    assert radar.state["phase"] == "waiting"
+
+
+def test_device_presence_resets_idle_timer(clock, device):
+    radar.state["auto"] = {"enabled": True, "channel": "0", "ip": None}
+    clock["t"] += AUTO_IDLE_TIMEOUT_SEC - 1     # almost timed out...
+    poll(HOST)                                  # ...but a unit shows up: activity
+    unplug()
+    clock["t"] += AUTO_IDLE_TIMEOUT_SEC - 1     # not enough since that activity
+    poll(None)
+    assert radar.state["auto"]["enabled"] is True
+
+
+def test_closing_last_tab_stops_server(monkeypatch):
+    monkeypatch.setattr(magos_bench, "SHUTDOWN_GRACE_SEC", 0.01)
+
+    async def scenario():
+        radar._clients = 0
+        radar._shutdown_task = None
+        radar._server = SimpleNamespace(should_exit=False)
+        radar._note_client_connect()        # tab opened
+        radar._note_client_disconnect()     # tab closed — arms the timer
+        await radar._shutdown_task           # let the grace window elapse
+        return radar._server.should_exit
+
+    assert asyncio.run(scenario()) is True
+
+
+def test_refresh_does_not_stop_server(monkeypatch):
+    monkeypatch.setattr(magos_bench, "SHUTDOWN_GRACE_SEC", 0.05)
+
+    async def scenario():
+        radar._clients = 0
+        radar._shutdown_task = None
+        radar._server = SimpleNamespace(should_exit=False)
+        radar._note_client_connect()        # tab opened
+        radar._note_client_disconnect()     # refresh drops the socket...
+        pending = radar._shutdown_task
+        radar._note_client_connect()        # ...and reconnects right away
+        with contextlib.suppress(asyncio.CancelledError):
+            await pending                    # the armed stop was cancelled
+        await asyncio.sleep(0.1)             # well past the old grace window
+        return radar._server.should_exit, radar._clients
+
+    should_exit, clients = asyncio.run(scenario())
+    assert should_exit is False
+    assert clients == 1
 
 
 def test_configure_route_rejects_when_not_detected():
