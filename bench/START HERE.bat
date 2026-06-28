@@ -18,6 +18,20 @@ REM ===========================================================================
 setlocal
 cd /d "%~dp0"
 
+REM ── Pull the latest tools before launching (best-effort) ───────────────────
+REM The repo root is one level up from this bench\ folder. If git is missing or
+REM the pull fails (offline, or local edits block a fast-forward), we warn and
+REM start whatever is already on disk rather than blocking the bench.
+where git >nul 2>nul
+if errorlevel 1 (
+  echo [skip] git not found on PATH - launching the version already on disk.
+) else (
+  echo Updating to the latest bench tools ^(git pull^)...
+  git -C "%~dp0.." pull --ff-only
+  if errorlevel 1 echo [warn] git pull failed ^(offline, or local changes^) - launching what's on disk.
+)
+echo.
+
 REM Tell each tool not to open its own browser tab - this launcher opens the
 REM dashboard (which links to all four) instead.
 set "BENCH_NO_BROWSER=1"
