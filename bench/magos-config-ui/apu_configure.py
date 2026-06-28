@@ -128,9 +128,12 @@ class APUClient:
 
     # --- identity -----------------------------------------------------------
     def get_identity(self) -> dict:
+        # /systemStatus is where serial+model live on this firmware family (same
+        # as the radar on SW 3.x); the rest are best-effort fallbacks.
         return fetch_identity(
             self.s, self.base, self.timeout,
-            paths=("/system", "/networking", "/phoenix_ip", "/about", "/device", "/info"),
+            paths=("/systemStatus", "/system", "/networking", "/phoenix_ip",
+                   "/about", "/device", "/info"),
             label="APU",
         )
 

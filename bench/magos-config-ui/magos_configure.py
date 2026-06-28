@@ -312,6 +312,16 @@ def fetch_identity(session, base: str, timeout: int, paths=("/systemStatus", "/s
     set_log_serial(identity["serial"])
     log.info("%s identity: model=%s  serial=%s  MAC=%s",
              label, identity["model"], identity["serial"], identity["mac"])
+    # When nothing matched, surface what the device DID return so the schema can
+    # be discovered from the logs without another live capture.
+    if identity["serial"] == identity["mac"] == identity["model"] == "unknown":
+        if raw:
+            for path, payload in raw.items():
+                keys = list(payload) if isinstance(payload, dict) else f"<{type(payload).__name__}>"
+                log.warning("identity: %s answered but no known fields; top-level keys: %s",
+                            path, keys)
+        else:
+            log.warning("identity: no endpoint returned JSON (tried: %s).", ", ".join(paths))
     return identity
 
 
