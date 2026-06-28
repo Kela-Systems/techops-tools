@@ -154,7 +154,10 @@ class APUClient:
         cur = self.s.get(f"{self.base}/phoenix_ip", timeout=self.timeout)
         cur.raise_for_status()
         cfg = cur.json()                 # {"remote_url_base":..., "srv_port":...}
-        cfg["remote_url_base"] = radar_ip
+        # srv_port (e.g. /tmp/phoenix.sock) is read-only: newer APU firmware
+        # rejects it on POST ("Extra inputs are not permitted"). Only send the
+        # field we actually change.
+        cfg = {"remote_url_base": radar_ip}
         r = self.s.post(f"{self.base}/phoenix_ip", json=cfg, timeout=self.timeout)
         if r.status_code not in (200, 204):
             raise MagosError(f"phoenix_ip (controlled radar) update failed "
