@@ -965,6 +965,59 @@ class TeltonikaClient:
                 "/etc/init.d/tailscale missing). opkg said:\n" + out[-500:])
         log.info("Tailscale package installed.")
 
+    # How many times to (re-)run `tailscale up` before giving up. A fresh SIM
+    # right after the firmware reboot often loses the first control-plane race;
+    # re-running is what makes it stick (mirrors a manual UI retry).
+    TS_JOIN_ATTEMPTS = 3
+
+    @staticmethod
+    def _ts_needs_login(status: str) -> bool:
+        """True when tailscaled has dropped into the interactive-login fallback —
+        i.e. the authkey wasn't accepted in time and it's now waiting on a human
+        ('Logged out. Log in at: <URL>'). Waiting longer won't help; re-run up."""
+        s = status.lower()
+        return ("logged out" in s or "log in at" in s
+                or "to authenticate" in s or "needslogin" in s)
+
+    def _tailscale_up_once(self, up: str, attempt: int, attempts: int) -> tuple[str, str, str]:
+        """Run `tailscale up` once in the background and poll for a 100.x address.
+        Returns (node_ip, up_output, status); node_ip is '' if it didn't join."""
+        # Run `tailscale up` in the BACKGROUND on the device: with no internet it
+        # blocks forever retrying the control server, and SSH's recv_exit_status()
+        # would then hang the whole run. Redirecting fd 1/2 to a file lets the SSH
+        # call return immediately; we poll for the 100.x address ourselves.
+        log.info("Running tailscale up (attempt %d/%d, background, polling up to ~60s) ...",
+                 attempt, attempts)
+        self.ssh_exec("rm -f /tmp/ts_up.log", check=False)
+        self.ssh_exec(f"({up}; echo __done__) >/tmp/ts_up.log 2>&1 </dev/null &", check=False)
+
+        node_ip, status = "", ""
+        for _ in range(30):
+            ip = self.ssh_exec("tailscale ip -4 2>/dev/null", check=False).strip().splitlines()
+            node_ip = ip[0].strip() if ip else ""
+            if node_ip.startswith("100."):
+                break
+            # Fail fast: if `tailscale up` already exited with an error, stop
+            # waiting the full 60s for an address that will never appear.
+            partial = self.ssh_exec("cat /tmp/ts_up.log 2>/dev/null", check=False)
+            if "__done__" in partial and "Error" in partial:
+                break
+            # Fail fast: if tailscaled has fallen back to interactive login the
+            # authkey isn't going to take on this attempt — bail so we can re-run.
+            status = self.ssh_exec("tailscale status 2>&1", check=False).strip()
+            if self._ts_needs_login(status):
+                break
+            time.sleep(2)
+
+        out = self.ssh_exec("cat /tmp/ts_up.log 2>/dev/null", check=False).strip()
+        out = out.replace("__done__", "").strip()
+        self.ssh_exec("rm -f /tmp/ts_up.log", check=False)  # don't leave run logs on the device
+        if not status:
+            status = self.ssh_exec("tailscale status 2>&1", check=False).strip()
+        if out:
+            log.info("tailscale up: %s", out[:300])
+        return node_ip, out, status
+
     def join_tailscale(self, auth_key: str, hostname: str, login_server: str = "") -> None:
         if not auth_key:
             raise SystemExit("join_tailscale needs an auth key.")
@@ -993,39 +1046,36 @@ class TeltonikaClient:
               f"--hostname={shlex.quote(hostname)} --accept-routes")
         if login_server:
             up += f" --login-server={shlex.quote(login_server)}"
-        # Run `tailscale up` in the BACKGROUND on the device: with no internet it
-        # blocks forever retrying the control server, and SSH's recv_exit_status()
-        # would then hang the whole run. Redirecting fd 1/2 to a file lets the SSH
-        # call return immediately; we poll for the 100.x address ourselves.
-        log.info("Running tailscale up (background, polling up to ~60s) ...")
-        self.ssh_exec("rm -f /tmp/ts_up.log", check=False)
-        self.ssh_exec(f"({up}; echo __done__) >/tmp/ts_up.log 2>&1 </dev/null &", check=False)
 
-        node_ip = ""
-        for _ in range(30):
-            ip = self.ssh_exec("tailscale ip -4 2>/dev/null", check=False).strip().splitlines()
-            node_ip = ip[0].strip() if ip else ""
+        # Right after a firmware reboot the SIM has only just re-attached, so the
+        # first contact with Tailscale's control plane often loses a race: the
+        # authkey handshake doesn't finish in time and tailscaled drops into the
+        # interactive-login fallback. Waiting longer doesn't help once it's there
+        # (it's waiting on a human) — so RE-RUN `tailscale up`, which is exactly
+        # what a manual retry does and what makes it stick on a now-warm link.
+        node_ip, out, status = "", "", ""
+        for attempt in range(1, self.TS_JOIN_ATTEMPTS + 1):
+            node_ip, out, status = self._tailscale_up_once(up, attempt, self.TS_JOIN_ATTEMPTS)
             if node_ip.startswith("100."):
-                break
-            # Fail fast: if `tailscale up` already exited with an error, stop
-            # waiting the full 60s for an address that will never appear.
-            partial = self.ssh_exec("cat /tmp/ts_up.log 2>/dev/null", check=False)
-            if "__done__" in partial and "Error" in partial:
-                break
-            time.sleep(2)
+                log.info("Tailscale up — node IP %s.", node_ip)
+                return
+            if attempt < self.TS_JOIN_ATTEMPTS:
+                reason = ("dropped into interactive login (control plane not reachable yet)"
+                          if self._ts_needs_login(status) else "no node IP yet")
+                log.warning("Tailscale didn't join on attempt %d/%d (%s) — re-running "
+                            "tailscale up ...", attempt, self.TS_JOIN_ATTEMPTS, reason)
+                time.sleep(5)
 
-        out = self.ssh_exec("cat /tmp/ts_up.log 2>/dev/null", check=False).strip()
-        out = out.replace("__done__", "").strip()
-        self.ssh_exec("rm -f /tmp/ts_up.log", check=False)  # don't leave run logs on the device
-        if out:
-            log.info("tailscale up: %s", out[:300])
-
-        # VERIFY it actually joined — a connected node has a 100.x address.
-        if not node_ip.startswith("100."):
-            status = self.ssh_exec("tailscale status 2>&1", check=False).strip()
-            raise SystemExit(f"Tailscale did not come up within ~60s. "
-                             f"up='{out[:200]}' status='{status[:200]}'")
-        log.info("Tailscale up — node IP %s.", node_ip)
+        # Still not joined after every retry — give the operator a precise reason.
+        if self._ts_needs_login(status):
+            raise SystemExit(
+                f"Tailscale did not join after {self.TS_JOIN_ATTEMPTS} attempts: the node "
+                f"keeps falling back to interactive login (the auth key never gets accepted "
+                f"in time — usually a fresh SIM still settling its data link, or an "
+                f"expired/already-used key). status='{status[:200]}'")
+        raise SystemExit(
+            f"Tailscale did not come up after {self.TS_JOIN_ATTEMPTS} attempts (~60s each). "
+            f"up='{out[:200]}' status='{status[:200]}'")
 
     # --- eSIM (optional) ----------------------------------------------------
     def load_esim(self, activation_code: str) -> None:
