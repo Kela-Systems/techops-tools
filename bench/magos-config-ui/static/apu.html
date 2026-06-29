@@ -4,196 +4,23 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Magos APU Configurator</title>
-<style>
-  :root {
-    --bg: #0f1117;
-    --surface: #1a1d27;
-    --surface2: #232733;
-    --border: #2e3345;
-    --text: #e1e4ed;
-    --text-dim: #8b90a0;
-    --accent: #6c8cff;
-    --accent-hover: #8ba3ff;
-    --green: #34d399;
-    --green-bg: rgba(52,211,153,.12);
-    --yellow: #fbbf24;
-    --yellow-bg: rgba(251,191,36,.12);
-    --red: #f87171;
-    --red-bg: rgba(248,113,113,.10);
-    --blue-bg: rgba(108,140,255,.12);
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.5;
-    min-height: 100vh;
-  }
-  .container { max-width: 880px; margin: 0 auto; padding: 28px 24px 60px; }
-  h1 { font-size: 1.35rem; font-weight: 650; }
-  h1 .sub { color: var(--text-dim); font-weight: 400; font-size: .85rem; display: block; margin-top: 2px; }
-  h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); margin-bottom: 12px; }
-
-  button {
-    cursor: pointer; border: none; border-radius: 6px;
-    font-size: .9rem; font-weight: 500; padding: 8px 16px;
-    transition: background .15s, opacity .15s; color: var(--text);
-  }
-  button:disabled { opacity: .35; cursor: not-allowed; }
-  .btn-primary { background: var(--accent); color: #fff; }
-  .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
-  .btn-outline:hover:not(:disabled) { border-color: var(--text-dim); color: var(--text); }
-
-  input, select {
-    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
-    border-radius: 6px; padding: 8px 12px; font-size: .9rem; outline: none; width: 100%;
-  }
-  input:focus, select:focus { border-color: var(--accent); }
-
-  .card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 12px; padding: 22px; margin-bottom: 20px;
-  }
-
-  /* Status banner */
-  .status {
-    display: flex; align-items: center; gap: 16px;
-    border-radius: 12px; padding: 22px 24px; margin-bottom: 20px;
-    border: 1px solid var(--border); background: var(--surface);
-  }
-  .status .dot { width: 16px; height: 16px; border-radius: 50%; flex: 0 0 auto; }
-  .status .txt { flex: 1; }
-  .status .phase { font-size: 1.05rem; font-weight: 600; }
-  .status .msg { color: var(--text-dim); font-size: .9rem; margin-top: 2px; }
-  .pulse { animation: pulse 1.4s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-  .spin {
-    width: 18px; height: 18px; border-radius: 50%;
-    border: 2px solid var(--border); border-top-color: var(--accent);
-    animation: spin .8s linear infinite; flex: 0 0 auto;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  .s-waiting     { border-color: var(--border); }
-  .s-waiting     .dot { background: var(--text-dim); }
-  .s-detected {
-    border-color: var(--accent);
-    background: linear-gradient(90deg, rgba(108,140,255,.24), rgba(108,140,255,.08));
-    animation: glow 1.3s ease-in-out infinite;
-    padding: 28px 24px;
-  }
-  .s-detected .dot {
-    width: 22px; height: 22px; background: var(--accent);
-    box-shadow: 0 0 0 6px rgba(108,140,255,.18);
-  }
-  .s-detected .phase { font-size: 1.55rem; color: var(--accent-hover); }
-  .s-detected .msg { color: var(--text); font-size: .95rem; }
-  @keyframes glow {
-    0%,100% { box-shadow: 0 0 0 1px var(--accent), 0 0 14px rgba(108,140,255,.30); }
-    50%     { box-shadow: 0 0 0 1px var(--accent), 0 0 30px rgba(108,140,255,.65); }
-  }
-  .s-configuring { border-color: rgba(251,191,36,.5); background: var(--yellow-bg); }
-  .s-configured  { border-color: rgba(52,211,153,.5); background: var(--green-bg); }
-  .s-configured  .dot { background: var(--green); }
-  .s-error       { border-color: rgba(248,113,113,.5); background: var(--red-bg); }
-  .s-error       .dot { background: var(--red); }
-
-  /* Channel selector */
-  .channels { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-  .chan {
-    border: 1px solid var(--border); background: var(--surface2);
-    border-radius: 10px; padding: 14px 8px; text-align: center; cursor: pointer;
-    transition: border-color .15s, background .15s;
-  }
-  .chan:hover { border-color: var(--text-dim); }
-  .chan.sel { border-color: var(--accent); background: var(--blue-bg); }
-  .chan.next { border-color: var(--green); background: var(--green-bg); box-shadow: 0 0 0 1px var(--green); }
-  .chan .nexttag { font-size: .6rem; color: var(--green); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; margin-top: 3px; }
-  .chan .n { font-size: 1.3rem; font-weight: 700; }
-  .chan .ip { font-size: .72rem; color: var(--text-dim); margin-top: 4px; word-break: break-all; }
-  .chan .radar { font-size: .66rem; color: var(--text-dim); margin-top: 3px; opacity: .8; word-break: break-all; }
-
-  .row { display: flex; gap: 12px; align-items: flex-end; }
-  .row > * { flex: 1; }
-  .form-group { margin-bottom: 14px; }
-  .form-group label { display: block; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin-bottom: 6px; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .hidden { display: none !important; }
-  .muted { color: var(--text-dim); font-size: .85rem; }
-
-  .settings-summary {
-    display: flex; gap: 16px; flex-wrap: wrap; font-size: .82rem; color: var(--text-dim);
-  }
-  .settings-summary b { color: var(--text); font-weight: 600; }
-  .settings-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
-  .settings-header h3 { margin: 0; }
-
-  /* History */
-  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
-  th { text-align: left; color: var(--text-dim); font-weight: 500; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; padding: 6px 10px; border-bottom: 1px solid var(--border); }
-  td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
-  tr:last-child td { border-bottom: none; }
-  .badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: .72rem; font-weight: 600; }
-  .badge-ok { background: var(--green-bg); color: var(--green); }
-  .badge-err { background: var(--red-bg); color: var(--red); }
-  .badge-warn { background: var(--yellow-bg); color: var(--yellow); }
-
-  /* Network preflight warning */
-  .netwarn {
-    border: 1px solid rgba(248,113,113,.5); background: var(--red-bg); color: var(--red);
-    padding: 10px 14px; border-radius: 10px; margin-bottom: 16px; font-size: .85rem;
-  }
-  pre.log {
-    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
-    padding: 12px 14px; font-size: .78rem; color: var(--text-dim);
-    white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto;
-    margin-top: 12px;
-  }
-  .conn { font-size: .75rem; color: var(--text-dim); }
-  .conn.up { color: var(--green); }
-
-  /* Auto-mode toggle */
-  .switch { position: relative; display: inline-block; width: 46px; height: 26px; flex: 0 0 auto; }
-  .switch input { opacity: 0; width: 0; height: 0; }
-  .slider { position: absolute; cursor: pointer; inset: 0; background: var(--surface2); border: 1px solid var(--border); border-radius: 26px; transition: .2s; }
-  .slider:before { content: ""; position: absolute; height: 18px; width: 18px; left: 3px; top: 3px; background: var(--text-dim); border-radius: 50%; transition: .2s; }
-  .switch input:checked + .slider { background: var(--accent); border-color: var(--accent); }
-  .switch input:checked + .slider:before { transform: translateX(20px); background: #fff; }
-  .auto-row {
-    display: flex; align-items: center; gap: 14px;
-    padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
-    background: var(--surface2); margin-bottom: 16px;
-  }
-  .auto-row.on { border-color: var(--accent); background: var(--blue-bg); }
-  .auto-row .title { font-weight: 600; }
-  .cycle-start { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
-  .cycle-start label { font-size: .72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
-  .cycle-start select {
-    background: var(--surface); color: var(--text); border: 1px solid var(--border);
-    border-radius: 8px; padding: 6px 10px; font-size: .9rem;
-  }
-  .cycle-start select:disabled { opacity: .5; }
-
-  /* APU identity strip */
-  .identity { display: flex; gap: 18px; flex-wrap: wrap; font-size: .85rem; margin-top: 12px; }
-  .identity span { color: var(--text-dim); }
-  .identity b { color: var(--text); font-weight: 600; }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-</style>
+<link rel="icon" type="image/png" href="/shared/favicon.png">
+<link rel="stylesheet" href="/shared/bench.css">
 </head>
 <body>
 <div class="container">
   <header style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;">
-    <h1>Magos APU Configurator<span class="sub">Plug an APU in &rarr; configure &rarr; unplug &rarr; repeat. The UI stays open for the next one.</span></h1>
+    <div class="brand">
+      <img class="brand-logo" src="/shared/favicon.png" alt="Kela Bench">
+      <h1>Magos APU Configurator<span class="sub">Plug an APU in &rarr; configure &rarr; unplug &rarr; repeat. The UI stays open for the next one.</span></h1>
+    </div>
     <span id="conn" class="conn">connecting…</span>
   </header>
 
   <div id="netWarn" class="netwarn hidden"></div>
 
   <!-- STATUS BANNER -->
-  <div id="status" class="status s-waiting">
+  <div id="status" class="status s-waiting" aria-live="polite">
     <span id="statusIcon" class="dot"></span>
     <div class="txt">
       <div class="phase" id="phaseText">Waiting</div>
@@ -290,6 +117,7 @@
   </div>
 </div>
 
+<script src="/shared/bench.js"></script>
 <script>
 let cfg = {};
 let channelIps = {};
@@ -298,49 +126,31 @@ let selectedChannel = null;   // "0".."3" or "other"
 let settingsOpen = false;
 let lastPhase = null;
 
-function $(id) { return document.getElementById(id); }
-
-// Escape device-/user-supplied strings before injecting them via innerHTML.
-function esc(v) {
-  return String(v ?? '').replace(/[&<>"']/g, c =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
 function statusBadge(h) {
   if (h.status !== 'ok') return '<span class="badge badge-err">FAILED</span>';
   if (h.verified) return '<span class="badge badge-ok">OK ✓</span>';
   return `<span class="badge badge-warn" title="${esc(h.verify_detail || 'not confirmed at the new IP')}">OK (unverified)</span>`;
 }
 
-function connectWS() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws/state`);
-  ws.onmessage = (e) => render(JSON.parse(e.data));
-  ws.onopen = () => { $('conn').textContent = 'live'; };
-  ws.onclose = () => {
-    $('conn').textContent = 'reconnecting…';
-    setTimeout(connectWS, 1500);
-  };
-}
-
 function buildChannels() {
   const wrap = $('channels');
   wrap.innerHTML = '';
-  Object.entries(channelIps).forEach(([ch, ip]) => {
+  const makeChan = (ch, inner) => {
     const el = document.createElement('div');
     el.className = 'chan';
     el.dataset.ch = ch;
-    const radar = radarIps[ch] ? `<div class="radar">↳ radar ${esc(radarIps[ch])}</div>` : '';
-    el.innerHTML = `<div class="n">${esc(ch)}</div><div class="ip">${esc(ip)}</div>${radar}`;
-    el.onclick = () => selectChannel(ch);
+    el.tabIndex = 0;
+    el.setAttribute('role', 'button');
+    el.innerHTML = inner;
+    el.onclick = () => selectChannel(ch, true);
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectChannel(ch, true); } };
     wrap.appendChild(el);
+  };
+  Object.entries(channelIps).forEach(([ch, ip]) => {
+    const radar = radarIps[ch] ? `<div class="radar">↳ radar ${esc(radarIps[ch])}</div>` : '';
+    makeChan(ch, `<div class="n">${esc(ch)}</div><div class="ip">${esc(ip)}</div>${radar}`);
   });
-  const other = document.createElement('div');
-  other.className = 'chan';
-  other.dataset.ch = 'other';
-  other.innerHTML = `<div class="n">⋯</div><div class="ip">manual IP</div>`;
-  other.onclick = () => selectChannel('other');
-  wrap.appendChild(other);
+  makeChan('other', `<div class="n">⋯</div><div class="ip">manual IP</div>`);
 
   const start = $('cycleStart');
   if (start) {
@@ -356,12 +166,14 @@ function buildChannels() {
   }
 }
 
-function selectChannel(ch) {
+// `fromUser` distinguishes an operator click from a render()-driven restore, so
+// only a real selection re-arms auto mode (avoids a redundant POST every frame).
+function selectChannel(ch, fromUser) {
   selectedChannel = ch;
   document.querySelectorAll('.chan').forEach(c => c.classList.toggle('sel', c.dataset.ch === ch));
   $('manualWrap').classList.toggle('hidden', ch !== 'other');
   updateConfigureBtn();
-  if (window._state && window._state.auto && window._state.auto.enabled) armAuto(true);
+  if (fromUser && window._state && window._state.auto && window._state.auto.enabled) armAuto(true);
 }
 
 function targetBody(enabled) {
@@ -377,10 +189,7 @@ function targetBody(enabled) {
 }
 
 async function armAuto(enabled) {
-  const r = await fetch('/api/auto', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(targetBody(enabled))
-  });
-  const data = await r.json();
+  const data = await postJSON('/api/auto', targetBody(enabled), { alertOnError: false });
   if (data.error) { alert(data.error); $('autoToggle').checked = false; }
 }
 
@@ -406,10 +215,7 @@ async function toggleCycle() {
   const enabled = $('cycleToggle').checked;
   const body = { enabled };
   if (enabled) body.start_channel = $('cycleStart').value;
-  const r = await fetch('/api/cycle', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-  });
-  const data = await r.json();
+  const data = await postJSON('/api/cycle', body, { alertOnError: false });
   if (data.error) { alert(data.error); $('cycleToggle').checked = false; }
 }
 
@@ -466,7 +272,6 @@ function render(s) {
   document.title = (s.phase === 'detected' ? '● APU detected — ' : '') + 'Magos APU Configurator';
 
   $('dismissBtn').classList.toggle('hidden', s.phase !== 'error');
-  $('conn').classList.toggle('up', !!s.detected);
 
   const auto = s.auto || { enabled: false };
   const cycle = s.cycle || { enabled: false, index: 0, count: 0 };
@@ -607,10 +412,8 @@ async function saveSettings() {
   };
   const pw = $('f_password').value;
   if (pw) body.password = pw;
-  await fetch('/api/settings', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-  });
-  toggleSettings();
+  const data = await postJSON('/api/settings', body);
+  if (!data.error) toggleSettings();   // keep the form open so edits aren't lost
 }
 
 async function configure() {
@@ -621,19 +424,15 @@ async function configure() {
     body.radar_ip = $('manualRadar').value.trim();
   }
   $('configureBtn').disabled = true;
-  const r = await fetch('/api/configure', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-  });
-  const data = await r.json();
-  if (data.error) alert(data.error);
+  await postJSON('/api/configure', body, { buttons: ['configureBtn'] });
 }
 
 async function dismiss() {
-  await fetch('/api/dismiss', { method: 'POST' });
+  await postJSON('/api/dismiss');
 }
 
 $('manualIp') && $('manualIp').addEventListener('input', updateConfigureBtn);
-connectWS();
+connectBenchWS(render);
 </script>
 </body>
 </html>

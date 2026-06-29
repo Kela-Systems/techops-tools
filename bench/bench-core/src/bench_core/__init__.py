@@ -38,14 +38,19 @@ import logging
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 try:
     import requests
     import urllib3
+    # Intentional (bench): RutOS ships a self-signed cert and the bench talks to
+    # factory-default devices over a direct local link, so TLS verification is
+    # off (see TeltonikaClient(verify=False)). Silence the resulting per-request
+    # InsecureRequestWarning so it doesn't drown the step log.
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 except ImportError:
     sys.exit("This script needs 'requests'.  Install it with:  pip install requests")
@@ -67,8 +72,11 @@ _LOG_CTX = {"sn": "-"}
 
 class _ContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        record.sn = _LOG_CTX["sn"]
         record.levelname_lc = record.levelname.lower()
+        # Honour a per-record `sn` if a caller set one via logging `extra=`,
+        # otherwise fall back to the current process-wide serial.
+        if not hasattr(record, "sn"):
+            record.sn = _LOG_CTX["sn"]
         return True
 
 
@@ -81,10 +89,54 @@ def set_log_serial(serial: Optional[str]) -> None:
     _LOG_CTX["sn"] = serial or "-"
 
 
+def install_log_context(logger: logging.Logger) -> None:
+    """Attach the shared context filter to a per-tool logger so its records carry
+    the %(levelname_lc)s and %(sn)s fields that LOG_LINE_FORMAT renders. Every
+    tool's logger shares the one process-wide serial set via set_log_serial()."""
+    logger.addFilter(_ContextFilter())
+
+
+def load_settings(path: str) -> dict:
+    """Load a tool's settings JSON, dropping `_`-prefixed comment keys."""
+    with open(path, "r", encoding="utf-8") as f:
+        return {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+
+
+def make_step_runner(logger: logging.Logger, catch: type = SystemExit):
+    """Return `(failures, step)` where `step(label, fn)` runs `fn()` and records
+    `label: <err>` in `failures` (instead of aborting) when it raises `catch`.
+
+    Used by the per-tool provisioning pipelines so a non-critical step's failure
+    is reported in the run record rather than silently completing the run."""
+    failures: list[str] = []
+
+    def step(label: str, fn: Callable[[], None]) -> None:
+        try:
+            fn()
+        except catch as e:
+            failures.append(f"{label}: {e}")
+            logger.error("Step '%s' FAILED: %s", label, e)
+
+    return failures, step
+
+
+def tcp_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
+    """True if a TCP connection to host:port succeeds within `timeout` seconds.
+    Used by the detection loops to tell whether a device is plugged in."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 # --- OTD500 factory defaults ------------------------------------------------
 DEFAULT_HOST = "192.168.1.1"
 DEFAULT_USERNAME = "admin"
 DEFAULT_SCHEME = "https"          # RutOS REST API is HTTPS (self-signed by default)
+# Intentional (bench): a shared post-provisioning password the operator can
+# override in the per-tool config. It is only a *fallback* default for the
+# controlled bench network, not a secret — real deployments set their own.
 DEFAULT_NEW_PASSWORD = "Kelasys123!"
 DEFAULT_TIMEZONE = "Asia/Jerusalem"
 DEFAULT_NAME_PREFIX = "otd-"
@@ -181,8 +233,10 @@ def register_in_rms(api_token: str, company_id: str, *, name: str, serial: str,
             log.info("Registered in RMS: %s.", name)
             return
         body = r.text[:300]
-        if r.status_code in (409, 422) and ("exist" in body.lower() or "already" in body.lower()
-                                            or "registered" in body.lower()):
+        # Treat only an explicit "already exists / already registered" as a
+        # benign duplicate — a bare "registered" elsewhere in an error body is
+        # too loose and could mask a real failure.
+        if r.status_code in (409, 422) and ("already" in body.lower() or "exist" in body.lower()):
             log.info("Device already in RMS (%s) — OK.", serial)
             return
         if r.status_code in (401, 403):
@@ -274,7 +328,9 @@ def rms_status_connected(raw: str) -> bool:
         if isinstance(node, dict):
             for k, v in node.items():
                 kl = str(k).lower()
-                if ("connect" in kl or kl in ("status", "state", "mqtt")) and \
+                # "connect" must not match "disconnect"/"disconnect_reason" etc.
+                connect_key = "connect" in kl and "disconnect" not in kl
+                if (connect_key or kl in ("status", "state", "mqtt")) and \
                         not isinstance(v, (dict, list)):
                     if v is True or str(v).strip().lower() in truthy:
                         hit[0] = True
@@ -287,13 +343,26 @@ def rms_status_connected(raw: str) -> bool:
     return hit[0]
 
 
+def _version_digits(s: str) -> tuple:
+    """The dotted numeric version embedded in `s` (e.g. 'OTD5_R_00.07.23.4' ->
+    (0, 7, 23, 4)), or () if there is no dotted version."""
+    m = re.search(r"\d+(?:\.\d+)+", s or "")
+    return tuple(int(x) for x in m.group(0).split(".")) if m else ()
+
+
 def fw_versions_match(a: str, b: str) -> bool:
-    """Lenient firmware-version compare: the release name (e.g. 'OTD5_R_00.07.23.4')
-    and /etc/version may differ in prefix/separators, so accept a substring match
-    either way after stripping non-alphanumerics."""
+    """Firmware-version compare tolerant of prefix/separator differences (the
+    release name 'OTD5_R_00.07.23.4' vs whatever /etc/version reports) but NOT
+    of differing version numbers. A plain substring test used to mis-match
+    '00.07.23' against '00.07.23.4' and skip a needed upgrade — so compare the
+    extracted dotted version numbers for equality instead, falling back to a
+    strict normalised-equality only when there is no dotted version to parse."""
+    va, vb = _version_digits(a), _version_digits(b)
+    if va and vb:
+        return va == vb
     na = re.sub(r"[^0-9a-z]", "", (a or "").lower())
     nb = re.sub(r"[^0-9a-z]", "", (b or "").lower())
-    return bool(na) and bool(nb) and (na in nb or nb in na)
+    return bool(na) and bool(nb) and na == nb
 
 
 def device_name(site_name: str, prefix: str = DEFAULT_NAME_PREFIX) -> str:
@@ -367,6 +436,9 @@ class TeltonikaClient:
     """One OTD500 over REST (primary) + SSH/UCI (config). Never opens SSH until
     a step actually needs it."""
 
+    # verify=False is intentional for the bench: devices use a self-signed cert
+    # on a direct local link, so there is no CA to validate against (see the
+    # urllib3.disable_warnings note at import time).
     def __init__(self, host: str = DEFAULT_HOST, username: str = DEFAULT_USERNAME,
                  scheme: str = DEFAULT_SCHEME, verify: bool = False, timeout: int = 20,
                  ssh_username: str = "root"):
@@ -400,7 +472,11 @@ class TeltonikaClient:
         )
         if r.status_code != 200:
             raise SystemExit(f"Login failed (HTTP {r.status_code}): {r.text[:200]}")
-        token = _find_field(r.json(), ("token",))
+        try:
+            payload = r.json()
+        except ValueError:
+            raise SystemExit(f"Login returned a non-JSON body: {r.text[:200]}")
+        token = _find_field(payload, ("token",))
         if not token:
             raise SystemExit(f"Login returned no token: {r.text[:200]}")
         self.token = token
@@ -417,14 +493,20 @@ class TeltonikaClient:
         last_auth_err = None
         for pw in candidates:
             cli = paramiko.SSHClient()
+            # AutoAddPolicy: the bench talks to factory-default devices on a
+            # direct/local link where there is no stable known-hosts identity to
+            # pin — host-key TOFU adds no security here and would just break the
+            # plug-in-anything workflow.
             cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             try:
                 cli.connect(self.host, username=self.ssh_username, password=pw,
                             timeout=self.timeout, allow_agent=False, look_for_keys=False)
             except paramiko.AuthenticationException as e:
                 last_auth_err = e
+                cli.close()   # don't leak the socket/transport on a bad password
                 continue
             except Exception as e:  # noqa: BLE001
+                cli.close()
                 raise SystemExit(f"SSH connect to {self.host} failed: {e}")
             self._ssh = cli
             return cli
@@ -443,7 +525,11 @@ class TeltonikaClient:
         deadline = time.time() + (exec_timeout or 120)
         while not out.channel.exit_status_ready():
             if time.time() > deadline:
+                # The device went away mid-command (reboot/modem reset). Tear the
+                # whole client down, not just the channel, so the next step opens
+                # a fresh SSH session instead of reusing a dead one.
                 out.channel.close()
+                self.close()
                 raise SystemExit(f"SSH command timed out after {exec_timeout or 120}s: {command}")
             time.sleep(0.2)
         rc = out.channel.recv_exit_status()
@@ -462,6 +548,12 @@ class TeltonikaClient:
         if self._ssh is not None:
             self._ssh.close()
             self._ssh = None
+        # Release the pooled HTTP connection(s) too, so callers that create many
+        # short-lived clients (the bench loop) don't leak sockets.
+        try:
+            self.s.close()
+        except Exception:  # noqa: BLE001 — close must never raise
+            pass
 
     # --- identity -----------------------------------------------------------
     def get_identity(self) -> dict:
@@ -485,7 +577,7 @@ class TeltonikaClient:
             r = self.s.get(f"{self.base}/system/device/status", timeout=self.timeout)
             if r.status_code == 200:
                 raw["device_status"] = r.json()
-        except requests.exceptions.RequestException:
+        except (requests.exceptions.RequestException, ValueError):
             pass
         dev = raw.get("device_status", {})
 
@@ -497,9 +589,16 @@ class TeltonikaClient:
             "imei": "unknown",
             "raw": raw,
         }
-        imei = self.ssh_exec("gsmctl -i 2>/dev/null", check=False).strip().splitlines()
+        # gsmctl -i prints the IMEI; pick the first line that actually looks like
+        # one (14-16 digits) rather than blindly taking the last line, which can
+        # be a trailing blank or a stray notice.
+        imei_lines = [ln.strip() for ln in
+                      self.ssh_exec("gsmctl -i 2>/dev/null", check=False).splitlines()
+                      if ln.strip()]
+        imei = next((ln for ln in imei_lines if re.fullmatch(r"\d{14,16}", ln)),
+                    imei_lines[-1] if imei_lines else None)
         if imei:
-            identity["imei"] = imei[-1].strip()
+            identity["imei"] = imei
         set_log_serial(identity["serial"])
         log.info("Identity: model=%s serial=%s MAC=%s fw=%s imei=%s",
                  identity["model"], identity["serial"], identity["mac"],
@@ -507,8 +606,9 @@ class TeltonikaClient:
         return identity
 
     def verify_identity(self, identity: dict, expected: dict) -> list[str]:
-        """Compare discovered serial/imei/mac against the manifest row. Returns a
-        list of human-readable mismatch warnings (empty == all good)."""
+        """Compare discovered serial/imei/mac against the expected identity (e.g.
+        the live MAC read off the device). Returns a list of human-readable
+        mismatch warnings (empty == all good)."""
         warnings = []
         for field, keys in (("serial", "serial"), ("imei", "imei"), ("mac", "mac")):
             want = (expected.get(keys) or "").strip()
@@ -518,12 +618,12 @@ class TeltonikaClient:
             same = (normalize_mac(want) == normalize_mac(got)) if field == "mac" \
                 else (want.lower() == got.lower())
             if not same:
-                warnings.append(f"{field} mismatch: manifest={want} device={got}")
+                warnings.append(f"{field} mismatch: expected={want} device={got}")
         if warnings:
             for w in warnings:
                 log.warning("VERIFY: %s", w)
         else:
-            log.info("Identity verified against manifest row.")
+            log.info("Identity verified against the expected values.")
         return warnings
 
     # --- password (first-boot change) --------------------------------------
@@ -607,7 +707,14 @@ class TeltonikaClient:
     def _fota_upgrade(self, *, keep_settings: bool, wait: bool, reboot_timeout: int,
                       net_wait: int = 180, download_timeout: int = 600) -> None:
         """FOTA via the REST API: check for an update, download it, then upgrade.
-        Endpoints verified from the RutOS Web API (firmware >= 07.06)."""
+        Endpoints verified from the RutOS Web API (firmware >= 07.06).
+
+        Intentional bench heuristics (kept on purpose, see inline notes): the
+        progress endpoint's schema is unreliable on this hardware, so we treat
+        an explicit "completed" status, a download that goes quiet after showing
+        activity, OR no progress at all after a short grace as "image ready"; and
+        a connection dropped right after the upgrade request is taken as "the
+        flash started". The real reboot is always confirmed afterwards."""
         # 1) Is an update available? Re-running an up-to-date device (e.g. a retry
         # after a later step failed) must be a no-op here, NOT a hard failure —
         # so an explicit "no update" answer skips the whole step.
@@ -776,8 +883,10 @@ class TeltonikaClient:
         except Exception as e:  # noqa: BLE001 — reboot kills the socket
             log.info("Channel dropped after firmware command (expected): %s", e)
 
-    def _port_open(self, port: int = 443) -> bool:
+    def _port_open(self, port: Optional[int] = None) -> bool:
         import socket
+        if port is None:                       # probe the actual web port, not always 443
+            port = 443 if self.scheme == "https" else 80
         try:
             with socket.create_connection((self.host, port), timeout=3):
                 return True
@@ -867,16 +976,19 @@ class TeltonikaClient:
         return False
 
     def ensure_online(self, timeout: int = 180) -> bool:
-        """wait_for_internet() but only probes once per device (cached)."""
-        if self._online is None:
+        """wait_for_internet(), skipping the probe only once we've confirmed the
+        link is up. A previous *failure* is not cached — a later step (after the
+        SIM finally attaches) re-probes instead of being stuck offline forever."""
+        if not self._online:
             self.wait_for_internet(timeout)
         return bool(self._online)
 
     # --- naming / timezone --------------------------------------------------
     def set_hostname(self, name: str) -> None:
         log.info("Setting hostname / device name to '%s' ...", name)
-        self._uci(f"{UCI_HOSTNAME}='{name}'", package="system")
-        self.ssh_exec(f"echo '{name}' > /proc/sys/kernel/hostname", check=False)
+        qname = shlex.quote(name)   # never let an odd name break the UCI/echo shell line
+        self._uci(f"{UCI_HOSTNAME}={qname}", package="system")
+        self.ssh_exec(f"echo {qname} > /proc/sys/kernel/hostname", check=False)
         log.info("Hostname set.")
 
     def set_timezone(self, zonename: str) -> None:
@@ -923,8 +1035,9 @@ class TeltonikaClient:
     def enable_rms(self, auth_code: str = "") -> None:
         """Ensure RMS is enabled and force a connect attempt. On this firmware the
         rms_mqtt connect daemon is enabled by default; the device shows up in RMS
-        once it has internet and is registered there by serial+MAC (see
-        rms_register.py). An auth code, if used, is entered on the RMS side."""
+        once it has internet and is registered there by serial+MAC (the pipeline
+        does this via register_in_rms when rms.api_token + rms.company_id are
+        set). An auth code, if used, is entered on the RMS side."""
         log.info("Enabling RMS + forcing a connect attempt ...")
         if auth_code:
             log.info("(an RMS auth code is entered on the RMS side, not stored on-device)")
@@ -942,7 +1055,8 @@ class TeltonikaClient:
         # IMPORTANT: enabling on-device is necessary but NOT sufficient — the unit
         # only appears/connects in RMS after it's registered there by serial+MAC.
         log.info("RMS enabled on-device. It will connect to RMS only once it is "
-                 "registered there (serial+MAC) — see rms_register.py.")
+                 "registered there (serial+MAC) — done by register_in_rms when "
+                 "rms.api_token + rms.company_id are configured.")
 
     # --- Tailscale ----------------------------------------------------------
     HAVE_TS = ("command -v tailscale >/dev/null && command -v tailscaled >/dev/null "
@@ -997,10 +1111,12 @@ class TeltonikaClient:
             node_ip = ip[0].strip() if ip else ""
             if node_ip.startswith("100."):
                 break
-            # Fail fast: if `tailscale up` already exited with an error, stop
-            # waiting the full 60s for an address that will never appear.
+            # Fail fast: if `tailscale up` already exited with a real error, stop
+            # waiting the full 60s for an address that will never appear. Match an
+            # actual error line ("Error: ...", "failed", ...) rather than any
+            # stray "Error" substring (which can appear in benign output/URLs).
             partial = self.ssh_exec("cat /tmp/ts_up.log 2>/dev/null", check=False)
-            if "__done__" in partial and "Error" in partial:
+            if "__done__" in partial and re.search(r"error:|failed|invalid", partial, re.I):
                 break
             # Fail fast: if tailscaled has fallen back to interactive login the
             # authkey isn't going to take on this attempt — bail so we can re-run.
@@ -1157,7 +1273,9 @@ class TeltonikaClient:
                 # Surface the raw status so a missed schema is debuggable, not silent.
                 snippet = " ".join(conn.split())[:80] if conn else "no status output"
                 actual = f"enable={en}, not connected yet [{snippet}]"
-            add("RMS", "enable=1", actual, en == "1")
+            # PASS requires BOTH the on-device enable flag AND an actual connection
+            # — enable=1 alone doesn't mean the unit reached RMS.
+            add("RMS", "enable=1 + connected", actual, en == "1" and connected)
         else:
             add("RMS", "(skipped)", "-", None)
 

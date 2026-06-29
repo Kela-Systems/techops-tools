@@ -83,6 +83,8 @@ try:
 except ImportError:
     sys.exit("This script needs 'requests'.  Install it with:  pip install requests")
 
+from bench_core import LOG_LINE_FORMAT, install_log_context, set_log_serial
+
 
 class MagosError(Exception):
     """A provisioning step failed (bad login, HTTP error, schema mismatch).
@@ -99,25 +101,8 @@ log = logging.getLogger("magos")
 # Every log record is tagged with the current radar's serial (once known) and a
 # lowercased level name, so handlers can render lines like:
 #   [info] [AR300-SN-0042] Logged in as 'admin'.
-_LOG_CTX = {"sn": "-"}
-
-
-class _ContextFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.sn = _LOG_CTX["sn"]
-        record.levelname_lc = record.levelname.lower()
-        return True
-
-
-log.addFilter(_ContextFilter())
-
-# Format used by both the CLI and the web UI for each step line.
-LOG_LINE_FORMAT = "[%(levelname_lc)s] [%(sn)s] %(message)s"
-
-
-def set_log_serial(serial: str | None) -> None:
-    """Tag subsequent log lines with this radar's serial (None resets to '-')."""
-    _LOG_CTX["sn"] = serial or "-"
+# The context filter, LOG_LINE_FORMAT and set_log_serial are shared (bench_core).
+install_log_context(log)
 
 # Field names (normalised: lowercased, non-alphanumerics stripped) that the
 # dashboard API may use for each identity attribute. We search the JSON it

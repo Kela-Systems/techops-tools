@@ -1,0 +1,6 @@
+# Single shared environment for every bench tool. The shared helpers
+# (StepCollector, slug, the BenchConfigurator base) and the web stack
+# (fastapi/uvicorn/websockets) plus requests/paramiko come from the local
+# bench-core package, installed editable. pytest runs the per-tool suites.
+-e ./bench-core[ui]
+pytest

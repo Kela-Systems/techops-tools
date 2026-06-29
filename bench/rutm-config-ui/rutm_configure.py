@@ -24,7 +24,6 @@ CLI (single device):
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 import time
@@ -45,8 +44,9 @@ from bench_core import (
     device_name,
     format_verification,
     host_iface_for,
+    load_settings,
     log,
-    normalize_mac,  # noqa: F401  (re-exported for rutm_app)
+    make_step_runner,
     register_in_rms,
     renew_host_dhcp,
     set_log_serial,
@@ -185,14 +185,7 @@ def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
 
     # Every later step is run through _step so a failure is recorded (not
     # swallowed) and the run reports it instead of falsely "completing".
-    failures: list[str] = []
-
-    def _step(label: str, fn) -> None:
-        try:
-            fn()
-        except SystemExit as e:
-            failures.append(f"{label}: {e}")
-            log.error("Step '%s' FAILED: %s", label, e)
+    failures, _step = make_step_runner(log)
 
     _step("hostname", lambda: client.set_hostname(name))
     _step("timezone", lambda: client.set_timezone(settings.get("timezone", DEFAULT_TIMEZONE)))
@@ -231,7 +224,8 @@ def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
                 wait=net_timeout))
         else:
             log.info("RMS api_token/company_id not set — device enabled on-device only "
-                     "(register it in the RMS cloud manually or via rms_register.py).")
+                     "(set rms.api_token + rms.company_id in the config to also register "
+                     "it in the RMS cloud).")
 
     ts = settings.get("tailscale", {}) or {}
     if ts.get("enabled"):
@@ -284,19 +278,14 @@ def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
             "failures": failures, "verification": verification, "ok": ok}
 
 
-def load_settings(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return {k: v for k, v in json.load(f).items() if not k.startswith("_")}
-
-
 def main():
     p = argparse.ArgumentParser(description="Provision a single Teltonika RUTM08.")
     p.add_argument("--site", required=True, help="site name -> hostname rut-<site>")
     p.add_argument("--label-password",
                    help="factory password from the device label (prompts if omitted; "
                         "pass '' for a device already on the shared password)")
-    p.add_argument("--config", default=str(BASE_DIR / "rutm.config.json"),
-                   help="shared settings JSON (default: rutm.config.json)")
+    p.add_argument("--config", default=str(BASE_DIR / "config" / "rutm.config.json"),
+                   help="shared settings JSON (default: config/rutm.config.json)")
     args = p.parse_args()
 
     handler = logging.StreamHandler()

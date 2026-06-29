@@ -45,7 +45,7 @@ class RutmConfigurator(BenchConfigurator):
     title = "RUTM08 Configurator"
     port = 8004
     html_file = "rutm.html"
-    config_filename = "rutm.config.json"
+    config_filename = "config/rutm.config.json"
     log_filename = "rutm-config.log"
     tailscale_label = "rutm"
     history_limit = 30  # full step logs per entry — the JSON files are the archive
@@ -191,7 +191,7 @@ class RutmConfigurator(BenchConfigurator):
         print(f"  final LAN    : {self.cfg.get('lan_ip', DEFAULT_RUTM_LAN_IP)} "
               "(applied as the last step)")
         print(f"  config       : "
-              f"{'rutm.config.json' if self.cfg else 'MISSING — copy the example'}")
+              f"{'config/rutm.config.json' if self.cfg else 'MISSING — copy the example'}")
         fw_cfg = self.cfg.get("firmware", {}) or {}
         if fw_cfg.get("mode") == "local":
             fw_bin = self.base_dir / (fw_cfg.get("bin_path") or "")

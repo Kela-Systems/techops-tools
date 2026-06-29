@@ -27,10 +27,13 @@ already on the shared password).
 ## Setup
 
 ```
-cp rutm.config.example.json rutm.config.json   # then fill in RMS + Tailscale secrets
-pip install -r requirements.txt                # or just double-click run_rutm.bat on Windows
-python3 rutm_app.py                            # opens http://127.0.0.1:8004
+cp config/rutm.config.example.json config/rutm.config.json   # then fill in RMS + Tailscale secrets
+python3 rutm_app.py                                           # opens http://127.0.0.1:8004
 ```
+
+On the bench PC you don't run this by hand — the top-level launcher
+(`Start Bench Tools.bat` / `start-bench.command`) sets up the shared `.venv` and starts
+every tool together.
 
 The laptop's Ethernet adapter must be on DHCP and plugged into a LAN port of
 the router; the router's WAN port needs a live uplink (FOTA / RMS / Tailscale
@@ -46,7 +49,7 @@ python3 rutm_configure.py --site haifa-port --label-password 'Xy7Kp2Lm9Qa'
 ## Shared code
 
 This folder must sit next to `bench-core`, the shared local package it
-installs (`-e ../bench-core[ui]`). That package holds the one
+installs (`-e ./bench-core[ui]` from the bench root). That package holds the one
 field-tested copy of the device client (`TeltonikaClient` — REST + SSH/UCI,
 firmware, RMS, Tailscale) and the bench-UI base (`bench_ui`) that drives the
 detection loop, routes, and WebSocket. `rutm_configure.py` adds the RUTM08

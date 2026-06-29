@@ -5,13 +5,10 @@ device, so they run with no hardware and no network. Run with:
     .venv/bin/python -m pytest
 """
 import asyncio
-import contextlib
-from types import SimpleNamespace
 
 import pytest
 
 import app as radar_mod
-import magos_bench
 from magos_bench import AUTO_IDLE_TIMEOUT_SEC, MISS_THRESHOLD
 
 radar = radar_mod.configurator
@@ -220,42 +217,6 @@ def test_device_presence_resets_idle_timer(clock, device):
     clock["t"] += AUTO_IDLE_TIMEOUT_SEC - 1     # not enough since that activity
     poll(None)
     assert radar.state["auto"]["enabled"] is True
-
-
-def test_closing_last_tab_stops_server(monkeypatch):
-    monkeypatch.setattr(magos_bench, "SHUTDOWN_GRACE_SEC", 0.01)
-
-    async def scenario():
-        radar._clients = 0
-        radar._shutdown_task = None
-        radar._server = SimpleNamespace(should_exit=False)
-        radar._note_client_connect()        # tab opened
-        radar._note_client_disconnect()     # tab closed — arms the timer
-        await radar._shutdown_task           # let the grace window elapse
-        return radar._server.should_exit
-
-    assert asyncio.run(scenario()) is True
-
-
-def test_refresh_does_not_stop_server(monkeypatch):
-    monkeypatch.setattr(magos_bench, "SHUTDOWN_GRACE_SEC", 0.05)
-
-    async def scenario():
-        radar._clients = 0
-        radar._shutdown_task = None
-        radar._server = SimpleNamespace(should_exit=False)
-        radar._note_client_connect()        # tab opened
-        radar._note_client_disconnect()     # refresh drops the socket...
-        pending = radar._shutdown_task
-        radar._note_client_connect()        # ...and reconnects right away
-        with contextlib.suppress(asyncio.CancelledError):
-            await pending                    # the armed stop was cancelled
-        await asyncio.sleep(0.1)             # well past the old grace window
-        return radar._server.should_exit, radar._clients
-
-    should_exit, clients = asyncio.run(scenario())
-    assert should_exit is False
-    assert clients == 1
 
 
 def test_configure_route_rejects_when_not_detected():

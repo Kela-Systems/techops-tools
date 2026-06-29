@@ -12,7 +12,6 @@ CLI (single device):
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from getpass import getpass
@@ -29,7 +28,9 @@ from bench_core import (
     TeltonikaClient,
     device_name,
     format_verification,
+    load_settings,
     log,
+    make_step_runner,
     register_in_rms,
     set_log_serial,
 )
@@ -69,14 +70,7 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
 
     # Every later step is run through _step so a failure is recorded (not
     # swallowed) and the run reports it instead of falsely "completing".
-    failures: list[str] = []
-
-    def _step(label: str, fn) -> None:
-        try:
-            fn()
-        except SystemExit as e:
-            failures.append(f"{label}: {e}")
-            log.error("Step '%s' FAILED: %s", label, e)
+    failures, _step = make_step_runner(log)
 
     # Local config first (offline UCI): set the SIM to 4G *before* we wait for
     # data, and so settings survive a keep-settings firmware reboot.
@@ -122,7 +116,8 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
                 wait=net_timeout))
         else:
             log.info("RMS api_token/company_id not set — device enabled on-device only "
-                     "(run rms_register.py to register it in the cloud).")
+                     "(set rms.api_token + rms.company_id in the config to also register "
+                     "it in the RMS cloud).")
 
     # Internet-dependent tail: Tailscale join + eSIM download. Wait once for the
     # modem to get data before attempting either.
@@ -180,18 +175,13 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
             "failures": failures, "verification": verification, "ok": ok}
 
 
-def load_settings(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return {k: v for k, v in json.load(f).items() if not k.startswith("_")}
-
-
 def main():
     p = argparse.ArgumentParser(description="Provision a single Teltonika OTD500.")
     p.add_argument("--site", required=True, help="site name -> device becomes otd-<site>")
     p.add_argument("--label-password", help="the device's factory label password "
                    "(else prompted)")
-    p.add_argument("--config", default="site.config.json",
-                   help="shared settings JSON (default: site.config.json)")
+    p.add_argument("--config", default="config/site.config.json",
+                   help="shared settings JSON (default: config/site.config.json)")
     p.add_argument("--host", default=DEFAULT_HOST)
     p.add_argument("--username", default=DEFAULT_USERNAME)
     p.add_argument("--scheme", default=DEFAULT_SCHEME, choices=["http", "https"])

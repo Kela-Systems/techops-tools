@@ -56,11 +56,6 @@ HISTORY_MAX = 200
 # long disarms itself, so a unit plugged in much later isn't silently
 # reconfigured by a mode someone walked away from and forgot to turn off.
 AUTO_IDLE_TIMEOUT_SEC = 600  # 10 minutes
-# When the last dashboard tab disconnects (closed), the server stops itself
-# after this grace window. The grace lets a page *refresh* — which briefly
-# drops the WebSocket and immediately reopens it — reconnect without killing
-# the process.
-SHUTDOWN_GRACE_SEC = 5
 
 
 class MagosBench:
@@ -89,11 +84,9 @@ class MagosBench:
         # timeout. `_now` is an attribute so tests can inject a fake clock.
         self._now = time.monotonic
         self._last_activity = self._now()
-        # Connected dashboard tabs (WebSocket clients). When this hits zero the
-        # server shuts itself down after a short grace; `_server` is the running
-        # uvicorn server we ask to exit, set once in run().
-        self._clients = 0
-        self._shutdown_task: Optional[asyncio.Task] = None
+        # The running uvicorn server handle, set once in run(). Closing the
+        # dashboard does NOT stop the tool — only the hands-free auto/cycle mode
+        # disarms itself after AUTO_IDLE_TIMEOUT_SEC of inactivity.
         self._server: Optional["uvicorn.Server"] = None
         self.state: dict = self._initial_state()
 
@@ -287,6 +280,12 @@ class MagosBench:
     async def poll_step(self, active: Optional[str]) -> None:
         """One detection-loop iteration given the reachable host (or None).
         Split out from the loop so the auto/cycle decision logic is testable."""
+        # A configuration is running — mid-run the unit changes IP and briefly
+        # drops, so leave detection state untouched until it finishes (matches
+        # the Teltonika tools). Done first so a run isn't disturbed by a blip.
+        if self.state["busy"]:
+            return
+
         reachable = active is not None
         self._misses = 0 if reachable else self._misses + 1
         self.state["detected"] = reachable
@@ -305,15 +304,13 @@ class MagosBench:
         # Idle auto-disarm: an armed auto/cycle mode with nothing plugged in for
         # AUTO_IDLE_TIMEOUT_SEC turns itself off, so the next unit plugged in
         # long after isn't silently reconfigured.
-        if (not self.state["busy"] and not reachable
+        if (not reachable
                 and (auto["enabled"] or cycle["enabled"])
                 and self._now() - self._last_activity >= AUTO_IDLE_TIMEOUT_SEC):
             self._disarm_idle()
             return
 
-        if self.state["busy"]:
-            pass  # a configuration is running; don't touch the state machine
-        elif reachable:
+        if reachable:
             if phase in ("waiting", "detected") and cycle["enabled"]:
                 channel = self.cycle_channels[cycle["index"]]
                 target = self.resolve_target(channel, None, None)
@@ -463,41 +460,6 @@ class MagosBench:
         return (f"Cycle started — plug in {self.device_word}s one by one. First → "
                 f"channel {first_channel} ({self.channel_ips[first_channel]}).")
 
-    # ── lifecycle: stop when the last browser tab closes ───────────────────────
-
-    def _note_client_connect(self) -> None:
-        """A dashboard tab opened (or reconnected after a refresh)."""
-        self._clients += 1
-        self._cancel_pending_shutdown()
-
-    def _note_client_disconnect(self) -> None:
-        """A dashboard tab closed. With none left, arm the shutdown timer."""
-        self._clients = max(0, self._clients - 1)
-        if self._clients == 0:
-            self._schedule_shutdown()
-
-    def _cancel_pending_shutdown(self) -> None:
-        if self._shutdown_task is not None and not self._shutdown_task.done():
-            self._shutdown_task.cancel()
-        self._shutdown_task = None
-
-    def _schedule_shutdown(self) -> None:
-        self._cancel_pending_shutdown()
-        self._shutdown_task = asyncio.create_task(self._shutdown_after_grace())
-
-    async def _shutdown_after_grace(self) -> None:
-        """Stop the server unless a tab reconnects within the grace window (a
-        refresh) and cancels this."""
-        try:
-            await asyncio.sleep(SHUTDOWN_GRACE_SEC)
-        except asyncio.CancelledError:
-            return
-        if self._clients == 0:
-            self.log.info("Dashboard closed — stopping %s (no tab reconnected "
-                          "within %ds).", self.title, SHUTDOWN_GRACE_SEC)
-            if self._server is not None:
-                self._server.should_exit = True
-
     # ── FastAPI app ────────────────────────────────────────────────────────────
 
     def register_routes(self, app: FastAPI) -> None:
@@ -518,6 +480,11 @@ class MagosBench:
         app = FastAPI(title=self.title, lifespan=lifespan)
         app.mount("/static", StaticFiles(directory=str(self.base_dir / "static")),
                   name="static")
+        # Shared CSS/JS live in the bench_core package so every tool serves one
+        # copy (see bench_core.bench_ui.SHARED_STATIC_DIR).
+        from bench_core.bench_ui import SHARED_STATIC_DIR
+        app.mount("/shared", StaticFiles(directory=str(SHARED_STATIC_DIR)),
+                  name="shared")
 
         @app.get("/")
         async def index():
@@ -534,15 +501,12 @@ class MagosBench:
         @app.websocket("/ws/state")
         async def ws_state(websocket: WebSocket):
             await websocket.accept()
-            self._note_client_connect()
             try:
                 while True:
                     await websocket.send_json(self.public_state())
                     await asyncio.sleep(1)
             except (WebSocketDisconnect, Exception):
                 pass
-            finally:
-                self._note_client_disconnect()
 
         self.register_routes(app)
         return app
@@ -562,8 +526,6 @@ class MagosBench:
         if not os.environ.get("BENCH_NO_BROWSER"):
             with contextlib.suppress(Exception):
                 webbrowser.open(url)
-        # Build the server explicitly (rather than uvicorn.run) so we keep a
-        # handle to ask it to stop when the dashboard tab is closed.
         config = uvicorn.Config(app, host="127.0.0.1", port=self.port,
                                 log_level="warning")
         self._server = uvicorn.Server(config)

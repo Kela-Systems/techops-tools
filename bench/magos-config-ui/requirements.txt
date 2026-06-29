@@ -1,4 +1,0 @@
-# The shared bench helpers (StepCollector, slug, the BenchConfigurator base) and
-# the web stack (fastapi/uvicorn/websockets) come from the local bench-core
-# package, installed editable. requests (used by the Magos clients) comes with it.
--e ../bench-core[ui]

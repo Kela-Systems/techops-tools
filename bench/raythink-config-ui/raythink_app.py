@@ -19,13 +19,13 @@ configure_camera pipeline call.
 from __future__ import annotations
 
 import json
-import socket
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel
 
+from bench_core import tcp_port_open
 from bench_core.bench_ui import (
     DETECT_TIMEOUT_SEC,
     BenchConfigurator,
@@ -60,7 +60,7 @@ class RaythinkConfigurator(BenchConfigurator):
     title = "Raythink Camera Configurator"
     port = 8005
     html_file = "raythink.html"
-    config_filename = "raythink.config.json"
+    config_filename = "config/raythink.config.json"
     log_filename = "raythink-config.log"
     logger_name = "raythink"
     tailscale_label = "raythink"
@@ -141,8 +141,9 @@ class RaythinkConfigurator(BenchConfigurator):
 
     def reload(self) -> str:
         msg = super().reload()
-        # Re-clamp the persisted counter in case the range changed in the config.
-        self.state["cycle_next"], _ = self._load_ip_state()
+        # Re-clamp the persisted counter AND refresh the saved IP mode, in case
+        # either changed in the config/state file since startup.
+        self.state["cycle_next"], self.state["ip_mode"] = self._load_ip_state()
         n = len(self.cfg.get("profiles", {}) or {})
         return f"{msg} {n} profile(s) configured."
 
@@ -194,9 +195,8 @@ class RaythinkConfigurator(BenchConfigurator):
             self._advance_cycle()
 
     def success_message(self, result: dict, entry: dict, took: str) -> str:
-        warn = ""
         return (f"Configured camera at {entry['ip']} (SN {entry['serial']}) via "
-                f"'{entry['profile']}' in {took}{warn}. Connect the next camera.")
+                f"'{entry['profile']}' in {took}. Connect the next camera.")
 
     def dismiss_message(self) -> str:
         return "Connect the next camera…"
@@ -205,11 +205,7 @@ class RaythinkConfigurator(BenchConfigurator):
 
     def _reachable(self, host: str) -> bool:
         port = 443 if self.cfg.get("scheme", "http") == "https" else 80
-        try:
-            with socket.create_connection((host, port), timeout=DETECT_TIMEOUT_SEC):
-                return True
-        except OSError:
-            return False
+        return tcp_port_open(host, port, timeout=DETECT_TIMEOUT_SEC)
 
     async def poll_once(self, loop) -> None:
         if self.state["busy"]:
@@ -309,10 +305,10 @@ class RaythinkConfigurator(BenchConfigurator):
         profiles = self.cfg.get("profiles", {}) or {}
         print(f"  profiles     : {', '.join(profiles) if profiles else 'NONE — add them to the config'}")
         for key, rel in profiles.items():
-            ok = (BASE_DIR / rel).is_file()
+            ok = (BASE_DIR / "config" / rel).is_file()
             print(f"    - {key:<9}: {rel} ({'found' if ok else 'MISSING'})")
         print(f"  config       : "
-              f"{'raythink.config.json' if self.cfg else 'MISSING — copy the example'}")
+              f"{'config/raythink.config.json' if self.cfg else 'MISSING — copy the example'}")
 
 
 configurator = RaythinkConfigurator(BASE_DIR)

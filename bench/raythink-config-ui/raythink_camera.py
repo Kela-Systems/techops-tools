@@ -48,32 +48,20 @@ try:
 except ImportError:
     sys.exit("This script needs 'requests'.  Install it with:  pip install requests")
 
-from bench_core import host_iface_for, renew_host_dhcp
+from bench_core import (
+    format_verification,
+    host_iface_for,
+    install_log_context,
+    renew_host_dhcp,
+    set_log_serial,
+)
 
 # All device-talking steps log through this named logger so the bench UI's
 # StepCollector and rolling file handler pick them up (same pattern as the
-# Teltonika client's "teltonika" logger).
+# Teltonika client's "teltonika" logger). The context filter (shared serial +
+# lowercased level) and set_log_serial come from bench_core.
 log = logging.getLogger("raythink")
-_LOG_CTX = {"sn": "-"}
-
-
-class _ContextFilter(logging.Filter):
-    """Give every record the fields the bench-UI log formatter expects
-    (LOG_LINE_FORMAT uses %(levelname_lc)s and %(sn)s)."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.levelname_lc = record.levelname.lower()
-        if not hasattr(record, "sn"):
-            record.sn = _LOG_CTX["sn"]
-        return True
-
-
-log.addFilter(_ContextFilter())
-
-
-def set_log_serial(serial: Optional[str]) -> None:
-    """Tag subsequent log lines with this camera's serial (None resets to '-')."""
-    _LOG_CTX["sn"] = serial or "-"
+install_log_context(log)
 
 
 # --- Raythink factory defaults ----------------------------------------------
@@ -85,7 +73,6 @@ DEFAULT_NEW_PASSWORD = "Kelafield123!"
 DEFAULT_NTP_SERVER = "192.168.88.10"
 
 # Login error codes from the web's interfaceLogin.js.
-ERR_CHALLENGE = 268632079    # expected on the first (empty-password) call
 ERR_USER_INVALID = 268632070
 ERR_PASSWORD_INVALID = 268632071
 ERR_LOCKED = 268632081
@@ -108,6 +95,8 @@ class RaythinkCameraClient:
     from the login session; never raises on a transport blip during the IP move
     (the device is leaving its address by then)."""
 
+    # verify=False is intentional (bench): the camera's RPC2 API is plain HTTP by
+    # default on a direct local link, so there is no TLS chain to validate.
     def __init__(self, host: str = DEFAULT_HOST, username: str = DEFAULT_USERNAME,
                  scheme: str = DEFAULT_SCHEME, verify: bool = False, timeout: int = 15):
         self.host = host
@@ -188,7 +177,13 @@ class RaythinkCameraClient:
         """Two-step RPC2 login. Stores the session + the working password. Dahua
         firmwares disagree on the hash's hex case, so we try UPPER (the common
         case) then lower before concluding the password is wrong. Raises
-        CameraError on failure (with a clear message for a locked account)."""
+        CameraError on failure (with a clear message for a locked account).
+
+        Note (intentional): the two hex-case attempts each do one full
+        challenge+login, so a genuinely wrong password costs two tries before we
+        give up. That is deliberate — it lets a correct password on the
+        less-common hex case still succeed — and we bail immediately on an
+        explicit ERR_LOCKED so we don't push a device toward lockout."""
         last_code = None
         last_raw = None
         for uppercase in (True, False):
@@ -254,7 +249,7 @@ class RaythinkCameraClient:
             iface = net.get("DefaultInterface") or "eth0"
             eth = net.get(iface, {}) if isinstance(net.get(iface), dict) else {}
             mac = eth.get("PhysicalAddress") or net.get("PhysicalAddress") or "unknown"
-        except CameraError:
+        except Exception:  # noqa: BLE001 — MAC is best-effort; never fail identity over it
             pass
 
         identity = {"serial": serial, "model": model, "firmware": firmware,
@@ -318,8 +313,9 @@ class RaythinkCameraClient:
                 f"userManager.modifyPassword failed: "
                 f"{last_err.get('code')} {last_err.get('message', '')}".strip())
         # The session usually survives, but re-login to be certain everything
-        # downstream runs under the new password.
-        self.password = new_password
+        # downstream runs under the new password. relogin()->login() sets
+        # self.password only on success, so a failed relogin correctly leaves the
+        # client on the still-working old password instead of a wrong one.
         self.relogin([new_password])
         log.info("Password changed.")
 
@@ -493,7 +489,6 @@ class RaythinkCameraClient:
         # Follow the device to its new address.
         self.host = ip
         self.base = f"{self.scheme}://{ip}"
-        self.password = self.password  # unchanged
         deadline = time.time() + wait
         time.sleep(5)
         renew_host_dhcp(iface_host)
@@ -671,10 +666,4 @@ class RaythinkCameraClient:
         return checks
 
 
-def format_verification(checks: list[dict]) -> str:
-    mark = {True: "PASS", False: "FAIL", None: "skip"}
-    width = max((len(c["item"]) for c in checks), default=0)
-    lines = ["── Verification ──"]
-    for c in checks:
-        lines.append(f"  [{mark[c['ok']]}] {c['item']:<{width}}  {c['actual']}")
-    return "\n".join(lines)
+# format_verification is re-exported above from bench_core (identical report).

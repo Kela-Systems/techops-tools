@@ -198,7 +198,7 @@ class RadarBench(MagosBench):
     def register_routes(self, app: FastAPI) -> None:
         @app.post("/api/settings")
         async def update_settings(body: SettingsBody):
-            return self.apply_settings(body.dict(exclude_unset=True))
+            return self.apply_settings(body.model_dump(exclude_unset=True))
 
         @app.post("/api/configure")
         async def configure(body: ConfigureBody):

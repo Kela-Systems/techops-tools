@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kela Bench — Operator Guide</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<style>
+  :root {
+    --bg: #0e1116; --card: #1a1f29; --text: #e6edf3; --muted: #8b95a3;
+    --line: #2a3140; --up: #2ea043; --down: #6e7681; --accent: #2f81f7;
+    --warn: #d29922; --bad: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 40px 20px 80px;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 30px; font-weight: 700; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 16px; }
+  h2 {
+    font-size: 21px; font-weight: 650; margin: 38px 0 12px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--line);
+  }
+  h3 { font-size: 17px; font-weight: 650; margin: 22px 0 6px; }
+  p { margin: 8px 0; }
+  ol, ul { margin: 8px 0; padding-left: 24px; }
+  li { margin: 5px 0; }
+  code {
+    background: #161b22; padding: 1px 6px; border-radius: 5px;
+    font-family: "SF Mono", Consolas, monospace; font-size: 14px; color: var(--text);
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 22px; margin: 14px 0;
+  }
+  .card h3 { margin-top: 0; }
+  .pill { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 9px;
+          border-radius: 20px; vertical-align: middle; margin-left: 8px; }
+  .pill.magos { background: #1f2d1f; color: #7ee787; }
+  .pill.telt  { background: #14223a; color: #79c0ff; }
+  .pill.cam   { background: #2d2418; color: #f0c674; }
+  .note { border-left: 3px solid var(--accent); background: #121722; padding: 10px 16px;
+          border-radius: 0 8px 8px 0; margin: 12px 0; }
+  .note.warn { border-left-color: var(--warn); }
+  .note.bad  { border-left-color: var(--bad); }
+  .note b { color: var(--text); }
+  .dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+         background: var(--down); vertical-align: middle; }
+  .dot.up { background: var(--up); }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 15px; }
+  th, td { border: 1px solid var(--line); padding: 7px 12px; text-align: left; }
+  th { background: #161b22; font-weight: 600; }
+  .big { font-size: 18px; }
+  .toc { columns: 2; gap: 28px; color: var(--muted); }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footer { color: var(--muted); font-size: 13px; margin-top: 50px;
+            border-top: 1px solid var(--line); padding-top: 16px; }
+  a.back { color: var(--accent); text-decoration: none; font-size: 14px; }
+  .logo { width: 64px; height: 64px; border-radius: 14px; vertical-align: middle; margin-right: 14px; }
+  .titlerow { display: flex; align-items: center; margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <a class="back" href="index.html">&larr; Back to dashboard</a>
+  <div class="titlerow">
+    <img class="logo" src="favicon.png" alt="Kela Bench">
+    <h1 style="margin:0;">Kela Bench — Operator Guide</h1>
+  </div>
+  <p class="sub">How to provision devices at the bench. Keep this open on the side screen.</p>
+
+  <div class="card toc">
+    <a href="#start">1. Starting the bench</a><br>
+    <a href="#flow">2. The basic routine</a><br>
+    <a href="#rules">3. Golden rules</a><br>
+    <a href="#magos">4. Magos Radar &amp; APU</a><br>
+    <a href="#teltonika">5. Teltonika OTD500 &amp; RUTM08</a><br>
+    <a href="#camera">6. Raythink camera</a><br>
+    <a href="#issues">7. Known issues &amp; fixes</a><br>
+    <a href="#help">8. When to call an engineer</a>
+  </div>
+
+  <!-- 1 -->
+  <h2 id="start">1. Starting the bench</h2>
+  <ol class="big">
+    <li>Double-click <code>Start Bench Tools.bat</code> on the desktop.</li>
+    <li>A black window opens and stays open — <b>leave it open all day.</b> Closing it stops every tool.</li>
+    <li>After a few seconds the <b>dashboard</b> opens in the browser with five tool cards.</li>
+    <li>Click the card for whatever you're about to plug in. A green
+        <span class="dot up"></span> dot means that tool is ready.</li>
+  </ol>
+  <div class="note"><b>First start of the day / after an update</b> can take a minute while it updates
+    and installs — the dots stay grey until each tool is up. This is normal; just wait.</div>
+
+  <!-- 2 -->
+  <h2 id="flow">2. The basic routine</h2>
+  <p>Every tool works the same way:</p>
+  <p class="big" style="text-align:center; color:var(--muted);">
+    plug a device in &nbsp;&rarr;&nbsp; it's detected &nbsp;&rarr;&nbsp; configure it
+    &nbsp;&rarr;&nbsp; unplug it &nbsp;&rarr;&nbsp; next one
+  </p>
+  <ol>
+    <li>Plug <b>one</b> device into the bench cable. The page detects it and shows its details.</li>
+    <li>Fill in what it asks (site name, channel, or IP — see the per-device sections).</li>
+    <li>Click <b>Configure</b> and watch the progress log. Green tick = done.</li>
+    <li>When it says so, <b>unplug it</b> and plug in the next one.</li>
+  </ol>
+  <div class="note warn"><b>Always unplug the finished device before plugging in the next.</b>
+    Two devices on the cable at once will confuse detection.</div>
+
+  <!-- 3 -->
+  <h2 id="rules">3. Golden rules</h2>
+  <ul class="big">
+    <li>Leave the black <code>Start Bench Tools.bat</code> window open the whole time.</li>
+    <li>One device on the cable at a time.</li>
+    <li>Wait for the green tick before unplugging.</li>
+    <li>If a device is never detected, it's almost always plugged into the <b>wrong port / network</b>
+        for that device — Magos uses a different network from the Teltonika and camera tools.</li>
+    <li>Each device ends up on a final <code>192.168.88.x</code> address. After that it will no longer
+        answer on the factory address — that's expected, it means the move worked.</li>
+  </ul>
+
+  <!-- 4 -->
+  <h2 id="magos">4. Magos Radar &amp; APU <span class="pill magos">network 192.168.40.x</span></h2>
+  <p>Radar opens on its own card; APU on another. Plug the unit in, then choose its <b>channel</b>
+     and click configure. The tool sets the time and the device's permanent IP, then verifies it.</p>
+
+  <h3>Channel → address</h3>
+  <table>
+    <thead><tr><th>Channel</th><th>Radar address</th><th>APU address</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>192.168.88.50</td><td>192.168.88.60</td></tr>
+      <tr><td>1</td><td>192.168.88.51</td><td>192.168.88.61</td></tr>
+      <tr><td>2</td><td>192.168.88.52</td><td>192.168.88.62</td></tr>
+      <tr><td>3</td><td>192.168.88.53</td><td>192.168.88.63</td></tr>
+    </tbody>
+  </table>
+  <div class="note"><b>Manual ("other") IP:</b> if you type your own IP instead of picking a channel,
+    the device goes to <b>exactly</b> that address and the RF channel is left unchanged. Double-check
+    the number — a typo sends the unit to the wrong address.</div>
+
+  <h3>Auto &amp; Cycle (hands-free) modes</h3>
+  <ul>
+    <li><b>Auto</b> — set one target once; every unit you plug in gets configured to it automatically.</li>
+    <li><b>Cycle</b> — configures units in groups of four, giving each the next channel
+        (0 → 1 → 2 → 3, then back to 0). Just keep plugging them in.</li>
+  </ul>
+  <p>Both skip a unit that briefly re-appears (so unplug each one), and both
+     <b>turn themselves off after 10 minutes with nothing plugged in</b> — the page shows a message;
+     just switch the mode back on to continue.</p>
+
+  <!-- 5 -->
+  <h2 id="teltonika">5. Teltonika OTD500 &amp; RUTM08 <span class="pill telt">network 192.168.1.x</span></h2>
+  <p>Plug the router in. The page reads it and asks for two things:</p>
+  <ul>
+    <li><b>Site name</b> — e.g. <code>haifa-port</code>. The device is named after it (<code>otd-haifa-port</code> / <code>rut-haifa-port</code>).</li>
+    <li><b>Label password</b> — the factory password printed on the device's sticker.</li>
+  </ul>
+  <p>Click <b>Configure</b>. The tool does everything else (password, name, time, firmware, RMS,
+     Tailscale, checks) and, for the RUTM08, <b>moves the LAN to <code>192.168.88.1</code> as the last step</b>.</p>
+  <div class="note"><b>Re-running a device that was already configured?</b> Leave the label-password
+    field <b>empty</b> — it's already on the shared password. The RUTM08 page can also pick it up again
+    on its new <code>192.168.88.1</code> address.</div>
+  <div class="note warn"><b>Firmware:</b> if the page warns the firmware image is missing, tell an
+    engineer — the device can't be fully configured without it.</div>
+
+  <!-- 6 -->
+  <h2 id="camera">6. Raythink thermal camera <span class="pill cam">network 192.168.1.x</span></h2>
+  <p>A fresh camera answers on <code>192.168.1.123</code>. Plug it in, then choose:</p>
+  <ul>
+    <li><b>Profile</b> — <code>LAN</code> or <code>Cellular</code> (ask which the job needs).</li>
+    <li><b>IP</b> — either <b>Manual</b> (type the last number, 30–50) or <b>Cycle</b>
+        (the tool picks the next free number automatically: 30, 31, 32 …).</li>
+  </ul>
+  <p>Click <b>Configure</b>. The tool sets the password, imports the profile, sets the time, the ONVIF
+     login, and <b>moves the camera to <code>192.168.88.&lt;number&gt;</code> as the last step</b>, then verifies it.</p>
+  <div class="note"><b>Cycle mode</b> remembers its place even after a restart, and only moves to the
+    next number when a camera finishes cleanly — a failed camera keeps its number for the retry.</div>
+
+  <!-- 7 -->
+  <h2 id="issues">7. Known issues &amp; quick fixes</h2>
+
+  <div class="card">
+    <h3><span class="dot"></span> A tool card stays grey</h3>
+    <p>The tool isn't up yet. On the first start of the day it's still installing — wait a minute and
+       it turns green. If it never turns green, close the black window and run
+       <code>Start Bench Tools.bat</code> again.</p>
+  </div>
+
+  <div class="card">
+    <h3>Device plugged in but never detected</h3>
+    <p>Wrong network for that device. Magos units use the <code>192.168.40.x</code> port; Teltonika and
+       camera units use the <code>192.168.1.x</code> port. Make sure it's the right cable/port, fully
+       seated, and the device has finished booting (give it ~30 seconds). Try once more before asking
+       for help.</p>
+  </div>
+
+  <div class="card">
+    <h3>Configuration failed (red error)</h3>
+    <p>Read the message at the top — it usually says which step failed. Click <b>Dismiss</b>, leave the
+       device plugged in, and click <b>Configure</b> again to retry. Steps that need internet (firmware,
+       RMS, Tailscale) can fail if the SIM/uplink has no signal yet — wait a moment and retry.</p>
+  </div>
+
+  <div class="card">
+    <h3>Device disappeared right after "Configured"</h3>
+    <p>That's normal. Most devices move to a new <code>192.168.88.x</code> address as the last step, so
+       they stop answering on the address they shipped with. The green tick means it worked — unplug
+       and move on.</p>
+  </div>
+
+  <div class="card">
+    <h3>I closed the black window by accident</h3>
+    <p>All tools stopped. Just double-click <code>Start Bench Tools.bat</code> again. (Closing a browser
+       <i>tab</i> is fine — the tools keep running; reopen the tab from the dashboard.)</p>
+  </div>
+
+  <!-- 8 -->
+  <h2 id="help">8. When to call an engineer</h2>
+  <ul>
+    <li>A tool card never turns green even after restarting <code>Start Bench Tools.bat</code>.</li>
+    <li>The page reports a <b>missing firmware image</b> or missing configuration.</li>
+    <li>The same device fails the same step twice after a retry.</li>
+    <li>You're unsure which profile / channel / IP a job should use.</li>
+  </ul>
+
+  <p class="footer">Kela Bench operator guide. The tools auto-update on each start
+    (<code>Start Bench Tools.bat</code>). If something here doesn't match what you see on screen, tell an engineer
+    so this page can be updated.</p>
+
+</div>
+</body>
+</html>

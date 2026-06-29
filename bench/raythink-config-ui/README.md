@@ -47,9 +47,13 @@ only advances on a successful run (a failed camera keeps its slot for a retry).
 ## Setup
 
 ```
-pip install -r requirements.txt   # or just double-click run_raythink on the bench PC
-python3 raythink_app.py           # opens http://127.0.0.1:8005
+cp config/raythink.config.example.json config/raythink.config.json   # then fill in real values
+python3 raythink_app.py                                              # opens http://127.0.0.1:8005
 ```
+
+On the bench PC you don't run this by hand — the top-level launcher
+(`Start Bench Tools.bat` / `start-bench.command`) sets up the shared `.venv` and starts
+every tool together.
 
 The laptop's adapter must be on the `192.168.1.x` subnet to reach the camera at
 `192.168.1.123`; after the run the camera moves to `192.168.88.x`, so be able to
@@ -58,10 +62,11 @@ reach that subnet (DHCP or a `192.168.88.x` address) to confirm the move.
 ### Config profiles
 
 Each profile is a config JSON exported from a reference camera
-(*Setup > System > Export*). Keep the camera's **Network/IP table out** of these
-files — the tool sets the static IP (and NTP) itself, after the import. Real
-`profiles/*.json` are gitignored; only the `*.example.json` templates are
-committed.
+(*Setup > System > Export*), stored under `config/profiles/` (the paths in the
+config are relative to `config/`). Keep the camera's **Network/IP table out** of
+these files — the tool sets the static IP (and NTP) itself, after the import. The
+profile exports ship committed (no secrets); only the real `raythink.config.json`
+(copied from the example) is gitignored.
 
 There is also a single-camera CLI:
 
@@ -72,7 +77,7 @@ python3 raythink_configure.py --profile lan --ip 30
 ## Shared code
 
 This folder must sit next to `bench-core`, the shared local package it installs
-(`-e ../bench-core[ui]`). That package provides the bench-UI base (`bench_ui` —
+(`-e ./bench-core[ui]` from the bench root). That package provides the bench-UI base (`bench_ui` —
 detection loop, run machinery, routes, WebSocket, step logging) and the host
 DHCP-renew helpers. `raythink_camera.py` adds the camera client (RPC2 login,
 config import, NTP, static-IP move, verification); `raythink_configure.py` adds

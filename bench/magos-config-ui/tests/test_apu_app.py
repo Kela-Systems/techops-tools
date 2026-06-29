@@ -4,13 +4,10 @@ Same approach as test_radar_app.py: fake detection sequences + a fake device,
 no hardware or network needed. Run with:  .venv/bin/python -m pytest
 """
 import asyncio
-import contextlib
-from types import SimpleNamespace
 
 import pytest
 
 import apu_app as apu_mod
-import magos_bench
 from magos_bench import AUTO_IDLE_TIMEOUT_SEC, MISS_THRESHOLD
 
 apu = apu_mod.configurator
@@ -207,42 +204,6 @@ def test_device_presence_resets_idle_timer(clock, device):
     clock["t"] += AUTO_IDLE_TIMEOUT_SEC - 1     # not enough since that activity
     poll(None)
     assert apu.state["auto"]["enabled"] is True
-
-
-def test_closing_last_tab_stops_server(monkeypatch):
-    monkeypatch.setattr(magos_bench, "SHUTDOWN_GRACE_SEC", 0.01)
-
-    async def scenario():
-        apu._clients = 0
-        apu._shutdown_task = None
-        apu._server = SimpleNamespace(should_exit=False)
-        apu._note_client_connect()          # tab opened
-        apu._note_client_disconnect()       # tab closed — arms the timer
-        await apu._shutdown_task             # let the grace window elapse
-        return apu._server.should_exit
-
-    assert asyncio.run(scenario()) is True
-
-
-def test_refresh_does_not_stop_server(monkeypatch):
-    monkeypatch.setattr(magos_bench, "SHUTDOWN_GRACE_SEC", 0.05)
-
-    async def scenario():
-        apu._clients = 0
-        apu._shutdown_task = None
-        apu._server = SimpleNamespace(should_exit=False)
-        apu._note_client_connect()          # tab opened
-        apu._note_client_disconnect()       # refresh drops the socket...
-        pending = apu._shutdown_task
-        apu._note_client_connect()          # ...and reconnects right away
-        with contextlib.suppress(asyncio.CancelledError):
-            await pending                    # the armed stop was cancelled
-        await asyncio.sleep(0.1)             # well past the old grace window
-        return apu._server.should_exit, apu._clients
-
-    should_exit, clients = asyncio.run(scenario())
-    assert should_exit is False
-    assert clients == 1
 
 
 def test_configure_route_rejects_when_not_detected():

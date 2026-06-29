@@ -23,13 +23,13 @@ CLI (single camera):
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 
+from bench_core import load_settings, make_step_runner
 from raythink_camera import (
     DEFAULT_HOST,
     DEFAULT_INITIAL_PASSWORD,
@@ -57,13 +57,17 @@ def device_name(octet: int) -> str:
     return f"raythink-{octet}"
 
 
+CONFIG_DIR = BASE_DIR / "config"
+
+
 def resolve_profile(settings: dict, profile_name: str) -> Path:
-    """Map a profile key (e.g. 'lan') to its JSON file under the tool folder."""
+    """Map a profile key (e.g. 'lan') to its JSON file. Relative paths in the
+    config (e.g. 'profiles/lan.json') resolve against the config/ folder."""
     profiles = settings.get("profiles", {}) or {}
     rel = profiles.get(profile_name)
     if not rel:
         raise CameraError(f"Unknown profile '{profile_name}'. Known: {', '.join(profiles) or '(none)'}.")
-    path = (BASE_DIR / rel) if not Path(rel).is_absolute() else Path(rel)
+    path = (CONFIG_DIR / rel) if not Path(rel).is_absolute() else Path(rel)
     if not path.is_file():
         raise CameraError(f"Profile file for '{profile_name}' not found: {path}")
     return path
@@ -109,14 +113,7 @@ def configure_camera(client: RaythinkCameraClient, *, profile_name: str,
     # 2. Password change (critical — aborts the run on failure).
     client.modify_password(new_pw, client.password or initial_pw)
 
-    failures: list[str] = []
-
-    def _step(label: str, fn) -> None:
-        try:
-            fn()
-        except CameraError as e:
-            failures.append(f"{label}: {e}")
-            log.error("Step '%s' FAILED: %s", label, e)
+    failures, _step = make_step_runner(log, CameraError)
 
     # 3. Import the chosen config profile, then re-login (an import can drop the
     # session or reboot the camera).
@@ -184,18 +181,13 @@ def configure_camera(client: RaythinkCameraClient, *, profile_name: str,
             "profile": profile_name, "ip": target_ip}
 
 
-def load_settings(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return {k: v for k, v in json.load(f).items() if not k.startswith("_")}
-
-
 def main():
     p = argparse.ArgumentParser(description="Provision a single Raythink camera.")
     p.add_argument("--profile", required=True, help="config profile key (e.g. lan, cellular)")
     p.add_argument("--ip", required=True, type=int,
                    help="last octet of the static IP (e.g. 30 -> 192.168.88.30)")
-    p.add_argument("--config", default=str(BASE_DIR / "raythink.config.json"),
-                   help="shared settings JSON (default: raythink.config.json)")
+    p.add_argument("--config", default=str(BASE_DIR / "config" / "raythink.config.json"),
+                   help="shared settings JSON (default: config/raythink.config.json)")
     args = p.parse_args()
 
     handler = logging.StreamHandler()
@@ -227,8 +219,7 @@ def main():
                                   settings=settings)
     except CameraError as e:
         log.error("Provisioning FAILED: %s", e)
-        client.close()
-        sys.exit(1)
+        sys.exit(1)          # the finally below closes the client exactly once
     finally:
         client.close()
     sys.exit(0 if result["ok"] else 1)

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kela Bench — Device Provisioning</title>
+<link rel="icon" type="image/png" href="favicon.png">
 <style>
   :root {
     --bg: #0e1116; --card: #1a1f29; --card-hover: #222936;
@@ -42,19 +43,26 @@
   .status.up { color: var(--up); }
   .tip { color: var(--muted); font-size: 13px; margin-top: 32px; max-width: 620px; text-align: center; }
   .tip code { background: #161b22; padding: 1px 6px; border-radius: 5px; color: var(--text); }
+  .logo { width: 84px; height: 84px; border-radius: 18px; margin-bottom: 16px; display: block; }
 </style>
 </head>
 <body>
+  <img class="logo" src="favicon.png" alt="Kela Bench">
   <h1>Kela Bench</h1>
   <p class="sub">Device provisioning — pick the tool for what you're plugging in.</p>
+
+  <p style="margin:-18px 0 28px;">
+    <a href="guide.html" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;font-weight:600;">📖 Operator guide</a>
+    <span style="color:var(--muted);"> — how to use the tools, gotchas &amp; fixes</span>
+  </p>
 
   <div class="grid" id="grid"></div>
 
   <p class="tip">
-    Closing a tool's browser tab stops that tool (a refresh keeps it running);
-    reopen it with its <code>run_*</code> launcher. A grey dot means the server
-    isn't up — its tab was closed, it's still starting on the first run while it
-    installs, or you launched this dashboard without <code>START HERE.bat</code>.
+    All tools keep running until you close the launcher window; closing a tool's
+    browser tab just hides it. A grey dot means the server isn't up — it's still
+    starting on the first run while it installs, or you launched this dashboard
+    without <code>Start Bench Tools.bat</code> (Windows) / <code>start-bench.command</code> (macOS).
   </p>
 
 <script>

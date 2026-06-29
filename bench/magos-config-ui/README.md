@@ -5,10 +5,10 @@ the same *plug in → detect → configure → unplug → repeat* workflow as th
 the [bench tools](../README.md):
 
 
-| Tool  | Device                             | Port | Launcher (`.bat` = Windows, `.command` = macOS) |
-| ----- | ---------------------------------- | ---- | ----------------------------------------------- |
-| Radar | Magos AR-300 **radar**             | 8001 | `run_radar`                                     |
-| APU   | Magos **AR Processing Unit (APU)** | 8002 | `run_apu`                                       |
+| Tool  | Device                             | Port |
+| ----- | ---------------------------------- | ---- |
+| Radar | Magos AR-300 **radar**             | 8001 |
+| APU   | Magos **AR Processing Unit (APU)** | 8002 |
 
 
 Both run independently on their own ports, so you can provision a radar and an
@@ -21,11 +21,10 @@ APU side by side.
 > boots on `192.168.40.50` (or `.60`); a fresh APU boots on `192.168.40.60`.
 > Both ship as `admin:password`.
 
-1. Double-click the launcher for the device you're plugging in:
-  - **Radar:** `run_radar.bat` (Windows) or `run_radar.command` (macOS)
-  - **APU:** `run_apu.bat` (Windows) or `run_apu.command` (macOS)
-   First run creates a local `.venv` and installs dependencies (needs internet
-   once); later runs just start the server and open your browser.
+1. Start the bench with the top-level launcher (`Start Bench Tools.bat` on Windows or
+   `start-bench.command` on macOS). It sets up the shared `.venv` and starts
+   every tool — radar on 8001, APU on 8002 — then opens the dashboard. First run
+   installs dependencies (needs internet once).
 2. Plug a device into the laptop. The page detects it on the factory IP.
 3. Pick the **channel** (0–3) or enter a manual IP, then click configure. The
   tool sets NTP + timezone and the static IP (the APU also sets the controlled
@@ -111,12 +110,12 @@ Pass `--host`, `--ip`, `--ntp`, etc. to drive them explicitly, or set
 hooks (`resolve_target`, `do_configure`, `build_entry`, `success_message`);
 all the common machinery lives in `magos_bench.py`.
 - The generic bench-UI helpers (`StepCollector`, `slug`) come from the shared
-`bench-core` package, installed editable (`-e ../bench-core[ui]`), which is why
-this folder must stay a sibling of `bench-core/` inside `bench/`.
+`bench-core` package, installed editable into the bench-root `.venv`
+(`-e ./bench-core[ui]`), which is why this folder must stay a sibling of
+`bench-core/` inside `bench/`.
 - Both device clients log through the `magos` logger, so step lines render the
 same in the CLI and the UI.
-- Install the runtime deps with `pip install -r requirements.txt`; add `pytest`
-via `requirements-dev.txt`.
-- Tests: `test_radar_app.py` / `test_apu_app.py` exercise the state machine and
-run with no hardware (`pytest`).
+- Tests live in `tests/` (`test_radar_app.py` / `test_apu_app.py`); they exercise
+the state machine and run with no hardware. From the bench root:
+`.venv/bin/python -m pytest`.
 

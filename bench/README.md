@@ -19,13 +19,19 @@ double-click differs.
    - **macOS:** the [python.org installer](https://www.python.org/downloads/),
      or `brew install python`.
 2. Start everything with one double-click:
-   - **Windows:** `START HERE.bat`
+   - **Windows:** `Start Bench Tools.bat`
    - **macOS:** `start-bench.command` (it opens in Terminal)
 
-   It launches all the tools and opens the dashboard in your browser.
+   It pulls the latest tools (`git`), sets up the shared environment, launches
+   all five tools, and opens the dashboard in your browser.
 3. On the dashboard, click the tool for whatever you're plugging in. A green dot
    means that tool is up; grey means it's still starting (first run installs
    dependencies — give it a moment) or stopped.
+
+> **Operators:** step-by-step instructions, gotchas, and fixes live in the
+> **Operator guide** — linked from the dashboard, optionally opened by
+> `Start Bench Tools.bat` (it asks, or set `BENCH_OPEN_GUIDE=1` to always open it; drag
+> it to the side screen), and in `OPERATOR-GUIDE.md` (the version kept in Notion).
 
 ```
 double-click launcher  →  dashboard  ┌───────────────────────────────────────────┐
@@ -37,13 +43,17 @@ double-click launcher  →  dashboard  ┌────────────�
                                      └───────────────────────────────────────────┘
 ```
 
-To run just one tool, open its folder and double-click its own launcher —
-`run_*.bat` on Windows or `run_*.command` on macOS. To stop a tool, close its
-console window (Windows) or press Ctrl+C / close the Terminal tab (macOS).
+There is a single launcher that starts all five tools together (they run side by
+side on fixed, non-colliding ports). To stop everything, close the launcher
+window (Windows) or press Ctrl+C in the Terminal (macOS).
 
-> **macOS first-launch:** if Gatekeeper blocks a `.command` ("unidentified
-> developer"), right-click it → **Open** once, or run `chmod +x *.command` in the
-> `bench/` folder if the executable bit was lost in transit.
+> **Frozen bench:** every launch does a best-effort `git pull` to get the latest
+> tools. To freeze the version currently on disk (e.g. mid-session), set
+> `BENCH_NO_PULL=1` before launching.
+
+> **macOS first-launch:** if Gatekeeper blocks `start-bench.command`
+> ("unidentified developer"), right-click it → **Open** once, or run
+> `chmod +x start-bench.command` if the executable bit was lost in transit.
 
 > **Network adapter:** each tool talks to a device on a specific subnet — the
 > dashboard card and the tool's own page tell you which. If a device is plugged
@@ -51,37 +61,39 @@ console window (Windows) or press Ctrl+C / close the Terminal tab (macOS).
 
 ## The tools
 
-| Folder | Device | Port | Launcher (`.bat` = Windows, `.command` = macOS) | Notes |
-| --- | --- | --- | --- | --- |
-| `magos-config-ui/` | Magos AR-300 **radar** | 8001 | `run_radar` | factory subnet `192.168.40.x` |
-| `magos-config-ui/` | Magos **APU** | 8002 | `run_apu` | factory IP `192.168.40.60` |
-| `otd-config-ui/` | Teltonika **OTD500** | 8003 | `run_otd` | manifest-driven, factory `192.168.1.1` |
-| `rutm-config-ui/` | Teltonika **RUTM08** | 8004 | `run_rutm` | no manifest, factory `192.168.1.1` |
-| `raythink-config-ui/` | Raythink **thermal camera** | 8005 | `run_raythink` | no manifest, factory `192.168.1.123`, RPC2 API |
+| Folder | Device | Port | Notes |
+| --- | --- | --- | --- |
+| `magos-config-ui/` | Magos AR-300 **radar** | 8001 | factory subnet `192.168.40.x` |
+| `magos-config-ui/` | Magos **APU** | 8002 | factory IP `192.168.40.60` |
+| `otd-config-ui/` | Teltonika **OTD500** | 8003 | one device at a time, factory `192.168.1.1` |
+| `rutm-config-ui/` | Teltonika **RUTM08** | 8004 | one device at a time, factory `192.168.1.1` |
+| `raythink-config-ui/` | Raythink **thermal camera** | 8005 | factory `192.168.1.123`, RPC2 API |
 
-Every launcher ships in two forms — `run_*.bat` (Windows) and `run_*.command`
-(macOS) — that do the same thing. The ports are fixed and don't collide, so all
-the tools can run side by side.
+The ports are fixed and don't collide, so all the tools run side by side under
+the one launcher.
 
 ## For engineers
 
 - **`bench-core/`** is the shared local package (`bench_core`). It holds the
   bench-UI base (`bench_core.bench_ui.BenchConfigurator` — the FastAPI shell,
-  detection-loop wrapper, WebSocket state feed, step logging) and the Teltonika
-  RutOS device client (`bench_core` top level). The OTD and RUTM apps install it
-  editable (`-e ../bench-core[ui]`), which is why the tool folders must stay
-  siblings inside `bench/`. The Raythink camera tool reuses the same bench-UI
-  base but ships its own device client (`raythink_camera.py`, a Dahua-OEM RPC2
-  JSON client) instead of the Teltonika one — proof the base is protocol-agnostic.
-- Each tool's launcher (`run_*.bat` / `run_*.command`) creates a per-tool `.venv`
-  on first run and re-syncs `requirements.txt` every run (a near-instant no-op
-  once installed).
-- The master launchers (`START HERE.bat` / `start-bench.command`) set
-  `BENCH_NO_BROWSER=1` before launching the tools so only the dashboard opens a
-  tab; running a single tool's launcher directly still opens its own tab. On
-  macOS the tools run as background jobs in the launcher's Terminal window,
-  and Ctrl+C there stops them all.
-- Tests: the Magos apps ship `pytest` state-machine tests
-  (`magos-config-ui/test_*.py`) that run with no hardware.
-- Secrets stay local: real `*.config.json` / `manifest.csv` / `firmware/` are
-  gitignored; only the `*.example.*` templates are committed.
+  detection-loop wrapper, WebSocket state feed, step logging), the Teltonika
+  RutOS device client, and the small shared helpers (`load_settings`,
+  `make_step_runner`, `tcp_port_open`, the logging context, `format_verification`).
+  Every tool installs it editable (`-e ./bench-core[ui]`), which is why the tool
+  folders must stay siblings inside `bench/`. The Raythink camera tool reuses the
+  same bench-UI base but ships its own device client (`raythink_camera.py`, a
+  Dahua-OEM RPC2 JSON client) instead of the Teltonika one — proof the base is
+  protocol-agnostic.
+- **One shared `.venv`** lives at the `bench/` root and is used by all five
+  tools. The launchers (`Start Bench Tools.bat` / `start-bench.command`) create it on
+  first run, `git pull` (unless `BENCH_NO_PULL=1`), and re-sync the single
+  `requirements.txt` every run (a near-instant no-op once installed). They set
+  `BENCH_NO_BROWSER=1` so only the dashboard opens a tab. On macOS the tools run
+  as background jobs in the launcher's Terminal window, and Ctrl+C stops them all.
+- **Config** lives per tool under `<tool>/config/` (e.g.
+  `otd-config-ui/config/site.config.json`, `raythink-config-ui/config/profiles/`).
+  Copy the committed `*.example.*` template alongside it and fill in real values.
+- **Tests** live per tool under `<tool>/tests/` and run with no hardware. From
+  the `bench/` root: `.venv/bin/python -m pytest` runs every tool's suite.
+- Secrets stay local: real `*.config.json`, exported `profiles/`, and `firmware/`
+  are gitignored; only the `*.example.*` templates are committed.

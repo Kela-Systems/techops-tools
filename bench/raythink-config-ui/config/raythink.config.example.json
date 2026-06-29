@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to raythink.config.json (gitignored). Shared settings applied to every Raythink camera; the config profile (LAN/Cellular) and the static-IP octet are chosen in the UI per camera (no manifest).",
+  "_comment": "Copy to raythink.config.json (gitignored) and adjust as needed. Shared settings applied to every Raythink camera; the config profile (LAN/Cellular) and the static-IP octet are chosen in the UI per camera (one camera at a time).",
 
   "host": "192.168.1.123",
   "username": "admin",
@@ -22,7 +22,7 @@
     "default_mode": "manual"
   },
 
-  "_comment_profiles": "Each profile is a config JSON exported from a reference camera (Setup > System > Export). Import replays each config table via setConfig. Real profiles/*.json are gitignored; commit only the *.example.json templates. Keep the device's Network/IP table OUT of these files — the tool sets the static IP and NTP itself, after the import.",
+  "_comment_profiles": "Each profile is a config JSON exported from a reference camera (Setup > System > Export), stored under config/profiles/ (paths are relative to config/). Import replays each config table via setConfig. The profile exports ship committed (no secrets). Keep the device's Network/IP table OUT of these files — the tool sets the static IP and NTP itself, after the import.",
   "profiles": {
     "lan": "profiles/lan.json",
     "cellular": "profiles/cellular.json"

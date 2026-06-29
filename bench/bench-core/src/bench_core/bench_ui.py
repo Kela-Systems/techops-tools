@@ -44,6 +44,9 @@ except ImportError:  # pragma: no cover - requests is a hard dep in practice
 POLL_INTERVAL_SEC = 2.0
 DETECT_TIMEOUT_SEC = 1.0
 
+# Shared static assets (bench.css / bench.js), served by every tool at /shared.
+SHARED_STATIC_DIR = Path(__file__).resolve().parent / "static"
+
 # Secret-bearing config paths redacted before the state is sent to the browser.
 _REDACT_PATHS = (("new_password",), ("tailscale", "auth_key"), ("tailscale", "api_key"),
                  ("rms", "auth_code"), ("rms", "api_token"))
@@ -298,7 +301,7 @@ class BenchConfigurator:
             identity = result["identity"]
             warnings = result.get("warnings", [])
             verification = result.get("verification", [])
-            ok = result.get("ok", True)
+            ok = result.get("ok", False)   # absent "ok" must read as failure, not success
             if not ok:
                 problems = list(result.get("failures", []))
                 problems += [f"verify:{c['item']}" for c in verification if c["ok"] is False]
@@ -429,6 +432,9 @@ class BenchConfigurator:
         app = FastAPI(title=self.title, lifespan=lifespan)
         app.mount("/static", StaticFiles(directory=str(self.base_dir / "static")),
                   name="static")
+        # Shared CSS/JS live in this package so every tool serves one copy.
+        app.mount("/shared", StaticFiles(directory=str(SHARED_STATIC_DIR)),
+                  name="shared")
 
         @app.get("/")
         async def index():
@@ -457,8 +463,11 @@ class BenchConfigurator:
                 while True:
                     await websocket.send_json(self.public_state())
                     await asyncio.sleep(1)
-            except (WebSocketDisconnect, Exception):
-                pass
+            except WebSocketDisconnect:
+                pass  # client closed the tab — normal
+            except Exception:
+                # Don't swallow real bugs silently; log so they're diagnosable.
+                self.logger.exception("WebSocket state push failed.")
 
         self.register_routes(app)
         return app

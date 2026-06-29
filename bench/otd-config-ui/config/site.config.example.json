@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to site.config.json (gitignored) and fill in real secrets. These are the shared settings applied to every OTD500 in a batch; only the per-device label password + site name come from the manifest CSV.",
+  "_comment": "Copy to site.config.json (gitignored) and fill in real secrets. These are the shared settings applied to every OTD500; the site name + label password are typed into the UI per device (one device at a time).",
 
   "host": "192.168.1.1",
   "username": "admin",
@@ -27,7 +27,7 @@
   "rms": {
     "enabled": true,
     "connection_type": "enabled",
-    "_comment_auth_code": "Optional per-company RMS authentication code. Leave blank if you pre-register devices in RMS (see rms_register.py) — then they connect by serial+MAC without a code.",
+    "_comment_auth_code": "Optional per-company RMS authentication code. Leave blank to register each device by serial+MAC at run time (set api_token + company_id below) — then they connect without a code.",
     "auth_code": "",
     "_comment_api": "api_token must be an RMS Personal Access Token with the 'devices:read' + 'devices:write' scopes, and the account must have 2FA enabled (else the API returns 403). The bench run auto-registers each device by serial+MAC; password_confirmation uses new_password above. device_series is the RMS device family ('otd' for OTD500).",
     "api_token": "",
@@ -47,7 +47,7 @@
   },
 
   "esim": {
-    "_comment": "eSIM is optional and per-device (activation code lives in the manifest). enabled=false skips it entirely even if a code is present.",
+    "_comment": "eSIM provisioning needs a per-device activation code, which the single-device UI does not collect, so keep enabled=false.",
     "enabled": false
   }
 }
