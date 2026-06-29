@@ -50,17 +50,17 @@ map_features_*.csv
 *.tif
 *.tiff
 
-# OTD500 tool — real per-device manifest (label passwords) + secrets/config
-bench/otd-config-ui/manifest.csv
-bench/otd-config-ui/site.config.json
+# OTD500 tool — real secrets/config + firmware images
+bench/otd-config-ui/config/site.config.json
 bench/otd-config-ui/firmware/
 
 # RUTM08 tool — real secrets/config + firmware images
-bench/rutm-config-ui/rutm.config.json
+bench/rutm-config-ui/config/rutm.config.json
 bench/rutm-config-ui/firmware/
 
-# Raythink camera tool — real secrets/config, exported profiles, IP counter.
-# Commit only the *.example.* templates.
+# Raythink camera tool — real config (copy from the example) + IP counter.
+# The config/profiles/ exports ship committed (no secrets; needed at runtime).
+bench/raythink-config-ui/config/raythink.config.json
 bench/raythink-config-ui/ip_state.json
 
 # Logs

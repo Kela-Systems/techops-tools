@@ -11,7 +11,7 @@ Pull out whatever's useful.
 ```
 techops-tools/
 ├── bench/                         ← the Windows bench PC tools (see bench/README.md)
-│   ├── START HERE.bat             Launch all four configurators + open the dashboard
+│   ├── Start Bench Tools.bat      Launch all the configurators + open the dashboard
 │   ├── launcher/                  The dashboard landing page
 │   ├── bench-core/                Shared package: bench-UI base + Teltonika device client
 │   ├── magos-config-ui/           Magos AR-300 radar (:8001) + APU (:8002)
@@ -67,7 +67,7 @@ Python packages (only needed where noted):
 The radar / APU / OTD500 / RUTM08 configurators that run on the bench PC have
 moved under [`bench/`](bench/), with their own operator guide in
 [`bench/README.md`](bench/README.md). Short version: copy the `bench/` folder to
-the bench machine and double-click the master launcher — **`bench/START HERE.bat`**
+the bench machine and double-click the master launcher — **`bench/Start Bench Tools.bat`**
 on Windows or **`bench/start-bench.command`** on macOS. It starts all four (ports
 8001–8004, no collisions) and opens one dashboard that links to each. Each tool
 also has its own `run_*.bat` / `run_*.command` for running it alone.
