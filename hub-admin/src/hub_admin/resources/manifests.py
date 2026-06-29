@@ -1,5 +1,7 @@
 """Manifest queries — list, get schemas, resolve names."""
 
+from __future__ import annotations
+
 from google.protobuf.json_format import MessageToDict
 
 import grpc

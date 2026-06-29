@@ -1,5 +1,7 @@
 """Integration CRUD — list existing, create new, export to device_config."""
 
+from __future__ import annotations
+
 import re
 
 from google.protobuf import struct_pb2
