@@ -32,7 +32,7 @@ python3 rutm_app.py                                           # opens http://127
 ```
 
 On the bench PC you don't run this by hand — the top-level launcher
-(`Start Bench Tools.bat` / `start-bench.command`) sets up the shared `.venv` and starts
+(`Start Bench Tools.bat` / `start-bench.sh`) sets up the shared `.venv` and starts
 every tool together.
 
 The laptop's Ethernet adapter must be on DHCP and plugged into a LAN port of

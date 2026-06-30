@@ -22,7 +22,7 @@ APU side by side.
 > Both ship as `admin:password`.
 
 1. Start the bench with the top-level launcher (`Start Bench Tools.bat` on Windows or
-   `start-bench.command` on macOS). It sets up the shared `.venv` and starts
+   `start-bench.sh` on macOS/Linux). It sets up the shared `.venv` and starts
    every tool — radar on 8001, APU on 8002 — then opens the dashboard. First run
    installs dependencies (needs internet once).
 2. Plug a device into the laptop. The page detects it on the factory IP.

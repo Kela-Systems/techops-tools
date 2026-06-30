@@ -67,8 +67,8 @@ Python packages (only needed where noted):
 The radar / APU / OTD500 / RUTM08 configurators that run on the bench PC have
 moved under [`bench/`](bench/), with their own operator guide in
 [`bench/README.md`](bench/README.md). Short version: copy the `bench/` folder to
-the bench machine and double-click the master launcher — **`bench/Start Bench Tools.bat`**
-on Windows or **`bench/start-bench.command`** on macOS. It starts all four (ports
+the bench machine and run the master launcher — **`bench/Start Bench Tools.bat`**
+on Windows or **`bench/start-bench.sh`** on macOS/Linux. It starts all four (ports
 8001–8004, no collisions) and opens one dashboard that links to each. Each tool
 also has its own `run_*.bat` / `run_*.command` for running it alone.
 

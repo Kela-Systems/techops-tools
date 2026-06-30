@@ -3,7 +3,7 @@ REM ===========================================================================
 REM  Kela Bench - master launcher
 REM
 REM  Double-click this to start ALL bench configurators at once and open the
-REM  dashboard in one browser tab. Each tool runs in its own console window:
+REM  dashboard in one browser tab. All tools run inside THIS one window:
 REM
 REM    Magos Radar      -> http://127.0.0.1:8001   (adapter on 192.168.40.x)
 REM    Magos APU        -> http://127.0.0.1:8002   (adapter on 192.168.40.x)
@@ -64,12 +64,14 @@ REM Tell each tool not to open its own browser tab - this launcher opens the
 REM dashboard (which links to all five) instead.
 set "BENCH_NO_BROWSER=1"
 
-echo Starting all bench configurators (one console window each)...
-start "Magos Radar"      cmd /c "cd /d "%~dp0magos-config-ui"    && "%~dp0.venv\Scripts\python.exe" app.py"
-start "Magos APU"        cmd /c "cd /d "%~dp0magos-config-ui"    && "%~dp0.venv\Scripts\python.exe" apu_app.py"
-start "Teltonika OTD500" cmd /c "cd /d "%~dp0otd-config-ui"      && "%~dp0.venv\Scripts\python.exe" otd_app.py"
-start "Teltonika RUTM08" cmd /c "cd /d "%~dp0rutm-config-ui"     && "%~dp0.venv\Scripts\python.exe" rutm_app.py"
-start "Raythink Camera"  cmd /c "cd /d "%~dp0raythink-config-ui" && "%~dp0.venv\Scripts\python.exe" raythink_app.py"
+echo Starting all bench configurators in this window...
+REM /b runs each tool in THIS console instead of spawning its own window;
+REM /d sets the tool's working directory. Closing this window stops them all.
+start "Magos Radar"      /d "%~dp0magos-config-ui"    /b "%~dp0.venv\Scripts\python.exe" app.py
+start "Magos APU"        /d "%~dp0magos-config-ui"    /b "%~dp0.venv\Scripts\python.exe" apu_app.py
+start "Teltonika OTD500" /d "%~dp0otd-config-ui"      /b "%~dp0.venv\Scripts\python.exe" otd_app.py
+start "Teltonika RUTM08" /d "%~dp0rutm-config-ui"     /b "%~dp0.venv\Scripts\python.exe" rutm_app.py
+start "Raythink Camera"  /d "%~dp0raythink-config-ui" /b "%~dp0.venv\Scripts\python.exe" raythink_app.py
 
 REM Give the servers a moment to come up, then open the dashboard once.
 timeout /t 6 >nul
@@ -81,5 +83,11 @@ if "%BENCH_OPEN_GUIDE%"=="1" start "" "%~dp0launcher\guide.html"
 
 echo.
 echo Dashboard opened: launcher\index.html  (guide: launcher\guide.html)
-echo Five tool windows are starting. You can close THIS window.
-echo (Close a tool's own window to stop that tool.)
+echo All five tools are now running in THIS window.
+echo Leave it open while you work; close it (or press Ctrl+C) to stop ALL tools.
+echo.
+
+REM Keep this console alive so the tools keep running and stay attached to it.
+:bench_wait
+timeout /t 3600 >nul
+goto bench_wait

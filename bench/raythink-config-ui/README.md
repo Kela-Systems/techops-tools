@@ -52,7 +52,7 @@ python3 raythink_app.py                                              # opens htt
 ```
 
 On the bench PC you don't run this by hand — the top-level launcher
-(`Start Bench Tools.bat` / `start-bench.command`) sets up the shared `.venv` and starts
+(`Start Bench Tools.bat` / `start-bench.sh`) sets up the shared `.venv` and starts
 every tool together.
 
 The laptop's adapter must be on the `192.168.1.x` subnet to reach the camera at

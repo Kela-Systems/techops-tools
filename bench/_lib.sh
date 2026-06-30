@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for the macOS bench launcher (start-bench.command).
+# Shared helpers for the macOS/Linux bench launcher (start-bench.sh).
 # This file is SOURCED, not executed.
 #
 # The bench tools need Python 3.10+ (the pinned web stack — websockets 16 — needs

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ===========================================================================
-#  Kela Bench - macOS master launcher  (the equivalent of Start Bench Tools.bat)
+#  Kela Bench - macOS/Linux master launcher  (the equivalent of
+#  Start Bench Tools.bat on Windows)
 #
-#  Double-click this in Finder to start ALL bench configurators at once and open
+#  Run this from a terminal to start ALL bench configurators at once and open
 #  the dashboard in one browser tab:
 #
 #    Magos Radar      -> http://127.0.0.1:8001   (adapter on 192.168.40.x)
@@ -15,6 +16,7 @@
 #  tools (git) and installs requirements (needs internet that once, then it's a
 #  near-instant no-op). Set BENCH_NO_PULL=1 to freeze the on-disk version.
 #
+#  Usage:   ./start-bench.sh        (chmod +x once if needed)
 #  Leave this window open. Press Ctrl+C here to stop everything.
 # ===========================================================================
 set -uo pipefail
@@ -36,8 +38,6 @@ pids=()
 cleanup() {
   echo
   echo "Stopping all bench tools..."
-  # Guard the loop: macOS ships bash 3.2, where "${arr[@]}" on an empty array
-  # trips `set -u`.
   if [ "${#pids[@]}" -gt 0 ]; then
     for p in "${pids[@]}"; do
       kill "$p" 2>/dev/null || true
@@ -62,7 +62,18 @@ start "Raythink Camera"  "raythink-config-ui" "raythink_app.py"
 # dashboard once. The dashboard re-polls, so any tool still warming up will flip
 # to online on its own shortly after.
 sleep 6
-open "launcher/index.html" 2>/dev/null || true
+# Open the dashboard with whatever's available: `open` on macOS, `xdg-open`
+# (or sensible-browser) on Linux, else just print the path to open manually.
+DASH="$ROOT/launcher/index.html"
+if command -v open >/dev/null 2>&1; then
+  open "$DASH" >/dev/null 2>&1 || true
+elif command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "$DASH" >/dev/null 2>&1 || true
+elif command -v sensible-browser >/dev/null 2>&1; then
+  sensible-browser "$DASH" >/dev/null 2>&1 || true
+else
+  echo "  (no browser opener found — open this in your browser: file://$DASH)"
+fi
 
 echo
 echo "All five tools are running. Dashboard: launcher/index.html"

@@ -27,7 +27,7 @@ python3 otd_app.py                                            # opens http://127
 ```
 
 On the bench PC you don't run these by hand — the top-level launcher
-(`Start Bench Tools.bat` / `start-bench.command`) sets up the shared `.venv` and starts
+(`Start Bench Tools.bat` / `start-bench.sh`) sets up the shared `.venv` and starts
 every tool together.
 
 The laptop's Ethernet adapter must be on the `192.168.1.x` subnet and plugged

@@ -18,9 +18,9 @@ double-click differs.
      — tick *"Add python.exe to PATH"*.
    - **macOS:** the [python.org installer](https://www.python.org/downloads/),
      or `brew install python`.
-2. Start everything with one double-click:
-   - **Windows:** `Start Bench Tools.bat`
-   - **macOS:** `start-bench.command` (it opens in Terminal)
+2. Start everything with one launcher:
+   - **Windows:** double-click `Start Bench Tools.bat`
+   - **macOS/Linux:** run `./start-bench.sh` from a terminal in this folder
 
    It pulls the latest tools (`git`), sets up the shared environment, launches
    all five tools, and opens the dashboard in your browser.
@@ -45,15 +45,15 @@ double-click launcher  →  dashboard  ┌────────────�
 
 There is a single launcher that starts all five tools together (they run side by
 side on fixed, non-colliding ports). To stop everything, close the launcher
-window (Windows) or press Ctrl+C in the Terminal (macOS).
+window (Windows) or press Ctrl+C in the terminal (macOS/Linux).
 
 > **Frozen bench:** every launch does a best-effort `git pull` to get the latest
 > tools. To freeze the version currently on disk (e.g. mid-session), set
 > `BENCH_NO_PULL=1` before launching.
 
-> **macOS first-launch:** if Gatekeeper blocks `start-bench.command`
-> ("unidentified developer"), right-click it → **Open** once, or run
-> `chmod +x start-bench.command` if the executable bit was lost in transit.
+> **macOS/Linux first-launch:** if the script won't run, restore the executable
+> bit with `chmod +x start-bench.sh` (it can be lost in transit). On macOS, if
+> Gatekeeper complains, run it from the terminal rather than Finder.
 
 > **Network adapter:** each tool talks to a device on a specific subnet — the
 > dashboard card and the tool's own page tell you which. If a device is plugged
@@ -85,11 +85,11 @@ the one launcher.
   Dahua-OEM RPC2 JSON client) instead of the Teltonika one — proof the base is
   protocol-agnostic.
 - **One shared `.venv`** lives at the `bench/` root and is used by all five
-  tools. The launchers (`Start Bench Tools.bat` / `start-bench.command`) create it on
+  tools. The launchers (`Start Bench Tools.bat` / `start-bench.sh`) create it on
   first run, `git pull` (unless `BENCH_NO_PULL=1`), and re-sync the single
   `requirements.txt` every run (a near-instant no-op once installed). They set
-  `BENCH_NO_BROWSER=1` so only the dashboard opens a tab. On macOS the tools run
-  as background jobs in the launcher's Terminal window, and Ctrl+C stops them all.
+  `BENCH_NO_BROWSER=1` so only the dashboard opens a tab. On macOS/Linux the tools
+  run as background jobs in the launcher's terminal window, and Ctrl+C stops them all.
 - **Config** lives per tool under `<tool>/config/` (e.g.
   `otd-config-ui/config/site.config.json`, `raythink-config-ui/config/profiles/`).
   Copy the committed `*.example.*` template alongside it and fill in real values.
