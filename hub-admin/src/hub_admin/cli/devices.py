@@ -5,6 +5,7 @@ import json
 import typer
 from rich.console import Console
 
+from hub_admin import display
 from hub_admin.client import connect
 from hub_admin.config import load_config
 from hub_admin.resources.devices import DeviceResource
@@ -66,6 +67,55 @@ def add_from_config(
         )
         for name, device_id in results:
             console.print(f"  Device created: {name} -> {device_id}")
+
+
+@app.command("list")
+def list_devices(
+    integration_id: str = typer.Argument(..., help="Integration ID"),
+    context: str = typer.Option("kela-office-01", help="kubectl context"),
+):
+    """List devices belonging to an integration."""
+    cfg = load_config(context=context)
+    with connect(cfg) as conn:
+        res = DeviceResource(conn.channel)
+        display.devices_table(res.list(integration_id))
+
+
+@app.command("update")
+def update_device(
+    integration_id: str = typer.Argument(..., help="Integration ID"),
+    device_id: str = typer.Argument(..., help="Device ID"),
+    patch: str = typer.Option(
+        None,
+        "--patch",
+        "-p",
+        help=(
+            "JSON merge-patch for setup_info (RFC 7396): top-level keys "
+            "overwrite, a null value deletes the key, untouched keys are kept."
+        ),
+    ),
+    name: str = typer.Option(None, "--name", help="New device name (rename)"),
+    context: str = typer.Option("kela-office-01", help="kubectl context"),
+):
+    """Modify an existing device's setup_info (merge-patch) and/or name."""
+    if patch is None and name is None:
+        console.print(
+            "[red]Nothing to update: pass --patch and/or --name.[/red]"
+        )
+        raise typer.Exit(1)
+
+    cfg = load_config(context=context)
+    with connect(cfg) as conn:
+        res = DeviceResource(conn.channel)
+        if patch is not None:
+            patch_dict = json.loads(patch)
+            res.update_setup_info(integration_id, device_id, patch_dict)
+            console.print(
+                f"[green]setup_info patched:[/green] {device_id} <- {patch}"
+            )
+        if name is not None:
+            res.rename(integration_id, device_id, name)
+            console.print(f"[green]Renamed:[/green] {device_id} -> {name}")
 
 
 @app.command("create")

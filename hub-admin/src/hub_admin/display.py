@@ -1,10 +1,13 @@
 """Rich table formatters — display layer, never imported by resources."""
 
+import json
+
 from rich.console import Console
 from rich.table import Table
 
 from hub_admin.models import (
     Asset,
+    Device,
     EntityLink,
     ExportedIntegration,
     Integration,
@@ -36,6 +39,21 @@ def integrations_table(integrations: list[Integration]) -> None:
     table.add_column("Integration ID", style="dim")
     for i, integ in enumerate(integrations, 1):
         table.add_row(str(i), integ.name, str(integ.device_count), integ.id)
+    console.print(table)
+
+
+def devices_table(devices: list[Device]) -> None:
+    if not devices:
+        console.print("[dim]No devices found for this integration.[/dim]")
+        return
+    table = Table(title="Devices")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("Name", style="cyan")
+    table.add_column("Setup info", max_width=60)
+    table.add_column("Device ID", style="dim")
+    for i, d in enumerate(devices, 1):
+        setup = json.dumps(d.setup_info) if d.setup_info else "-"
+        table.add_row(str(i), d.name, setup, d.id)
     console.print(table)
 
 

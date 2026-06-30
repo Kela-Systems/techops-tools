@@ -31,6 +31,14 @@ class Manifest:
 
 
 @dataclass
+class Device:
+    id: str
+    name: str
+    integration_id: str
+    setup_info: dict = field(default_factory=dict)
+
+
+@dataclass
 class Integration:
     id: str
     name: str

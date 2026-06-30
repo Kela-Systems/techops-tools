@@ -1,10 +1,18 @@
 """Tests for hub_admin.resources.devices."""
 
 import json
-import os
-import tempfile
+from unittest.mock import MagicMock
 
-from hub_admin.resources.devices import DeviceResource
+from google.protobuf.json_format import MessageToDict
+
+from kela.device.v1alpha1.device_pb2 import (
+    Device as DeviceProto,
+    ListDevicesResponse,
+)
+
+import grpc
+
+from hub_admin.resources.devices import DeviceResource, _apply_merge_patch
 
 
 def test_find_matching_section_case_insensitive(tmp_path):
@@ -85,3 +93,105 @@ def test_add_from_config_drops_disallowed_keys(tmp_path):
     assert setup["host"] == "10.0.0.5"
     assert setup["latitude"] == 31.0 and setup["longitude"] == 34.0
     assert drops == [("meduza-1", ["mediation_bda_release_on_timer"])]
+
+
+def _resource_with_mock_stub():
+    res = DeviceResource(MagicMock())
+    res._stub = MagicMock()
+    return res
+
+
+def test_list_maps_devices_into_models():
+    res = _resource_with_mock_stub()
+    dev = DeviceProto(id="dev-1", name="Radar 1", integration_id="int-1")
+    dev.setup_info.update({"host": "10.0.0.5", "latitude": 31.0})
+    res._stub.ListDevices.return_value = ListDevicesResponse(devices=[dev])
+
+    devices = res.list("int-1")
+
+    assert res._stub.ListDevices.call_args.args[0].integration_id == "int-1"
+    assert len(devices) == 1
+    assert devices[0].id == "dev-1"
+    assert devices[0].name == "Radar 1"
+    assert devices[0].integration_id == "int-1"
+    assert devices[0].setup_info == {"host": "10.0.0.5", "latitude": 31.0}
+
+
+def test_update_setup_info_builds_merge_patch():
+    res = _resource_with_mock_stub()
+
+    res.update_setup_info(
+        "int-1", "dev-1", {"host": "192.168.1.50", "stale_key": None}
+    )
+
+    req = res._stub.UpdateDeviceSetupInfo.call_args.args[0]
+    assert req.integration_id == "int-1"
+    assert req.device_id == "dev-1"
+    # None survives as a JSON null so the server deletes the key (RFC 7396).
+    assert MessageToDict(req.setup_info_patch) == {
+        "host": "192.168.1.50",
+        "stale_key": None,
+    }
+
+
+def test_apply_merge_patch_overwrite_delete_and_deep_merge():
+    base = {"host": "1.1.1.1", "pose": {"pan": 1, "tilt": 2}, "stale": "x"}
+    patch = {"host": "2.2.2.2", "pose": {"tilt": 9}, "stale": None}
+    assert _apply_merge_patch(base, patch) == {
+        "host": "2.2.2.2",
+        "pose": {"pan": 1, "tilt": 9},
+    }
+    # original is not mutated
+    assert base["host"] == "1.1.1.1" and base["stale"] == "x"
+
+
+class _UnimplementedError(grpc.RpcError):
+    def code(self):
+        return grpc.StatusCode.UNIMPLEMENTED
+
+
+def test_update_setup_info_falls_back_to_wholesale_on_unimplemented():
+    res = _resource_with_mock_stub()
+    res._stub.UpdateDeviceSetupInfo.side_effect = _UnimplementedError()
+
+    dev = DeviceProto(id="dev-1", name="Radar 1", integration_id="int-1")
+    dev.setup_info.update({"host": "1.1.1.1", "keep": "yes"})
+    res._stub.ListDevices.return_value = ListDevicesResponse(devices=[dev])
+
+    res.update_setup_info("int-1", "dev-1", {"host": "2.2.2.2"})
+
+    # Fell back to UpdateDevice with the full, merged setup_info.
+    req = res._stub.UpdateDevice.call_args.args[0]
+    assert req.integration_id == "int-1"
+    assert req.device_id == "dev-1"
+    assert MessageToDict(req.setup_info) == {"host": "2.2.2.2", "keep": "yes"}
+
+
+def test_update_setup_info_reraises_non_unimplemented():
+    class _OtherError(grpc.RpcError):
+        def code(self):
+            return grpc.StatusCode.INTERNAL
+
+    res = _resource_with_mock_stub()
+    res._stub.UpdateDeviceSetupInfo.side_effect = _OtherError()
+
+    try:
+        res.update_setup_info("int-1", "dev-1", {"host": "2.2.2.2"})
+    except grpc.RpcError:
+        pass
+    else:
+        raise AssertionError("expected the non-UNIMPLEMENTED error to propagate")
+    res._stub.UpdateDevice.assert_not_called()
+
+
+def test_rename_only_sets_name():
+    res = _resource_with_mock_stub()
+
+    res.rename("int-1", "dev-1", "New Name")
+
+    req = res._stub.UpdateDevice.call_args.args[0]
+    assert req.integration_id == "int-1"
+    assert req.device_id == "dev-1"
+    assert req.name == "New Name"
+    # setup_info left unset so the server leaves it untouched.
+    assert not req.HasField("setup_info")

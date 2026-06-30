@@ -53,8 +53,9 @@ command accepts `--context` to choose the kubectl context to port-forward into.
 ### `interactive`
 
 Guided setup wizard: walks through existing integrations, lets you create new
-ones from manifests, add devices (from `device_config.json` or by hand), and
-configure entity links — then offers to restart the hub-server.
+ones from manifests, add devices (from `device_config.json` or by hand), edit
+the setup_info / name of existing devices, and configure entity links — then
+offers to restart the hub-server.
 
 ```bash
 hub-admin interactive --context kela-office-01 -d ./device_config.json
@@ -87,10 +88,26 @@ hub-admin devices add <integration_id> -c ./device_config.json --manifest-name m
 
 # Or create a single device directly
 hub-admin devices create <integration_id> "Radar 1000" --setup-info '{"IpAddress": "192.168.1.20"}'
+
+# List the devices on an integration (with their IDs and setup_info)
+hub-admin devices list <integration_id>
+
+# Modify an existing device: merge-patch its setup_info and/or rename it
+hub-admin devices update <integration_id> <device_id> -p '{"IpAddress": "192.168.1.30"}'
+hub-admin devices update <integration_id> <device_id> --name "Radar 2000"
 ```
 
 Fields not present in the target integration's schema are dropped (and reported)
 on `add`.
+
+`update` applies an RFC 7396 JSON merge-patch to `setup_info`: top-level keys in
+`--patch` overwrite the current value (nested objects are deep-merged), a key set
+to `null` is deleted, and any key you don't mention is preserved — so partial
+edits never clobber background-written keys such as `intrinsic_calibration`.
+`--name` renames the device without touching its `setup_info`. On older hubs that
+predate the `UpdateDeviceSetupInfo` RPC (returning `UNIMPLEMENTED`), the patch is
+applied client-side over the device's current `setup_info` and written back via
+the wholesale `UpdateDevice`, preserving the same merge semantics.
 
 ### `links`
 

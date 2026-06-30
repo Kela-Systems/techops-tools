@@ -132,6 +132,96 @@ def _prompt_add_devices(
                 break
 
 
+# ── Device editing ───────────────────────────────────────────────────────
+
+
+def _prompt_patch_from_schema(schema: dict | None, current: dict) -> dict:
+    """Build a setup_info merge-patch by walking a schema against current values.
+
+    Enter keeps the existing value; a typed value is added to the patch; typing
+    ``-`` deletes the key (sent as ``None`` per RFC 7396). Falls back to a raw
+    JSON patch prompt when the schema has no usable properties.
+    """
+    props = (schema or {}).get("properties", {})
+    if not props:
+        raw = input(
+            "  Enter setup_info merge-patch as JSON (or Enter to skip): "
+        ).strip()
+        return json.loads(raw) if raw else {}
+
+    patch: dict = {}
+    console.print("  [dim]Enter to keep current, '-' to delete a key.[/dim]")
+    for key, spec in props.items():
+        prop_type = spec.get("type", "string")
+        cur = current.get(key, "[unset]")
+        val = input(f"    {key} ({prop_type}) [current: {cur}]: ").strip()
+        if not val:
+            continue
+        if val == "-":
+            patch[key] = None
+        elif prop_type == "integer":
+            patch[key] = int(val)
+        elif prop_type == "number":
+            patch[key] = float(val)
+        elif prop_type == "boolean":
+            patch[key] = val.lower() in ("true", "1", "yes")
+        else:
+            patch[key] = val
+    return patch
+
+
+def _prompt_edit_devices(
+    dev_res: DeviceResource,
+    integration_id: str,
+    manifest_name: str,
+    dev_schema: dict | None,
+):
+    devices = dev_res.list(integration_id)
+    if not devices:
+        console.print("  No devices to edit on this integration.")
+        return
+
+    display.devices_table(devices)
+    while True:
+        choice = input("  Device # to edit (or Enter to finish): ").strip()
+        if not choice:
+            break
+        if not choice.isdigit():
+            console.print("  Invalid selection.")
+            continue
+        idx = int(choice) - 1
+        if idx < 0 or idx >= len(devices):
+            console.print("  Invalid selection.")
+            continue
+        device = devices[idx]
+        console.print(f"\n  -> Editing: {device.name} ({device.id})")
+
+        new_name = input(f"  Rename [current: {device.name}] (Enter to keep): ").strip()
+        if new_name and new_name != device.name:
+            try:
+                dev_res.rename(integration_id, device.id, new_name)
+                console.print(
+                    f"    [green]Renamed:[/green] {device.name} -> {new_name}"
+                )
+            except Exception as e:
+                console.print(f"    [red]ERROR renaming device: {e}[/red]")
+
+        patch = _prompt_patch_from_schema(dev_schema, device.setup_info)
+        if patch:
+            try:
+                dev_res.update_setup_info(integration_id, device.id, patch)
+                console.print(
+                    f"    [green]setup_info patched:[/green] {json.dumps(patch)}"
+                )
+            except Exception as e:
+                console.print(f"    [red]ERROR updating setup_info: {e}[/red]")
+        elif not new_name:
+            console.print("    [dim]No changes.[/dim]")
+
+        if not _confirm("\n  Edit another device? (y/n): "):
+            break
+
+
 # ── Entity linking ───────────────────────────────────────────────────────
 
 
@@ -335,6 +425,13 @@ def run_interactive(context: str, device_config_path: str | None = None):
                     console.print(
                         f"\n-> Integration: {selected.name} ({selected.id})"
                     )
+                    if _confirm("  Edit existing devices? (y/n): "):
+                        _prompt_edit_devices(
+                            dev_res,
+                            selected.id,
+                            manifest_name,
+                            selected.device_setup_info_schema,
+                        )
                     _prompt_add_devices(
                         dev_res,
                         selected.id,
