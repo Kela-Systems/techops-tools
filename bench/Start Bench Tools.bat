@@ -60,9 +60,8 @@ echo Installing/updating dependencies...
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt || (echo Dependency install failed. & pause & exit /b 1)
 echo.
 
-REM Tell each tool not to open its own browser tab - this launcher opens the
-REM dashboard (which links to all five) instead.
-set "BENCH_NO_BROWSER=1"
+REM The tools never auto-open their own browser tab (that's opt-in via
+REM BENCH_OPEN_BROWSER=1); this launcher opens the one dashboard below instead.
 
 echo Starting all bench configurators in this window...
 REM /b runs each tool in THIS console instead of spawning its own window;

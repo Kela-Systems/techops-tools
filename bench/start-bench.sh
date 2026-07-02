@@ -24,10 +24,8 @@ cd "$(dirname "$0")"
 ROOT="$(pwd)"
 . "$ROOT/_lib.sh"
 
-# Each tool opens its own browser tab unless told not to; this launcher opens
-# the dashboard (which links to all five) instead. Exported so the backgrounded
-# server processes inherit it.
-export BENCH_NO_BROWSER=1
+# The tools never auto-open their own browser tab (that's opt-in via
+# BENCH_OPEN_BROWSER=1); this launcher opens the one dashboard itself below.
 
 # ── Step 1: prepare the single shared venv + deps ──────────────────────────
 echo "Preparing the shared environment (pull + install; first run ~1 min)..."

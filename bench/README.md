@@ -87,8 +87,9 @@ the one launcher.
 - **One shared `.venv`** lives at the `bench/` root and is used by all five
   tools. The launchers (`Start Bench Tools.bat` / `start-bench.sh`) create it on
   first run, `git pull` (unless `BENCH_NO_PULL=1`), and re-sync the single
-  `requirements.txt` every run (a near-instant no-op once installed). They set
-  `BENCH_NO_BROWSER=1` so only the dashboard opens a tab. On macOS/Linux the tools
+  `requirements.txt` every run (a near-instant no-op once installed). Only the
+  dashboard opens a browser tab; the tools don't auto-open their own (set
+  `BENCH_OPEN_BROWSER=1` to opt a single tool back in). On macOS/Linux the tools
   run as background jobs in the launcher's terminal window, and Ctrl+C stops them all.
 - **Config** lives per tool under `<tool>/config/` (e.g.
   `otd-config-ui/config/site.config.json`, `raythink-config-ui/config/profiles/`).

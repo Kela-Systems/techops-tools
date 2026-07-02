@@ -493,9 +493,12 @@ class BenchConfigurator:
         print(f"Starting {self.title} at {url}")
         self.print_banner()
         app = self.build_app()
-        # The bench dashboard launcher opens one tab itself, so it sets
-        # BENCH_NO_BROWSER to stop each tool spawning its own.
-        if not os.environ.get("BENCH_NO_BROWSER"):
+        # Tools are launched by the bench dashboard, which opens the one browser
+        # tab itself — so a tool never auto-opens a tab unless explicitly asked
+        # with BENCH_OPEN_BROWSER=1 (e.g. when running this one tool on its own).
+        # (Opt-in, not opt-out: relying on the launcher to unset a var was
+        # fragile on Windows and left every tool opening an about:blank tab.)
+        if os.environ.get("BENCH_OPEN_BROWSER"):
             with contextlib.suppress(Exception):
                 webbrowser.open(url)
         uvicorn.run(app, host="127.0.0.1", port=self.port, log_level="warning")
