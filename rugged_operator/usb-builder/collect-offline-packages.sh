@@ -31,10 +31,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="${1:-$SCRIPT_DIR/offline-pool}"
 
 # Packages we install on top of the Ubuntu Server base:
-#  - desktop:  ubuntu-desktop-minimal + gdm3 + a terminal (matches user-data)
-#  - tools:    everything operator-setup.sh §2 apt-installs
+#  - desktop:  ubuntu-desktop-minimal + gdm3 + a terminal (matches user-data).
+#              This closure already pulls the Xorg session bits (xserver-xorg,
+#              xserver-xorg-input-libinput for the CF-33 touchscreen,
+#              gnome-session) that the kiosk needs for WaylandEnable=false.
+#  - tools:    everything operator-setup.sh §2 apt-installs, incl. onboard
+#              (tablet on-screen keyboard) and evtest (A1 scancode capture).
 DESKTOP_PKGS="ubuntu-desktop-minimal gdm3 gnome-terminal"
-TOOL_PKGS="openssh-server curl wget ca-certificates apt-transport-https gnupg lsb-release ufw rfkill libnss3-tools power-profiles-daemon dconf-cli"
+TOOL_PKGS="openssh-server curl wget ca-certificates apt-transport-https gnupg lsb-release ufw rfkill libnss3-tools power-profiles-daemon dconf-cli onboard evtest"
 THIRDPARTY_PKGS="tailscale anydesk google-chrome-stable"
 
 command -v docker >/dev/null 2>&1 || {

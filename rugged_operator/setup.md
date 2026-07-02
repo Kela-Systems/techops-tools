@@ -1,8 +1,27 @@
 # Kela Operator Machine — Build Runbook
 
-**Target:** Dell Latitude 5420 Rugged
-**OS:** Ubuntu 24.04 LTS Desktop
-**Role:** Operator workstation (Chrome → `https://kela.local/`, remote-managed via Tailscale/AnyDesk)
+**Target:** Panasonic Toughbook CF-33 (2-in-1 rugged tablet)
+**OS:** Ubuntu 24.04 LTS Desktop (GNOME on **Xorg**)
+**Role:** Locked **kiosk** operator terminal (Chrome `--kiosk` → `https://kela.local/`, remote-managed via Tailscale/AnyDesk)
+
+---
+
+## Kiosk-Mode Rugged Operator (for management)
+
+The laptop boots straight into a locked, full-screen browser on the Kela
+system — no address bar, tab strip, or bookmarks — with three fixed views
+(hub / location-updater / camera) that operators switch between using
+`Ctrl+Tab` or `Ctrl+1/2/3`, so they see only the intended apps and can't
+navigate elsewhere. It
+self-heals (relaunches if closed; a reboot always returns to kiosk), while a
+hidden gesture (triple-tap **F2**, or triple-press the **A1** button in tablet
+mode) lets a technician drop to the normal desktop and re-enter kiosk from a
+single icon. The machine stays locked to internal systems only (no general
+internet), remotely managed via Tailscale + AnyDesk, never sleeps and never
+auto-shuts-down (it runs until the battery is depleted), with Bluetooth
+disabled and the microphone muted by default. Net effect: a single-purpose,
+tamper-resistant terminal that's simple for operators and fully recoverable
+for support.
 
 ---
 
@@ -27,17 +46,36 @@ You'll need: bootable Ubuntu 24.04 USB, wired ethernet during install (more reli
 
 ---
 
-## 1. BIOS configuration (Dell 5420 Rugged)
+## 1. BIOS configuration (Panasonic Toughbook CF-33)
 
-Boot, hit `F2` for BIOS setup.
+Power on and **hold `F2`** at the Panasonic logo to enter the Setup Utility.
+(The CF-33 has no Dell-style one-time F12 boot menu — boot device selection
+lives inside Setup.) Menu labels vary slightly by firmware revision; confirm
+on the actual unit.
 
-- **Boot Sequence** → UEFI only; USB key first.
-- **System Configuration → SATA Operation** → `AHCI`.
-- **Security → Secure Boot** → can stay enabled.
-- **Security → TPM 2.0** → Enabled.
-- **Wireless → Bluetooth** → **Disabled** (belt-and-braces; the OS also blocks it).
-- **Wireless → WLAN** → **Enabled**.
-- **Power Management → AC Behavior** → "Wake on AC" enabled if the site loses power often.
+- **Boot** → UEFI boot mode; internal SSD first. (During imaging only, move
+  USB ahead — see the ordering note below.)
+- **Security → Secure Boot** → **Enabled** (stays on; no MOK needed — the
+  kiosk build installs no unsigned kernel modules).
+- **Security → Security Chip (TPM)** → **Enabled**.
+- **Advanced → Wireless (or Device Security)**:
+  - **WLAN** → **Enabled**.
+  - **Bluetooth** → **Disabled** (belt-and-braces; the OS also blocks it).
+  - **WWAN / LTE** and **GPS** → **Disabled** if unused — a cellular modem is
+    a second WAN uplink you don't want on a LAN-only kiosk (the per-user
+    egress lock blocks non-LAN traffic regardless, so this is defence-in-depth).
+- **Advanced → Power (Wake-Up) → "Power On by AC In"** (label varies) →
+  **Enabled**, so after a site power blip the unit powers itself back on →
+  auto-login → kiosk, with nobody pressing the button.
+- **Security → Set Supervisor Password**, then **disable USB / removable /
+  network(PXE) boot** and gate the boot popup — this is what stops someone
+  bypassing the whole software lockdown by booting external media.
+
+> **Ordering (important):** image the unit **while USB boot is still enabled
+> and no Supervisor Password is set**, then apply the Supervisor Password +
+> disable-USB-boot lockdown **after** a successful install. Otherwise you lock
+> yourself out before you can image. Record the Supervisor Password centrally.
+
 - Save and exit.
 
 ---
@@ -86,7 +124,7 @@ The script handles:
 2. `apt update` + base tools (including `libnss3-tools` for `certutil`). If an offline pool is present at `/opt/kela-pool` (baked by the offline-install USB), all installs — base tools, Tailscale, AnyDesk, Chrome — come from there with **no network**; otherwise they come from the network as usual. `apt upgrade` is skipped by default (set `KELA_APT_UPGRADE=1` to force it on an online run); patch centrally over Tailscale instead.
 3. **Tailscale** — installs, enables `tailscaled`, and if `TS_AUTHKEY` is set, runs `tailscale up --reset --authkey=… --hostname=<site>-operator --accept-routes [--advertise-tags=…]` and waits for an IPv4
 4. **AnyDesk** (installs, sets unattended password to `Kelasys123!`)
-5. **Google Chrome** + managed policy that disables telemetry, pins the homepage / new-tab / startup to `https://kela.local/`, and installs managed bookmarks (locked "Kela" folder on the bookmark bar): מערכת קלע → `https://kela.local/`, שינוי מיקום אתר → `https://kela.local/location-updater`, ממשק מצלמה → `http://192.168.88.210:6010`
+5. **Google Chrome** + managed policy that disables telemetry, pins the homepage / new-tab / startup to `https://kela.local/`, hardens the browser (DevTools off, incognito off, printing off, downloads blocked), and installs managed bookmarks (locked "Kela" folder): מערכת קלע → `https://kela.local/`, שינוי מיקום אתר → `https://kela.local/location-updater`, ממשק מצלמה → `http://192.168.88.210:6010`. `RestoreOnStartupURLs` is set to the same three views. **Note:** the kiosk opens those three views as tabs directly (§8), so in-page links aren't required; the bookmarks matter mainly from the **Chrome (Regular)** launcher, where the bookmark bar is shown.
 6. `/etc/hosts` entry `192.168.88.10  kela.local`
 7. **Server cert fetch** — installs the standalone, re-runnable `kela-install-cert` command and runs it once (via `openssl s_client`, mirrors phase 077):
    - extracts the cert presented on `192.168.88.10:443` (the LAN server, a.k.a. `kela.local`); override with `CERT_FETCH_HOST`
@@ -95,12 +133,15 @@ The script handles:
    - `certutil -A` into `/home/kela/.pki/nssdb` under nickname `"Kela Server"` (Chrome's NSS store)
    - writes `/etc/opt/chrome/policies/managed/kela-ssl-policy.json` with `SSLErrorOverrideAllowedForOrigins` as a defence-in-depth fallback
    - retries 5× with 5s backoff; **if the server doesn't exist yet, the step is non-fatal** — once it's online run `sudo kela-install-cert` (defaults to `192.168.88.10`, or pass `sudo kela-install-cert <host> [port]`)
-8. Chrome autostart `.desktop` → `https://kela.local/` maximized
+8. **Kiosk launch** — a `kela-kiosk` **systemd user service** (`Restart=always`) runs Chrome `--kiosk` via `/usr/local/bin/kela-kiosk`, opening **three tabs in one window**: `https://kela.local/` (1), `https://kela.local/location-updater` (2), `http://192.168.88.210:6010/` (camera, 3). A GNOME autostart entry starts it at login; if Chrome is closed or crashes it relaunches in ~2s. Operators switch tabs with **Ctrl+Tab** or **Ctrl+1/2/3** (`Ctrl+0` and `Ctrl+4..9` are swallowed so stray number keys can't reset zoom or jump to a phantom tab). Escape: **triple-tap F2** (docked) or **triple-press the A1 bezel button** (tablet, remapped to F2) → `kela-kiosk-escape` stops the service and drops to plain GNOME. Re-enter from the **Kela Kiosk** app icon or a reboot.
 9. **Operator session hardening**:
-   - GDM auto-login as `kela`
+   - GDM auto-login as `kela`, and **`WaylandEnable=false`** — the kiosk runs on **Xorg** (GNOME's Wayland touchscreen shell-gestures are an escape hole; Xorg has none and gives `xinput`/`DontVTSwitch` control)
    - `systemctl mask` of `sleep.target`, `suspend.target`, `hibernate.target`, `hybrid-sleep.target` — nothing on the system can trigger a sleep state
+   - `systemctl mask getty@tty2…tty6` — closes the `Ctrl+Alt+F#` VT-switch escape (kernel-level, so not covered by GNOME keybindings)
+   - `systemctl mask iio-sensor-proxy.service` — **orientation lock** (no auto-rotate when the slate is handled; keeps the landscape UI and touch mapping fixed). Touch input is unaffected.
    - `/etc/systemd/logind.conf.d/kela-no-sleep.conf` — lid switch, power button, suspend key, hibernate key, and idle action all set to `ignore`
-   - **System dconf db** (`/etc/dconf/db/local.d/00-kela-power`, with locks): `idle-delay 0` (**Screen Blank: Never**), screensaver/lock off, `sleep-inactive-{ac,battery}-type=nothing` + timeouts 0, `power-button-action=nothing`, idle-dim off. Replaces the old `sudo -u kela gsettings` calls, which silently failed to persist (why the screen still blanked).
+   - **System dconf db** (`/etc/dconf/db/local.d/00-kela-power`, with locks): `idle-delay 0` (**Screen Blank: Never**), screensaver/lock off, `sleep-inactive-{ac,battery}-type=nothing` + timeouts 0, `power-button-action=nothing`, idle-dim off, plus **always-on**: `critical-battery-action='nothing'` + `/etc/UPower/UPower.conf` `CriticalPowerAction=Ignore` so it never auto-shuts-down — it runs until the battery is physically depleted.
+   - **Kiosk input lockdown** (`/etc/dconf/db/local.d/10-kela-kiosk`, with locks): `F2` → `kela-kiosk-escape`; `Ctrl+W/Ctrl+Shift+W/Ctrl+Q/Ctrl+T/Ctrl+N` swallowed to `/bin/true`; `Ctrl+0` and `Ctrl+4..9` also swallowed (so only the three real tabs are reachable via `Ctrl+1/2/3`, `Ctrl+Tab` left intact); overview key, `Alt+Tab`/window-switch, workspace-switch, close/minimize/show-desktop all unbound — so F2/A1 is the only way out. On-screen keyboard (`onboard`) auto-shows for tablet use; HiDPI text scaling set for the 3:2 panel.
    - `/usr/local/bin/kela-session-init` + autostart `.desktop` — on every login: **Power Mode → performance** (`powerprofilesctl`, since it resets to balanced each boot), reasserts screen-never-blank (`gsettings` + `xset -dpms`), default sink to 100% + unmuted output, and **mutes every input source (microphone off by default)**
 10. **UFW**: deny in+out by default; allow LAN (RFC1918 + `100.64.0.0/10`), `tailscale0`, plus DNS / 443/tcp / 41641/udp / 3478/udp outbound for Tailscale control plane, **80/tcp** outbound (apt mirrors are plain http — without it fleet patching over Tailscale dies at the apt step; Chrome as `kela` stays LAN-only via the per-user egress chain) and **123/udp** (NTP fallback)
 11. **Cleanup + Bluetooth block**:
@@ -205,7 +246,10 @@ ping -c2 192.168.88.10
 
 - **Installing the cert later / cert rotation**: if the station was built before the server existed (or the cert rotates), run `sudo kela-install-cert` once the server is up — it pulls from `192.168.88.10:443` by default (or `sudo kela-install-cert <host> [port]`). The command is idempotent (deletes the old `Kela Server` nickname before re-adding) and `openssl s_client` always grabs whatever the server is currently serving.
 - **NSS vs system trust store**: Chrome on Linux ignores `/etc/ssl/certs` and uses NSS at `~/.pki/nssdb`. `kela-install-cert` installs the cert in *both* places so curl/wget *and* Chrome trust kela.local.
-- **Chrome homepage + bookmarks**: pinned via the managed policy `/etc/opt/chrome/policies/managed/kela-policy.json` (`HomepageLocation`, `RestoreOnStartupURLs`, `ManagedBookmarks`). The bookmarks live in a locked "Kela" folder on the bookmark bar and can't be deleted by the operator. Edit that JSON (and re-launch Chrome) to change them.
+- **Chrome homepage + bookmarks**: pinned via the managed policy `/etc/opt/chrome/policies/managed/kela-policy.json` (`HomepageLocation`, `RestoreOnStartupURLs`, `ManagedBookmarks`). The bookmarks live in a locked "Kela" folder on the bookmark bar and can't be deleted by the operator. Edit that JSON (and re-launch Chrome) to change them. **In kiosk mode the bookmark bar is not shown**, but the three views (hub / location-updater / camera) are opened as tabs by `/usr/local/bin/kela-kiosk`, so operators reach them with `Ctrl+Tab` or `Ctrl+1/2/3`. To add/remove/reorder tabs, edit the URL list in that launcher (and keep `RestoreOnStartupURLs` + `ManagedBookmarks` in sync); the bookmarks remain visible from the **Chrome (Regular)** launcher.
+- **Kiosk escape / return**: the kiosk is a `kela-kiosk` **systemd user service** (`Restart=always`). Escape to a normal desktop: **triple-tap F2** (keyboard docked) or **triple-press A1** (tablet) — `kela-kiosk-escape` runs `systemctl --user stop kela-kiosk`. From the desktop, launch **Chrome (Regular)** or **Kela Kiosk** from the app grid (mouse/touch via the dock's "Show Applications"), or over Tailscale/AnyDesk: `systemctl --user stop|start kela-kiosk` (from SSH: `sudo -u kela XDG_RUNTIME_DIR=/run/user/$(id -u kela) systemctl --user …`). A `reboot` always returns to the kiosk. F2/A1 is the **only** local way out — the overview key, `Alt+Tab`, workspace-switch, `Ctrl+W/Q/T/N`, `Alt+F4`, and the spare VT consoles are all disabled.
+- **Tablet mode (touch)**: touch works on Xorg via libinput (tap/scroll/zoom unaffected by the gesture lockdown, which only blanks GNOME *shell* keybindings). The `onboard` on-screen keyboard auto-shows for text entry. The **A1** tablet-escape depends on a udev hwdb remap in `/etc/udev/hwdb.d/70-kela-cf33-a1.hwdb` — its scancode must be captured on the unit with `sudo evtest` (press A1, note the value), filled into that file, and applied with `sudo systemd-hwdb update` + replug/reboot. Until then, only F2 (docked) escapes. Map/relabel via `map/set-source` as needed; `--force-device-scale-factor` in `/usr/local/bin/kela-kiosk` tunes text size for the 3:2 panel.
+- **Always-on / battery**: the box never sleeps, never blanks, and **never auto-shuts-down** — `critical-battery-action='nothing'` (dconf) + `CriticalPowerAction=Ignore` (`/etc/UPower/UPower.conf`) mean it runs until the battery is physically depleted. To restore normal low-battery behaviour, revert those two.
 - **Screen still blanks / power mode resets?** Screen-blank is enforced two ways: a locked system dconf db (`idle-delay 0`) *and* `kela-session-init` reasserting it (`gsettings` + `xset -dpms`) each login. Power Mode = performance is applied per-login via `powerprofilesctl` because `power-profiles-daemon` reverts to `balanced` on every boot. Don't rely on `sudo -u kela dbus-launch gsettings set ...` at build time — it frequently fails to persist, which was the original cause of the monitor still sleeping. To allow blanking/balanced again, remove the dconf locks + `00-kela-power`, run `dconf update`, and drop the relevant lines from `kela-session-init`.
 - **Microphone muted by default**: `kela-session-init` mutes every input source on each login. It's reversible (the operator can unmute for a call), but resets to muted on the next login/reboot. To allow the mic permanently, remove the `set-source-mute` lines from `/usr/local/bin/kela-session-init`.
 - **Cert trust flags**: the script auto-detects whether the hub is presenting a CA cert (`CA:TRUE` in basic constraints → NSS `C,,`) or a leaf cert (NSS `P,,`). Don't hand-edit the trust flags unless you know which one applies.
@@ -223,7 +267,7 @@ ping -c2 192.168.88.10
 
 For new ruggeds, prefer the install USB built from [`usb-builder/`](./usb-builder/). It collapses §2-§4 into:
 
-1. Power on the rugged with the USB inserted (F12 → USB).
+1. Power on the rugged with the USB inserted (**hold `F2`** at the Panasonic logo → Setup → boot the USB; the CF-33 has no one-time F12 menu). Image with the keyboard docked — the GRUB / first-boot site-name prompt needs it.
 2. **Type the site name at the GRUB menu** (e.g. `fob-12`) and walk away —
    install + first-boot setup run hands-off to completion (~20-30 min) and
    the machine reboots to Chrome on `https://kela.local/`. One visit total.

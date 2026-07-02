@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  Kela operator machine setup — Ubuntu 24.04 on Dell Latitude 5420 Rugged
+#  Kela operator machine setup — Ubuntu 24.04 on Panasonic Toughbook CF-33
 # ----------------------------------------------------------------------------
 #  Run AFTER a fresh Ubuntu 24.04 desktop install where the kela user already
 #  exists. Run as root via sudo (preserves env vars).
@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-06-10.1"
+SETUP_VERSION="2026-07-01.1"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -139,7 +139,8 @@ fi
 
 apt_get install -y curl wget ca-certificates apt-transport-https \
                    gnupg lsb-release ufw rfkill openssh-server \
-                   libnss3-tools power-profiles-daemon dconf-cli
+                   libnss3-tools power-profiles-daemon dconf-cli \
+                   onboard evtest
 
 # ---------- 3. Tailscale ----------------------------------------------------
 echo "==> [3/11] Installing Tailscale"
@@ -241,8 +242,14 @@ fi
 # Chrome managed policy:
 #  - telemetry / metrics off (prevents the /home disk accumulation we saw on
 #    kela-fob-09-operator)
+#  - kiosk hardening: DevTools off, incognito off, printing off, downloads blocked
 #  - homepage + new-tab + startup pinned to kela.local
 #  - managed bookmarks (live in a locked "Kela" folder on the bookmark bar)
+# NOTE: --kiosk hides the bookmark bar, so those bookmarks are only reachable
+# from the "Chrome (Regular)" launcher; the kela.local app must provide
+# in-page navigation to the location-updater and camera views. No URL
+# allow/blocklist here — confinement is via --kiosk + the §10b egress lock,
+# which keeps the "Chrome (Regular)" launcher LAN-only too.
 mkdir -p /etc/opt/chrome/policies/managed
 cat > /etc/opt/chrome/policies/managed/kela-policy.json <<'JSON'
 {
@@ -258,12 +265,21 @@ cat > /etc/opt/chrome/policies/managed/kela-policy.json <<'JSON'
   "BrowserSignin": 0,
   "SyncDisabled": true,
 
+  "DeveloperToolsAvailability": 2,
+  "IncognitoModeAvailability": 1,
+  "PrintingEnabled": false,
+  "DownloadRestrictions": 3,
+
   "HomepageLocation": "https://kela.local/",
   "HomepageIsNewTabPage": false,
   "NewTabPageLocation": "https://kela.local/",
   "ShowHomeButton": true,
   "RestoreOnStartup": 4,
-  "RestoreOnStartupURLs": ["https://kela.local/"],
+  "RestoreOnStartupURLs": [
+    "https://kela.local/",
+    "https://kela.local/location-updater",
+    "http://192.168.88.210:6010/"
+  ],
 
   "BookmarkBarEnabled": true,
   "ManagedBookmarks": [
@@ -393,26 +409,114 @@ else
   echo "        sudo kela-install-cert"
 fi
 
-# ---------- 8. Chrome autostart for kela user -------------------------------
-echo "==> [8/11] Chrome autostart for ${KELA_USER}"
-install -d -o "$KELA_USER" -g "$KELA_USER" "$KELA_HOME/.config/autostart"
+# ---------- 8. Kiosk: Chrome --kiosk as a self-restarting user service ------
+# Replaces the old maximized-window autostart. The kiosk runs under a
+# systemd --user service (Restart=always) so a close/crash relaunches it; a
+# GNOME autostart entry starts the service at login. Escape is via
+# kela-kiosk-escape (§9f), return via the "Kela Kiosk" launcher (§8b) or a
+# reboot.
+echo "==> [8/11] Kiosk launcher + user service for ${KELA_USER}"
 
-cat > "$KELA_HOME/.config/autostart/chrome-kela.desktop" <<EOF
+# Drop the old maximized-window autostart if this is a re-run.
+rm -f "$KELA_HOME/.config/autostart/chrome-kela.desktop"
+
+# Kiosk launcher: scrub Chrome crash state (so no "restore pages" overlay
+# blocks the kiosk), then run Chrome fullscreen. --touch-events keeps the
+# CF-33 touchscreen working; --force-device-scale-factor makes the 3:2 HiDPI
+# panel readable (tune on-device). No --disable-pinch: the hub map needs
+# pinch-zoom (handled by the page, independent of viewport pinch).
+#
+# The three URLs open as tabs in the single kiosk window (command-line URLs
+# are authoritative and override RestoreOnStartup). Operators switch between
+# them with Ctrl+Tab or Ctrl+1/2/3; Ctrl+0 and Ctrl+4..9 are swallowed by the
+# 10-kela-kiosk dconf (§9d) so stray number keys can't jump to a phantom tab
+# or reset zoom. Keep this tab order in sync with ManagedBookmarks (§5):
+#   1 = kela hub, 2 = location-updater, 3 = camera interface.
+cat > /usr/local/bin/kela-kiosk <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+PREFS="\$HOME/.config/google-chrome/Default/Preferences"
+if [ -f "\$PREFS" ]; then
+  sed -i 's/"exit_type":"[^"]*"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' "\$PREFS" 2>/dev/null || true
+fi
+exec /usr/bin/google-chrome-stable \\
+  --kiosk \\
+  --no-first-run --no-default-browser-check \\
+  --disable-features=TranslateUI \\
+  --noerrdialogs --disable-session-crashed-bubble --disable-infobars \\
+  --touch-events=enabled \\
+  --force-device-scale-factor=1.25 \\
+  --check-for-update-interval=31536000 \\
+  ${KELA_LOCAL_URL} \\
+  ${KELA_LOCAL_URL}location-updater \\
+  http://192.168.88.210:6010/
+EOF
+chmod 0755 /usr/local/bin/kela-kiosk
+
+# systemd --user service. PartOf graphical-session so it stops on logout;
+# started by the autostart entry below (avoids linger / enable subtleties).
+install -d -o "$KELA_USER" -g "$KELA_USER" "$KELA_HOME/.config/systemd/user"
+cat > "$KELA_HOME/.config/systemd/user/kela-kiosk.service" <<'EOF'
+[Unit]
+Description=Kela kiosk (Chrome --kiosk on kela.local)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/local/bin/kela-kiosk
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+chown "$KELA_USER:$KELA_USER" "$KELA_HOME/.config/systemd/user/kela-kiosk.service"
+
+# Autostart entry: start the kiosk service at graphical login.
+install -d -o "$KELA_USER" -g "$KELA_USER" "$KELA_HOME/.config/autostart"
+cat > "$KELA_HOME/.config/autostart/kela-kiosk.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=Chrome - kela.local
-Exec=/usr/bin/google-chrome-stable --no-first-run --no-default-browser-check --start-maximized --disable-features=TranslateUI ${KELA_LOCAL_URL}
+Name=Kela kiosk
+Exec=sh -c 'systemctl --user daemon-reload; systemctl --user start kela-kiosk.service'
 X-GNOME-Autostart-enabled=true
-NoDisplay=false
-Hidden=false
+NoDisplay=true
 Terminal=false
 EOF
-chown "$KELA_USER:$KELA_USER" "$KELA_HOME/.config/autostart/chrome-kela.desktop"
+chown "$KELA_USER:$KELA_USER" "$KELA_HOME/.config/autostart/kela-kiosk.desktop"
+
+# --- 8b. App-grid launchers: leave / re-enter the kiosk --------------------
+# After an escape (§9f) the operator is on plain GNOME. These two icons (in
+# the app grid, reachable by touch via the dock's "Show Applications") let a
+# technician open a normal browser or jump back into the kiosk. "Chrome
+# (Regular)" is still LAN-only via the §10b per-user egress lock — not the
+# open internet.
+cat > /usr/share/applications/kela-chrome-regular.desktop <<EOF
+[Desktop Entry]
+Type=Application
+Name=Chrome (Regular)
+Comment=Normal Chrome window (LAN-only)
+Exec=/usr/bin/google-chrome-stable --no-first-run --no-default-browser-check %U
+Icon=google-chrome
+Categories=Network;WebBrowser;
+Terminal=false
+EOF
+
+cat > /usr/share/applications/kela-kiosk.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Kela Kiosk
+Comment=Return to kiosk mode
+Exec=sh -c 'systemctl --user start kela-kiosk.service'
+Icon=google-chrome
+Categories=Network;
+Terminal=false
+EOF
 
 # ---------- 9. Operator session hardening -----------------------------------
 # Auto-login + never sleep/suspend/lock + screen-never-blank + performance
 # power mode + full volume + muted mic on login.
-echo "==> [9/11] Operator session: auto-login, no-sleep, no-blank, performance, full-volume, mic-muted"
+echo "==> [9/11] Operator session: auto-login (Xorg), kiosk lockdown, no-sleep, always-on, no-blank, performance, full-volume, mic-muted"
 
 # --- 9a. GDM auto-login ----------------------------------------------------
 mkdir -p /etc/gdm3
@@ -436,9 +540,40 @@ AutomaticLogin=${KELA_USER}
 EOF
 fi
 
+# --- 9a2. Force Xorg + close VT-switch escape + orientation lock -----------
+# Xorg: GNOME's Wayland touchscreen shell-gestures (3-finger/edge swipes to
+# overview) are a kiosk escape hole; Xorg has none and gives xinput /
+# DontVTSwitch control. Ensure WaylandEnable=false lives under [daemon].
+sed -i '/^\[daemon\]/,/^\[/{/WaylandEnable/d}' /etc/gdm3/custom.conf
+sed -i '/^\[daemon\]/a WaylandEnable=false' /etc/gdm3/custom.conf
+
+# Mask the spare text consoles so Ctrl+Alt+F2..F6 (kernel-level, not a GNOME
+# keybinding) can't drop out of the kiosk to a login shell. tty1 (GDM) stays.
+systemctl mask getty@tty2.service getty@tty3.service getty@tty4.service \
+              getty@tty5.service getty@tty6.service 2>/dev/null || true
+
+# Orientation lock (landscape): the CF-33 accelerometer would auto-rotate the
+# slate; mask iio-sensor-proxy so the UI + touch mapping stay fixed. Touch
+# input itself is unaffected.
+systemctl mask iio-sensor-proxy.service 2>/dev/null || true
+
 # --- 9b. systemd: mask every sleep/suspend/hibernate path ------------------
 # Belt: nothing on the system can pull the box into a low-power state.
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+
+# --- 9b2. UPower: never auto-shut-down on low battery ----------------------
+# Always-on: run until the battery is physically depleted. GNOME's
+# critical-battery-action is neutralized in the dconf db (9d); UPower is the
+# other actor that can hibernate/power-off at the critical threshold — set it
+# to Ignore too. (Revert both to restore normal low-battery behaviour.)
+if [[ -f /etc/UPower/UPower.conf ]]; then
+  if grep -q '^CriticalPowerAction=' /etc/UPower/UPower.conf; then
+    sed -i 's/^CriticalPowerAction=.*/CriticalPowerAction=Ignore/' /etc/UPower/UPower.conf
+  else
+    echo 'CriticalPowerAction=Ignore' >> /etc/UPower/UPower.conf
+  fi
+  systemctl restart upower 2>/dev/null || true
+fi
 
 # --- 9c. systemd-logind: ignore lid close, power button, idle action -------
 # Braces: even closing the lid, hitting the power button, or going idle
@@ -487,6 +622,10 @@ sleep-inactive-ac-timeout=0
 sleep-inactive-battery-timeout=0
 power-button-action='nothing'
 idle-dim=false
+# Always-on: never auto-shut-down on low battery — run until it physically
+# dies. (Paired with CriticalPowerAction=Ignore in /etc/UPower/UPower.conf.)
+critical-battery-action='nothing'
+power-saver-profile-on-low-battery=false
 EOF
 
 cat > /etc/dconf/db/local.d/locks/00-kela-power <<'EOF'
@@ -497,6 +636,148 @@ cat > /etc/dconf/db/local.d/locks/00-kela-power <<'EOF'
 /org/gnome/settings-daemon/plugins/power/sleep-inactive-battery-type
 /org/gnome/settings-daemon/plugins/power/power-button-action
 /org/gnome/settings-daemon/plugins/power/idle-dim
+/org/gnome/settings-daemon/plugins/power/critical-battery-action
+/org/gnome/settings-daemon/plugins/power/power-saver-profile-on-low-battery
+EOF
+
+# --- 9d2. Kiosk input lockdown (dconf) -------------------------------------
+# F2 (and A1 via the hwdb remap in 9f) is the ONLY way out of the kiosk. We
+# swallow window-closers/new-tab to /bin/true and blank every GNOME shell
+# key that could reveal the desktop (overview, app/window/workspace switch,
+# close/minimize/show-desktop). Choosing Xorg (9a) already removes the
+# touchscreen shell-gestures that Wayland would expose. Also: keep the GNOME
+# OSK off (onboard is autostarted in 9f) and set a readable HiDPI scale.
+cat > /etc/dconf/db/local.d/10-kela-kiosk <<'EOF'
+[org/gnome/settings-daemon/plugins/media-keys]
+custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-escape/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cw/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-csw/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cq/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-ct/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cn/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c0/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c4/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c5/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c6/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c7/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c8/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c9/']
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-escape]
+name='Kela kiosk escape'
+command='/usr/local/bin/kela-kiosk-escape'
+binding='F2'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cw]
+name='block close-tab'
+command='/bin/true'
+binding='<Ctrl>w'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-csw]
+name='block close-window'
+command='/bin/true'
+binding='<Ctrl><Shift>w'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cq]
+name='block quit'
+command='/bin/true'
+binding='<Ctrl>q'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-ct]
+name='block new-tab'
+command='/bin/true'
+binding='<Ctrl>t'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cn]
+name='block new-window'
+command='/bin/true'
+binding='<Ctrl>n'
+
+# Kiosk tab nav: Ctrl+Tab and Ctrl+1/2/3 (kela hub / location-updater /
+# camera) are left alone so they reach Chrome. Ctrl+0 (zoom reset) and
+# Ctrl+4..9 (jump-to-tab-N / last-tab) are grabbed to /bin/true so stray
+# number keys can't reset zoom or land on a phantom tab.
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c0]
+name='block zoom-reset'
+command='/bin/true'
+binding='<Ctrl>0'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c4]
+name='block tab-4'
+command='/bin/true'
+binding='<Ctrl>4'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c5]
+name='block tab-5'
+command='/bin/true'
+binding='<Ctrl>5'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c6]
+name='block tab-6'
+command='/bin/true'
+binding='<Ctrl>6'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c7]
+name='block tab-7'
+command='/bin/true'
+binding='<Ctrl>7'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c8]
+name='block tab-8'
+command='/bin/true'
+binding='<Ctrl>8'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c9]
+name='block tab-last'
+command='/bin/true'
+binding='<Ctrl>9'
+
+[org/gnome/mutter]
+overlay-key=''
+
+[org/gnome/shell/keybindings]
+toggle-overview=@as []
+toggle-application-view=@as []
+focus-active-notification=@as []
+
+[org/gnome/desktop/wm/keybindings]
+close=@as []
+minimize=@as []
+show-desktop=@as []
+switch-applications=@as []
+switch-applications-backward=@as []
+switch-windows=@as []
+switch-windows-backward=@as []
+switch-group=@as []
+switch-group-backward=@as []
+switch-panels=@as []
+switch-panels-backward=@as []
+panel-main-menu=@as []
+panel-run-dialog=@as []
+switch-to-workspace-left=@as []
+switch-to-workspace-right=@as []
+switch-to-workspace-up=@as []
+switch-to-workspace-down=@as []
+
+[org/gnome/desktop/a11y/applications]
+screen-keyboard-enabled=false
+
+[org/onboard/auto-show]
+enabled=true
+
+[org/gnome/desktop/interface]
+text-scaling-factor=1.25
+EOF
+
+cat > /etc/dconf/db/local.d/locks/10-kela-kiosk <<'EOF'
+/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings
+/org/gnome/mutter/overlay-key
+/org/gnome/shell/keybindings/toggle-overview
+/org/gnome/shell/keybindings/toggle-application-view
+/org/gnome/desktop/wm/keybindings/close
+/org/gnome/desktop/wm/keybindings/minimize
+/org/gnome/desktop/wm/keybindings/show-desktop
+/org/gnome/desktop/wm/keybindings/switch-applications
+/org/gnome/desktop/wm/keybindings/switch-applications-backward
+/org/gnome/desktop/wm/keybindings/switch-windows
+/org/gnome/desktop/wm/keybindings/switch-windows-backward
+/org/gnome/desktop/wm/keybindings/switch-group
+/org/gnome/desktop/wm/keybindings/switch-group-backward
+/org/gnome/desktop/wm/keybindings/switch-panels
+/org/gnome/desktop/wm/keybindings/switch-panels-backward
+/org/gnome/desktop/wm/keybindings/switch-to-workspace-left
+/org/gnome/desktop/wm/keybindings/switch-to-workspace-right
+/org/gnome/desktop/wm/keybindings/switch-to-workspace-up
+/org/gnome/desktop/wm/keybindings/switch-to-workspace-down
+/org/gnome/desktop/a11y/applications/screen-keyboard-enabled
 EOF
 
 dconf update
@@ -555,6 +836,65 @@ NoDisplay=true
 Terminal=false
 EOF
 chown "$KELA_USER:$KELA_USER" "$KELA_HOME/.config/autostart/kela-session-init.desktop"
+
+# --- 9f. Kiosk escape (triple F2 docked / triple A1 tablet) + OSK ----------
+# The escape script counts trigger presses within a 1.5s window and, on the
+# 3rd, stops the kiosk service — dropping to plain GNOME. It's bound to F2 in
+# the 10-kela-kiosk dconf; the A1 bezel button is remapped to F2 via hwdb so
+# the same gesture works as a bare tablet. Runs as kela inside the session,
+# so `systemctl --user` works.
+cat > /usr/local/bin/kela-kiosk-escape <<'EOF'
+#!/usr/bin/env bash
+# Triple-press F2 (or A1, remapped to F2) within WINDOW_MS -> stop the kiosk.
+set -euo pipefail
+WINDOW_MS=1500
+NEED=3
+STAMP="${XDG_RUNTIME_DIR:-/tmp}/kela-f2-presses"
+
+now=$(date +%s%3N)
+echo "$now" >> "$STAMP"
+recent="$(awk -v now="$now" -v w="$WINDOW_MS" '(now - $1) <= w' "$STAMP" 2>/dev/null || true)"
+printf '%s\n' "$recent" > "$STAMP"
+if [ "$(printf '%s\n' "$recent" | grep -c .)" -ge "$NEED" ]; then
+  : > "$STAMP"
+  systemctl --user stop kela-kiosk.service 2>/dev/null || true
+fi
+EOF
+chmod 0755 /usr/local/bin/kela-kiosk-escape
+
+# A1 bezel button -> F2 (so the escape works undocked). The A1 scancode
+# varies by firmware and MUST be captured on the unit, so this ships with the
+# mapping COMMENTED OUT — nothing is mis-remapped until it's filled in:
+#   sudo evtest            # press A1, read the MSC_SCAN "value <hex>"
+# then uncomment + set the device match + scancode below and apply:
+#   sudo systemd-hwdb update && sudo udevadm trigger
+# Until then, F2 (keyboard docked) is the escape; A1 does nothing.
+mkdir -p /etc/udev/hwdb.d
+cat > /etc/udev/hwdb.d/70-kela-cf33-a1.hwdb <<'EOF'
+# Kela CF-33: remap the A1 bezel application button to F2 for the kiosk escape.
+# Capture A1's scancode with `sudo evtest` (press A1, read the MSC_SCAN value),
+# then uncomment the two lines, set the name match + scancode, and run:
+#   sudo systemd-hwdb update && sudo udevadm trigger
+#
+#evdev:name:*Panasonic*:dmi:*
+#  KEYBOARD_KEY_<scancode>=f2
+EOF
+systemd-hwdb update 2>/dev/null || true
+
+# On-screen keyboard (onboard) for tablet use — auto-shows on text-field
+# focus (org.onboard/auto-show enabled in the 10-kela-kiosk dconf). More
+# reliable over a fullscreen kiosk than the GNOME built-in OSK.
+install -d -o "$KELA_USER" -g "$KELA_USER" "$KELA_HOME/.config/autostart"
+cat > "$KELA_HOME/.config/autostart/onboard-kela.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Onboard on-screen keyboard
+Exec=onboard
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+Terminal=false
+EOF
+chown "$KELA_USER:$KELA_USER" "$KELA_HOME/.config/autostart/onboard-kela.desktop"
 
 # ---------- 10. UFW (system-wide) + per-user egress lock for kela -----------
 # UFW carves out 443/tcp + 53 system-wide so tailscaled (control plane),
@@ -753,18 +1093,36 @@ req "kela-egress.service enabled"        systemctl is-enabled --quiet kela-egres
 
 echo "--- kiosk ---"
 req "GDM auto-login configured"          grep -q "AutomaticLogin=kela" /etc/gdm3/custom.conf
+req "GDM forced onto Xorg"               grep -q "^WaylandEnable=false" /etc/gdm3/custom.conf
 req "Chrome installed"                   test -x /usr/bin/google-chrome-stable
 req "Chrome policy present"              test -f /etc/opt/chrome/policies/managed/kela-policy.json
-req "Chrome autostart present"           test -f "$KELA_HOME/.config/autostart/chrome-kela.desktop"
+req "kiosk launcher present"             test -x /usr/local/bin/kela-kiosk
+req "kiosk user service present"         test -f "$KELA_HOME/.config/systemd/user/kela-kiosk.service"
+req "kiosk autostart present"            test -f "$KELA_HOME/.config/autostart/kela-kiosk.desktop"
+req "kiosk escape script present"        test -x /usr/local/bin/kela-kiosk-escape
+req "kiosk keybinding dconf present"     test -f /etc/dconf/db/local.d/10-kela-kiosk
+req "kiosk opens location-updater tab"   grep -q "location-updater" /usr/local/bin/kela-kiosk
+req "kiosk opens camera tab"             grep -q "192.168.88.210:6010" /usr/local/bin/kela-kiosk
+req "Ctrl+0/4..9 tab-jumps blocked"      grep -q "kela-noop-c9" /etc/dconf/db/local.d/10-kela-kiosk
+req "'Chrome (Regular)' launcher"        test -f /usr/share/applications/kela-chrome-regular.desktop
+req "'Kela Kiosk' launcher"              test -f /usr/share/applications/kela-kiosk.desktop
+req "onboard OSK installed"              test -x /usr/bin/onboard
 req "session-init autostart present"     test -f "$KELA_HOME/.config/autostart/kela-session-init.desktop"
 req "kela.local in /etc/hosts"           grep -qE "^[^#]*[[:space:]]kela\.local([[:space:]]|$)" /etc/hosts
 
-echo "--- power / sleep ---"
+echo "--- power / sleep / always-on ---"
 for t in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
   req "$t masked" sh -c "systemctl is-enabled $t 2>&1 | grep -q masked"
 done
 req "logind no-sleep drop-in present"    test -f /etc/systemd/logind.conf.d/kela-no-sleep.conf
 req "dconf power db compiled"            test -f /etc/dconf/db/local
+req "UPower CriticalPowerAction=Ignore"  sh -c "grep -q '^CriticalPowerAction=Ignore' /etc/UPower/UPower.conf"
+req "dconf critical-battery=nothing"     sh -c "grep -q \"critical-battery-action='nothing'\" /etc/dconf/db/local.d/00-kela-power"
+
+echo "--- kiosk session lockdown ---"
+req "spare gettys masked"                sh -c "systemctl is-enabled getty@tty2.service 2>&1 | grep -q masked"
+req "orientation lock (iio masked)"      sh -c "systemctl is-enabled iio-sensor-proxy.service 2>&1 | grep -q masked"
+req "kiosk keybinding lock present"      test -f /etc/dconf/db/local.d/locks/10-kela-kiosk
 
 echo "--- bluetooth ---"
 req "bluetooth.service masked"           sh -c "systemctl is-enabled bluetooth.service 2>&1 | grep -q masked"

@@ -1,8 +1,8 @@
 # Kela Operator Install USB
 
 Bake a turnkey USB stick that installs Ubuntu 24.04 + the Kela operator
-configuration on a Dell Latitude 5420 Rugged with **one input total**: the
-site identifier, typed either **at the GRUB menu at power-on** (then the
+kiosk configuration on a Panasonic Toughbook CF-33 with **one input total**:
+the site identifier, typed either **at the GRUB menu at power-on** (then the
 whole install + first-boot setup runs hands-off to completion) or, if left
 empty there, at a **first-boot prompt** after the install.
 
@@ -144,7 +144,7 @@ You also need:
 
 ## What happens during install
 
-1. Boot the rugged from the USB (F12 boot menu on Dell, pick USB).
+1. Boot the rugged from the USB — **hold `F2`** at the Panasonic logo → Setup → boot the USB (the CF-33 has no Dell-style one-time F12 menu). Keep the **keyboard docked**: the GRUB and first-boot site-name prompts need it. **Image with USB boot enabled and no Supervisor Password set**; apply the BIOS lockdown (Supervisor Password + disable USB/PXE boot — see [`../setup.md`](../setup.md) §1) **only after** a successful install, or you lock yourself out before imaging.
 2. GRUB defaults to "Kela Operator — Auto-install (WILL ERASE DISK)" with a
    5 second timeout. The entry asks for the **site name** (e.g. `fob-12`):
    - **Type it now** → the entire install **and** first-boot setup run
@@ -187,12 +187,15 @@ You also need:
      secrets file** so the auth key isn't sitting on disk
    - Reboots
 
-6. From that point on the machine boots straight to Chrome on
-   `https://kela.local/` (homepage + startup, with the locked "Kela"
-   bookmark folder), microphone muted by default, and is reachable via
-   Tailscale + AnyDesk.
+6. From that point on the machine boots straight into **Chrome `--kiosk`** on
+   `https://kela.local/` (full-screen; no tabs, address bar, or bookmark bar —
+   the locked "Kela" bookmarks are reachable from the "Chrome (Regular)"
+   launcher), self-relaunching if closed, microphone muted by default, and
+   reachable via Tailscale + AnyDesk. Escape to a normal desktop with
+   triple-tap **F2** (docked) or triple-press **A1** (tablet); return via the
+   "Kela Kiosk" app icon or a reboot.
 
-Total wall-clock on a 5420 Rugged with a wired SSD-class disk: ~15-25 min
+Total wall-clock on a CF-33 with a wired SSD-class disk: ~15-25 min
 (online build). With an **offline** ISO, no packages are downloaded at all —
 each laptop is independent (no shared WAN/mirror bottleneck), so N laptops in
 parallel cost the same network as one: zero. See below.
@@ -287,6 +290,15 @@ Or just reboot — the autostart prompt comes back.
   when it succeeds, so persistent privilege escalation is not granted.
 - **GDM auto-login is permanent by design** — the rugged is a kiosk.
   If you ever stop using it as one, edit `/etc/gdm3/custom.conf`.
+- **Physical boot lockdown matters.** The software kiosk lockdown (F2/A1 is
+  the only escape) is only as strong as the firmware: set a **Supervisor
+  Password** and **disable USB/PXE boot** in BIOS *after* imaging (see
+  [`../setup.md`](../setup.md) §1), or the kiosk is trivially bypassed by
+  booting external media.
+- **Secure Boot stays on, no MOK enrollment needed.** The kiosk build installs
+  no unsigned kernel modules (Xorg, the A1 hwdb remap, disabling
+  iio-sensor-proxy, and onboard are all userspace), so the signed shim/kernel
+  path is untouched.
 - **The kela password is hashed with SHA-512 crypt (5000 rounds, the crypt
   default)** before baking. Hashing happens at build time on your host, not
   on the ISO.

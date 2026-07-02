@@ -337,7 +337,8 @@ cat <<EOF
       sync
       diskutil eject /dev/diskN
 
-  Then boot the rugged from USB (F12 → UEFI USB). Installation is
+  Then boot the CF-33 from USB (hold F2 at the Panasonic logo -> Setup ->
+  boot the USB; keyboard docked). Installation is
   unattended; on first boot the operator will be prompted for the site
   name once, and the build finishes automatically.
 ============================================================================
