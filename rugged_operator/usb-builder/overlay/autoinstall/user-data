@@ -87,6 +87,14 @@ autoinstall:
         curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-desktop-minimal gdm3 gnome-terminal
       fi
 
+    # ---- disarm the apt-daily timers before first boot ------------------
+    # apt-daily.timer is Persistent=true, so it can fire seconds into first
+    # boot — minutes before the operator answers the site prompt and setup.sh
+    # §2 disables it — and hold the dpkg lock. setup.sh's 600s lock-wait
+    # absorbs it, but at parallel-imaging scale that's wasted idle minutes per
+    # station. Disabling here (idempotent) means the racers never arm at all.
+    - curtin in-target --target=/target -- systemctl disable apt-daily.timer apt-daily-upgrade.timer || true
+
     # ---- auto-login so the first-boot prompt can run in a GUI session
     - mkdir -p /target/etc/gdm3
     - |

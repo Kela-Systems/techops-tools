@@ -311,6 +311,23 @@ if [[ -n "$OFFLINE_POOL" ]]; then
   POOL_MB="$(( $(du -sk "$OFFLINE_POOL" | cut -f1) / 1024 ))"
   echo "==> Embedding offline package pool (${POOL_MB} MB) → /extras (fully offline install)"
   XORRISO_CMD+=( -map "$OFFLINE_POOL" /extras )
+
+  # Warn on a stale pool: package (incl. security) versions drift and skew vs the
+  # ISO point release. POOL_INFO carries an ISO8601-UTC pool_built_at stamp.
+  POOL_BUILT="$(sed -n 's/^pool_built_at=//p' "$OFFLINE_POOL/POOL_INFO" 2>/dev/null | head -1)"
+  if [[ -n "$POOL_BUILT" ]]; then
+    # Portable across GNU date (Linux) and BSD date (macOS build host).
+    POOL_EPOCH="$(date -u -d "$POOL_BUILT" +%s 2>/dev/null \
+      || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$POOL_BUILT" +%s 2>/dev/null || true)"
+    if [[ -n "$POOL_EPOCH" ]]; then
+      POOL_AGE_DAYS=$(( ( $(date -u +%s) - POOL_EPOCH ) / 86400 ))
+      if (( POOL_AGE_DAYS > 60 )); then
+        echo "    WARN: offline pool is ${POOL_AGE_DAYS} days old (built ${POOL_BUILT})."
+        echo "          Package/security versions may be stale and skewed vs the ISO."
+        echo "          Consider re-running collect-offline-packages.sh before shipping."
+      fi
+    fi
+  fi
 else
   echo "==> No offline pool — building an ONLINE-install ISO (needs network during install)"
 fi

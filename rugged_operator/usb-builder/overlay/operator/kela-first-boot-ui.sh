@@ -84,4 +84,21 @@ echo
 
 # NOPASSWD sudo is granted by /etc/sudoers.d/kela-first-boot (drop-in is
 # self-removed by the runner on success).
-sudo /usr/local/sbin/kela-first-boot-run "$SITE_NAME"
+#
+# On success the runner reboots, so control never returns here. On failure it
+# prints retry guidance and exits non-zero — but this UI runs in an exec'd
+# gnome-terminal/xterm that closes the instant the script exits, so hold the
+# window open until the operator has read the message (the retry wiring and the
+# log survive regardless; the autostart prompt re-appears on the next boot).
+if ! sudo /usr/local/sbin/kela-first-boot-run "$SITE_NAME"; then
+  echo
+  echo "============================================================================"
+  echo "  SETUP FAILED — this machine is NOT finished."
+  echo "  Details and the exact retry command are in:"
+  echo "      /var/log/kela-first-boot.log"
+  echo "  The setup will retry automatically on the next reboot."
+  echo "============================================================================"
+  echo
+  read -rp "Press Enter to close this window..." _ || true
+  exit 1
+fi

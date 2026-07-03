@@ -38,7 +38,7 @@ OUT_DIR="${1:-$SCRIPT_DIR/offline-pool}"
 #  - tools:    everything operator-setup.sh §2 apt-installs, incl. onboard
 #              (tablet on-screen keyboard) and evtest (A1 scancode capture).
 DESKTOP_PKGS="ubuntu-desktop-minimal gdm3 gnome-terminal"
-TOOL_PKGS="openssh-server curl wget ca-certificates apt-transport-https gnupg lsb-release ufw rfkill libnss3-tools power-profiles-daemon dconf-cli onboard evtest"
+TOOL_PKGS="openssh-server curl wget ca-certificates apt-transport-https gnupg lsb-release ufw rfkill libnss3-tools power-profiles-daemon dconf-cli onboard evtest xdotool"
 THIRDPARTY_PKGS="tailscale anydesk google-chrome-stable"
 
 command -v docker >/dev/null 2>&1 || {
@@ -47,6 +47,17 @@ command -v docker >/dev/null 2>&1 || {
 }
 
 mkdir -p "$OUT_DIR"
+
+# Start every refresh from a clean pool. The container re-downloads the FULL
+# closure on each run (fresh ubuntu:24.04, empty apt cache), so keeping old
+# artifacts only lets stale package versions pile up — dpkg-scanpackages
+# --multiversion would index every one, growing the pool + ISO monotonically
+# until it no longer fits an 8 GB stick. Scoped to the artifacts we create, so
+# it's safe even if OUT_DIR is a custom path.
+echo "==> Clearing previous pool artifacts in: $OUT_DIR"
+rm -f  "$OUT_DIR"/*.deb "$OUT_DIR"/Packages "$OUT_DIR"/Packages.gz "$OUT_DIR"/POOL_INFO
+rm -rf "$OUT_DIR"/repo-config
+
 echo "==> Collecting offline package pool into: $OUT_DIR"
 echo "    (clean ubuntu:24.04 amd64 container — this pulls ~2 GB, give it a few minutes)"
 
@@ -102,6 +113,22 @@ docker run --rm --platform linux/amd64 \
     rm -f Packages Packages.gz
     dpkg-scanpackages --multiversion . /dev/null > Packages
     gzip -kf Packages
+
+    # Ship the vendor repo config (keyrings + .list files) alongside the debs.
+    # Offline installs pull Tailscale/AnyDesk/Chrome from the pool but never
+    # configure their upstream repos; the pool is then deleted after first boot,
+    # so without this they are frozen at pool-collection versions forever (a
+    # Tailscale client aging out of control-plane compat = stranded fleet).
+    # setup.sh lays these down (see install_pool_repos) so the station can be
+    # pointed back at the upstreams at central patch time. Keyring filenames are
+    # kept identical to the paths the .list files reference via signed-by=.
+    mkdir -p /out/repo-config/keyrings /out/repo-config/lists
+    cp /usr/share/keyrings/tailscale-archive-keyring.gpg /out/repo-config/keyrings/
+    cp /etc/apt/keyrings/keys.anydesk.com.asc            /out/repo-config/keyrings/
+    cp /etc/apt/keyrings/google-chrome.gpg               /out/repo-config/keyrings/
+    cp /etc/apt/sources.list.d/tailscale.list      /out/repo-config/lists/
+    cp /etc/apt/sources.list.d/anydesk-stable.list /out/repo-config/lists/
+    cp /etc/apt/sources.list.d/google-chrome.list  /out/repo-config/lists/
 
     # Stamp the pool so every station records which pool built it
     # (/etc/kela/build-info) and skew vs the ISO point release is traceable.

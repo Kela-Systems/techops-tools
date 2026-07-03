@@ -187,13 +187,15 @@ You also need:
      secrets file** so the auth key isn't sitting on disk
    - Reboots
 
-6. From that point on the machine boots straight into **Chrome `--kiosk`** on
-   `https://kela.local/` (full-screen; no tabs, address bar, or bookmark bar —
-   the locked "Kela" bookmarks are reachable from the "Chrome (Regular)"
-   launcher), self-relaunching if closed, microphone muted by default, and
-   reachable via Tailscale + AnyDesk. Escape to a normal desktop with
-   triple-tap **F2** (docked) or triple-press **A1** (tablet); return via the
-   "Kela Kiosk" app icon or a reboot.
+6. From that point on the machine boots straight into **Chrome `--kiosk`**
+   showing three views (hub / location-updater / camera) as tabs in one
+   full-screen window (no address bar or bookmark bar — the locked "Kela"
+   bookmarks are reachable from the "Chrome (Regular)" launcher),
+   self-relaunching if closed, microphone muted by default, and reachable via
+   Tailscale + AnyDesk. Switch views with **Ctrl+Tab** / **Ctrl+1/2/3** when
+   docked, or the **A2** bezel button (cycles forward) in tablet mode. Escape
+   to a normal desktop with triple-tap **F2** (docked) or triple-press **A1**
+   (tablet); return via the "Kela Kiosk" app icon or a reboot.
 
 Total wall-clock on a CF-33 with a wired SSD-class disk: ~15-25 min
 (online build). With an **offline** ISO, no packages are downloaded at all —
@@ -258,9 +260,12 @@ After any fix, `sudo kela-verify` re-checks the whole station in seconds.
 
 > **Server cert when the site server doesn't exist yet:** building a
 > station before its server is online is fine — the cert step is
-> non-fatal and setup continues. Once the server is up, install its cert
-> with `sudo kela-install-cert` (pulls from `192.168.88.10:443` by
-> default, or `sudo kela-install-cert <host> [port]`), then restart
+> non-fatal and setup continues. The `kela-cert-ensure` timer then
+> installs the cert automatically within ~5 min of the server coming
+> online and restarts the kiosk for you (it also self-heals if the
+> server is later rebuilt with a new cert). To skip the wait you can
+> run `sudo kela-install-cert` by hand (pulls from `192.168.88.10:443`
+> by default, or `sudo kela-install-cert <host> [port]`), then restart
 > Chrome.
 
 The log lives at `/var/log/kela-first-boot.log`. After fixing the issue:

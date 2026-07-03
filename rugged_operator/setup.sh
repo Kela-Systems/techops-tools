@@ -26,15 +26,26 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-01.1"
+SETUP_VERSION="2026-07-03.4"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
 KELA_USER="kela"
 ANYDESK_PASS="Kelasys123!"
-KELA_LOCAL_IP="192.168.88.10"
-KELA_LOCAL_HOST="kela.local"
+
+# Per-site LAN addressing. Defaults match the standard 192.168.88.0/24 site
+# layout, but every value is overridable from the environment (the first-boot
+# runner exports secrets.env before invoking this script), so a site with
+# different addressing needs NO script edits. These are persisted to
+# /etc/kela/station.conf below and re-read at runtime by kela-kiosk,
+# kela-install-cert, and kela-verify — making that file the single on-box knob
+# for re-pointing a station in the field.
+KELA_LOCAL_IP="${KELA_LOCAL_IP:-192.168.88.10}"
+KELA_LOCAL_HOST="${KELA_LOCAL_HOST:-kela.local}"
 KELA_LOCAL_URL="https://${KELA_LOCAL_HOST}/"
+LOCATION_UPDATER_URL="${LOCATION_UPDATER_URL:-${KELA_LOCAL_URL}location-updater}"
+CAMERA_URL="${CAMERA_URL:-http://192.168.88.210:6010/}"
+NTP_SERVER="${NTP_SERVER:-${KELA_LOCAL_IP}}"
 
 # Tailscale (optional — if TS_AUTHKEY unset, `tailscale up` is left manual)
 TS_AUTHKEY="${TS_AUTHKEY:-}"
@@ -66,6 +77,31 @@ HOSTNAME_NEW="${SITE_NAME}-operator"
 KELA_HOME="$(getent passwd "$KELA_USER" | cut -d: -f6)"
 echo "==> Building $HOSTNAME_NEW (setup version ${SETUP_VERSION})"
 
+# ---------- station.conf: single source of truth for site addressing --------
+# Everything downstream (Chrome policy, /etc/hosts, NTP, cert fetch, kiosk tabs,
+# kela-verify) derives from these values. The on-box scripts source this file at
+# runtime, so re-pointing a station is a one-file edit + kiosk restart — no
+# script surgery, and kela-verify checks against these values, not literals.
+install -d -m 0755 /etc/kela
+cat > /etc/kela/station.conf <<EOF
+# Kela station addressing — written by operator-setup.sh ${SETUP_VERSION}.
+# Sourced at runtime by kela-kiosk, kela-install-cert, kela-verify.
+# To re-point this station: edit the values, then re-run \`sudo kela-verify\`
+# and restart the kiosk (\`systemctl --user restart kela-kiosk\` as kela).
+# NOTE: the Chrome managed policy (homepage/bookmarks) is baked at build time;
+# re-run operator-setup.sh to regenerate it. The kiosk tabs below are live.
+SITE_NAME='${SITE_NAME}'
+KELA_LOCAL_IP='${KELA_LOCAL_IP}'
+KELA_LOCAL_HOST='${KELA_LOCAL_HOST}'
+KELA_LOCAL_URL='${KELA_LOCAL_URL}'
+LOCATION_UPDATER_URL='${LOCATION_UPDATER_URL}'
+CAMERA_URL='${CAMERA_URL}'
+NTP_SERVER='${NTP_SERVER}'
+CERT_FETCH_HOST='${CERT_FETCH_HOST}'
+CERT_FETCH_PORT='${CERT_FETCH_PORT}'
+EOF
+chmod 0644 /etc/kela/station.conf
+
 # ---------- 0. wait for network ----------------------------------------------
 # A slow DHCP lease at first boot fails the Tailscale/cert steps. Even
 # offline-pool installs need the network for `tailscale up`, so wait up to
@@ -91,9 +127,9 @@ else
 fi
 
 # ---------- 1b. timezone + NTP ----------------------------------------------
-# Timezone Asia/Jerusalem; sync time from the site server (192.168.88.10).
-# UFW (§10) is LAN-only egress, so the NTP server must be on the LAN.
-echo "==> [1b/11] Timezone Asia/Jerusalem + NTP ${KELA_LOCAL_IP}"
+# Timezone Asia/Jerusalem; sync time from the site NTP source (the hub by
+# default). UFW (§10) is LAN-only egress, so the NTP server must be on the LAN.
+echo "==> [1b/11] Timezone Asia/Jerusalem + NTP ${NTP_SERVER}"
 timedatectl set-timezone Asia/Jerusalem 2>/dev/null || \
   ln -sf /usr/share/zoneinfo/Asia/Jerusalem /etc/localtime
 mkdir -p /etc/systemd/timesyncd.conf.d
@@ -102,7 +138,7 @@ mkdir -p /etc/systemd/timesyncd.conf.d
 # breaks with "cert not yet valid" otherwise). UFW (§10) allows 123/udp out.
 cat > /etc/systemd/timesyncd.conf.d/kela-ntp.conf <<EOF
 [Time]
-NTP=${KELA_LOCAL_IP}
+NTP=${NTP_SERVER}
 FallbackNTP=ntp.ubuntu.com
 EOF
 timedatectl set-ntp true 2>/dev/null || true
@@ -111,6 +147,17 @@ systemctl restart systemd-timesyncd 2>/dev/null || true
 # ---------- 2. base packages + updates --------------------------------------
 echo "==> [2/11] apt update + base tools"
 export DEBIAN_FRONTEND=noninteractive
+
+# First-boot lock race: ubuntu-desktop-minimal ships apt-daily{,-upgrade} and
+# unattended-upgrades, which fire on the first boot of a fresh install and can
+# hold the dpkg/lists lock right when we run. Under `set -e` that turns into a
+# fatal "Could not get lock" mid-setup. Stop the racers up front (the fleet is
+# patched centrally over Tailscale, so these aren't wanted anyway) and, as a
+# belt-and-braces net, every apt call below waits on the lock via APT_LOCK.
+systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+systemctl mask unattended-upgrades.service 2>/dev/null || true
+# Kill any in-flight job that already grabbed the lock before we got here.
+systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
 
 # Offline mode: when the ISO baked an offline pool into /opt/kela-pool, install
 # everything from there (no network). The build-iso/late-commands flow leaves
@@ -126,30 +173,71 @@ else
   OFFLINE_APT=0
 fi
 
+# Wait up to 10 min for the dpkg/apt lock instead of failing hard if something
+# still holds it. Applied to the wrapper AND the raw apt-get calls below.
+APT_LOCK=( -o DPkg::Lock::Timeout=600 )
+
 # apt_get: routes through the offline pool when OFFLINE_APT=1, else normal apt.
-apt_get() { apt-get "${APT_OPTS[@]}" "$@"; }
+apt_get() { apt-get "${APT_LOCK[@]}" "${APT_OPTS[@]}" "$@"; }
+
+# In offline mode the third-party debs install from the pool, but their upstream
+# repos are never configured (the online branches in §3/§4/§5 are skipped) and
+# the pool is deleted after first boot — so Tailscale/AnyDesk/Chrome would be
+# frozen at pool-collection versions forever, and central "apt upgrade over
+# Tailscale" would only ever touch Ubuntu packages. Lay down the keyrings +
+# .list files the collector shipped in the pool, so the repos are configured
+# (even if unreachable until patch time). The offline install below still uses
+# APT_OPTS (pool-only source list), so these vendor lists are ignored during
+# install and only take effect once the station is patched online later.
+install_pool_repos() {
+  local rc="$KELA_POOL_DIR/repo-config"
+  if [[ ! -d "$rc" ]]; then
+    echo "    WARN: no repo-config in pool — vendor repos won't be configured;" \
+         "Tailscale/AnyDesk/Chrome will be unpatchable. Re-collect the pool."
+    return 0
+  fi
+  install -m 0755 -d /usr/share/keyrings /etc/apt/keyrings /etc/apt/sources.list.d
+  # Keyring paths must match the signed-by= targets inside the .list files.
+  [[ -f "$rc/keyrings/tailscale-archive-keyring.gpg" ]] && \
+    install -m 0644 "$rc/keyrings/tailscale-archive-keyring.gpg" /usr/share/keyrings/
+  [[ -f "$rc/keyrings/keys.anydesk.com.asc" ]] && \
+    install -m 0644 "$rc/keyrings/keys.anydesk.com.asc" /etc/apt/keyrings/
+  [[ -f "$rc/keyrings/google-chrome.gpg" ]] && \
+    install -m 0644 "$rc/keyrings/google-chrome.gpg" /etc/apt/keyrings/
+  install -m 0644 "$rc"/lists/*.list /etc/apt/sources.list.d/ 2>/dev/null || true
+  echo "    Vendor repos configured from pool (Tailscale/AnyDesk/Chrome)."
+}
+[[ "$OFFLINE_APT" == "1" ]] && install_pool_repos
 
 apt_get update -y
 
 # apt upgrade is intentionally skipped (it was a redundant re-download). Patch
 # centrally over Tailscale instead. Set KELA_APT_UPGRADE=1 to force it online.
 if [[ "$OFFLINE_APT" == "0" && "${KELA_APT_UPGRADE:-0}" == "1" ]]; then
-  apt-get upgrade -y
+  apt-get "${APT_LOCK[@]}" upgrade -y
 fi
 
-apt_get install -y curl wget ca-certificates apt-transport-https \
-                   gnupg lsb-release ufw rfkill openssh-server \
-                   libnss3-tools power-profiles-daemon dconf-cli \
-                   onboard evtest
+BASE_PKGS=(curl wget ca-certificates apt-transport-https
+           gnupg lsb-release ufw rfkill openssh-server
+           libnss3-tools power-profiles-daemon dconf-cli
+           onboard evtest xdotool)
+if [[ "$OFFLINE_APT" == "1" ]]; then
+  # Offline: all three vendor packages are already in the pool, so install them
+  # in this SAME transaction — one dpkg lock cycle + one trigger run instead of
+  # four (saves a couple of minutes per station). §3/§4/§5 then skip their own
+  # install and only do the per-service configuration.
+  apt_get install -y "${BASE_PKGS[@]}" tailscale anydesk google-chrome-stable
+else
+  # Online: each vendor needs its repo/deb set up first, so they stay separate.
+  apt_get install -y "${BASE_PKGS[@]}"
+fi
 
 # ---------- 3. Tailscale ----------------------------------------------------
 echo "==> [3/11] Installing Tailscale"
-if ! command -v tailscale >/dev/null 2>&1; then
-  if [[ "$OFFLINE_APT" == "1" ]]; then
-    apt_get install -y tailscale
-  else
-    curl -fsSL https://tailscale.com/install.sh | sh
-  fi
+# Offline: already installed in the combined §2 transaction. Online: vendor
+# script (adds the repo + installs).
+if [[ "$OFFLINE_APT" == "0" ]] && ! command -v tailscale >/dev/null 2>&1; then
+  curl -fsSL https://tailscale.com/install.sh | sh
 fi
 systemctl enable --now tailscaled
 
@@ -193,17 +281,17 @@ fi
 
 # ---------- 4. AnyDesk ------------------------------------------------------
 echo "==> [4/11] Installing AnyDesk"
-if [[ "$OFFLINE_APT" == "1" ]]; then
-  apt_get install -y anydesk
-else
+# Offline: already installed in the combined §2 transaction. Online: add the
+# vendor repo, then install.
+if [[ "$OFFLINE_APT" == "0" ]]; then
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://keys.anydesk.com/repos/DEB-GPG-KEY \
        -o /etc/apt/keyrings/keys.anydesk.com.asc
   chmod a+r /etc/apt/keyrings/keys.anydesk.com.asc
   echo "deb [signed-by=/etc/apt/keyrings/keys.anydesk.com.asc] http://deb.anydesk.com/ all main" \
        > /etc/apt/sources.list.d/anydesk-stable.list
-  apt-get update -y
-  apt-get install -y anydesk
+  apt-get "${APT_LOCK[@]}" update -y
+  apt-get "${APT_LOCK[@]}" install -y anydesk
 fi
 
 # `anydesk --set-password` needs the service running — enable it first and
@@ -230,12 +318,12 @@ fi
 
 # ---------- 5. Google Chrome + telemetry suppression ------------------------
 echo "==> [5/11] Installing Google Chrome"
-if [[ "$OFFLINE_APT" == "1" ]]; then
-  apt_get install -y google-chrome-stable
-else
+# Offline: already installed in the combined §2 transaction. Online: fetch the
+# vendor deb and install it.
+if [[ "$OFFLINE_APT" == "0" ]]; then
   TMP_DEB="$(mktemp --suffix=.deb)"
   wget -qO "$TMP_DEB" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-  apt-get install -y "$TMP_DEB"
+  apt-get "${APT_LOCK[@]}" install -y "$TMP_DEB"
   rm -f "$TMP_DEB"
 fi
 
@@ -251,7 +339,7 @@ fi
 # allow/blocklist here — confinement is via --kiosk + the §10b egress lock,
 # which keeps the "Chrome (Regular)" launcher LAN-only too.
 mkdir -p /etc/opt/chrome/policies/managed
-cat > /etc/opt/chrome/policies/managed/kela-policy.json <<'JSON'
+cat > /etc/opt/chrome/policies/managed/kela-policy.json <<JSON
 {
   "MetricsReportingEnabled": false,
   "DefaultBrowserSettingEnabled": false,
@@ -270,33 +358,36 @@ cat > /etc/opt/chrome/policies/managed/kela-policy.json <<'JSON'
   "PrintingEnabled": false,
   "DownloadRestrictions": 3,
 
-  "HomepageLocation": "https://kela.local/",
+  "HomepageLocation": "${KELA_LOCAL_URL}",
   "HomepageIsNewTabPage": false,
-  "NewTabPageLocation": "https://kela.local/",
+  "NewTabPageLocation": "${KELA_LOCAL_URL}",
   "ShowHomeButton": true,
   "RestoreOnStartup": 4,
   "RestoreOnStartupURLs": [
-    "https://kela.local/",
-    "https://kela.local/location-updater",
-    "http://192.168.88.210:6010/"
+    "${KELA_LOCAL_URL}",
+    "${LOCATION_UPDATER_URL}",
+    "${CAMERA_URL}"
   ],
 
   "BookmarkBarEnabled": true,
   "ManagedBookmarks": [
     { "toplevel_name": "Kela" },
-    { "name": "מערכת קלע", "url": "https://kela.local/" },
-    { "name": "שינוי מיקום אתר", "url": "https://kela.local/location-updater" },
-    { "name": "ממשק מצלמה", "url": "http://192.168.88.210:6010" }
+    { "name": "מערכת קלע", "url": "${KELA_LOCAL_URL}" },
+    { "name": "שינוי מיקום אתר", "url": "${LOCATION_UPDATER_URL}" },
+    { "name": "ממשק מצלמה", "url": "${CAMERA_URL}" }
   ]
 }
 JSON
 
 # ---------- 6. /etc/hosts entry for kela.local ------------------------------
 # Done BEFORE cert fetch so `kela.local` resolves to the hub on the LAN.
+# Match-and-replace (like the 127.0.1.1 handling in §1), not append-if-absent:
+# a re-run after KELA_LOCAL_IP changed (e.g. a per-site station.conf override)
+# must overwrite the stale mapping instead of leaving it in place. The regex
+# only touches a real (non-comment) mapping for this exact host.
 echo "==> [6/11] Adding ${KELA_LOCAL_HOST} -> ${KELA_LOCAL_IP}"
-if ! grep -qE "^[^#]*\s${KELA_LOCAL_HOST}(\s|$)" /etc/hosts; then
-  echo "${KELA_LOCAL_IP}	${KELA_LOCAL_HOST}" >> /etc/hosts
-fi
+sed -i -E "/^[^#]*[[:space:]]${KELA_LOCAL_HOST}([[:space:]]|$)/d" /etc/hosts
+printf '%s\t%s\n' "${KELA_LOCAL_IP}" "${KELA_LOCAL_HOST}" >> /etc/hosts
 
 # ---------- 7. Fetch & install server certificate ---------------------------
 # The fetch+install logic is installed as a standalone, re-runnable command:
@@ -324,10 +415,15 @@ fi
 
 KELA_USER="kela"
 KELA_HOME="$(getent passwd "$KELA_USER" | cut -d: -f6)"
-KELA_LOCAL_HOST="kela.local"
 
-HOST="${1:-${KELA_CERT_HOST:-192.168.88.10}}"
-PORT="${2:-${KELA_CERT_PORT:-443}}"
+# Per-site addressing from the single source of truth (written by setup.sh).
+[ -r /etc/kela/station.conf ] && . /etc/kela/station.conf
+KELA_LOCAL_HOST="${KELA_LOCAL_HOST:-kela.local}"
+
+# Precedence: explicit arg > KELA_CERT_HOST env > station.conf CERT_FETCH_HOST
+# > hub IP > baked default. Same for the port.
+HOST="${1:-${KELA_CERT_HOST:-${CERT_FETCH_HOST:-${KELA_LOCAL_IP:-192.168.88.10}}}}"
+PORT="${2:-${KELA_CERT_PORT:-${CERT_FETCH_PORT:-443}}}"
 RETRIES="${KELA_CERT_RETRIES:-5}"
 RETRY_DELAY="${KELA_CERT_RETRY_DELAY:-5}"
 TIMEOUT="${KELA_CERT_TIMEOUT:-10}"
@@ -347,8 +443,12 @@ fi
 FETCHED=0
 for attempt in $(seq 1 "$RETRIES"); do
   echo "    Attempt ${attempt}/${RETRIES}"
+  # SNI is the hostname (kela.local), NOT the -connect target (an IP): it must
+  # match the SNI kela-cert-ensure probes with, or a future SNI-dependent hub
+  # (per-host certs) would serve a different cert to probe vs. fetch and trip a
+  # permanent 5-min re-pin/kiosk-restart loop. Same-SNI-by-construction.
   DATA="$(echo | timeout "$TIMEOUT" openssl s_client \
-                 -connect "${HOST}:${PORT}" -servername "$HOST" </dev/null 2>/dev/null \
+                 -connect "${HOST}:${PORT}" -servername "$KELA_LOCAL_HOST" </dev/null 2>/dev/null \
            | sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/p')"
   if [[ -n "$DATA" ]] && echo "$DATA" | openssl x509 -noout 2>/dev/null; then
     echo "$DATA" > "$TARGET"
@@ -405,9 +505,107 @@ if kela-install-cert "$CERT_FETCH_HOST" "$CERT_FETCH_PORT"; then
   :
 else
   echo "WARN: certificate not installed (the site server may not exist yet)."
-  echo "      Once the server at ${KELA_LOCAL_IP} (${KELA_LOCAL_HOST}) is up, run:"
+  echo "      kela-cert-ensure (§7b) will auto-install it within ~5 min of the"
+  echo "      server at ${KELA_LOCAL_IP} (${KELA_LOCAL_HOST}) coming online — or run now:"
   echo "        sudo kela-install-cert"
 fi
+
+# ---------- 7b. Self-healing cert convergence (systemd timer) ---------------
+# §7's fetch is one-shot: a station built before its site server exists gets no
+# cert, and historically a human had to run `sudo kela-install-cert` later and
+# restart Chrome. kela-cert-ensure automates that convergence — a 5-min timer
+# probes the hub and, when the served cert first appears (or later CHANGES
+# because the server was rebuilt with a new cert), it (re)pins the cert and
+# bounces the kiosk so Chrome re-reads NSS. It is deliberately silent and
+# non-fatal while the server is absent, since it runs forever.
+echo "==> [7b/11] Installing kela-cert-ensure convergence timer"
+
+install -m 0755 /dev/stdin /usr/local/sbin/kela-cert-ensure <<'KELACERTENSURE'
+#!/usr/bin/env bash
+# Converge the trusted Kela server cert with what the hub is actually serving.
+# Runs every 5 min from kela-cert-ensure.timer:
+#   - server absent/down    -> exit 0 silently (stations are often built first)
+#   - served == installed   -> exit 0 (nothing to do)
+#   - missing/mismatch       -> kela-install-cert, then restart the kiosk so
+#                              Chrome re-reads NSS. Transient failures just wait
+#                              for the next tick.
+# This replaces the manual `sudo kela-install-cert` follow-up and also
+# self-heals when the server is rebuilt with a fresh cert (fingerprint changes).
+# NOTE: intentionally NOT `set -e` — a probe against an absent server must never
+# fail this unit (it would spam the journal with failed timer runs).
+set -uo pipefail
+
+# Per-site addressing (single source of truth). Same env names kela-install-cert
+# honors, so any override applies to both.
+[ -r /etc/kela/station.conf ] && . /etc/kela/station.conf
+HOST="${KELA_CERT_HOST:-${CERT_FETCH_HOST:-${KELA_LOCAL_IP:-192.168.88.10}}}"
+PORT="${KELA_CERT_PORT:-${CERT_FETCH_PORT:-443}}"
+# SNI must match the one kela-install-cert fetches with (also KELA_LOCAL_HOST):
+# on an SNI-dependent hub, a differing SNI would probe cert A while the installer
+# pins cert B, and every tick would re-detect a "mismatch" and restart the kiosk.
+SNI="${KELA_LOCAL_HOST:-kela.local}"
+TARGET="/usr/local/share/ca-certificates/kela/kela-server.crt"
+
+# What the hub is serving right now. Empty => server not up yet: do nothing.
+served="$(echo | timeout 10 openssl s_client -connect "${HOST}:${PORT}" \
+            -servername "$SNI" 2>/dev/null \
+          | openssl x509 -noout -fingerprint -sha256 2>/dev/null)"
+[ -n "$served" ] || exit 0
+
+# What we currently trust (missing file counts as "no match").
+installed=""
+[ -r "$TARGET" ] && installed="$(openssl x509 -in "$TARGET" -noout -fingerprint -sha256 2>/dev/null)"
+
+[ "$served" = "$installed" ] && exit 0
+
+# First pin or the server's cert changed: (re)fetch + trust. A transient failure
+# is fine — the next tick retries.
+if /usr/local/sbin/kela-install-cert "$HOST" "$PORT" >/dev/null 2>&1; then
+  # Chrome reads NSS only at startup — bounce the kiosk so the new cert applies.
+  # Only a RUNNING kiosk is restarted (a no-op mid-first-boot or after an
+  # escape); log the restart only when it actually happened, so a journal
+  # debugging a station isn't misled by a restart that never occurred.
+  restarted=""
+  kela_uid="$(id -u kela 2>/dev/null || true)"
+  if [ -n "$kela_uid" ] \
+     && sudo -u kela XDG_RUNTIME_DIR="/run/user/${kela_uid}" \
+          systemctl --user is-active --quiet kela-kiosk.service 2>/dev/null; then
+    sudo -u kela XDG_RUNTIME_DIR="/run/user/${kela_uid}" \
+      systemctl --user try-restart kela-kiosk.service 2>/dev/null || true
+    restarted=" (kiosk restarted)"
+  fi
+  echo "kela-cert-ensure: server cert installed/updated from ${HOST}:${PORT}${restarted}"
+fi
+exit 0
+KELACERTENSURE
+
+# oneshot service + 5-min timer. The TIMER is enabled (not the service): the
+# service is just the work the timer triggers.
+cat > /etc/systemd/system/kela-cert-ensure.service <<'EOF'
+[Unit]
+Description=Kela: converge trusted server cert with what the hub serves
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kela-cert-ensure
+EOF
+
+cat > /etc/systemd/system/kela-cert-ensure.timer <<'EOF'
+[Unit]
+Description=Kela: periodic server-cert convergence (self-healing TLS pin)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now kela-cert-ensure.timer
 
 # ---------- 8. Kiosk: Chrome --kiosk as a self-restarting user service ------
 # Replaces the old maximized-window autostart. The kiosk runs under a
@@ -427,18 +625,48 @@ rm -f "$KELA_HOME/.config/autostart/chrome-kela.desktop"
 # pinch-zoom (handled by the page, independent of viewport pinch).
 #
 # The three URLs open as tabs in the single kiosk window (command-line URLs
-# are authoritative and override RestoreOnStartup). Operators switch between
-# them with Ctrl+Tab or Ctrl+1/2/3; Ctrl+0 and Ctrl+4..9 are swallowed by the
-# 10-kela-kiosk dconf (§9d) so stray number keys can't jump to a phantom tab
-# or reset zoom. Keep this tab order in sync with ManagedBookmarks (§5):
-#   1 = kela hub, 2 = location-updater, 3 = camera interface.
+# are authoritative and override RestoreOnStartup). Docked, operators switch
+# between them with Ctrl+Tab or Ctrl+1/2/3; in tablet mode the A2 bezel button
+# cycles forward via Ctrl+Tab (kela-kiosk-next-tab, §9f). Ctrl+0 and Ctrl+4..9
+# are swallowed by the 10-kela-kiosk dconf (§9d) so stray number keys can't
+# jump to a phantom tab or reset zoom. Keep this tab order in sync with
+# ManagedBookmarks (§5): 1 = kela hub, 2 = location-updater, 3 = camera.
 cat > /usr/local/bin/kela-kiosk <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+
+# Tab URLs come from the single source of truth. The values below are the
+# build-time defaults; /etc/kela/station.conf (sourced next) overrides them, so
+# re-pointing this station in the field is a station.conf edit + kiosk restart.
+KELA_LOCAL_URL='${KELA_LOCAL_URL}'
+LOCATION_UPDATER_URL='${LOCATION_UPDATER_URL}'
+CAMERA_URL='${CAMERA_URL}'
+[ -r /etc/kela/station.conf ] && . /etc/kela/station.conf
+
 PREFS="\$HOME/.config/google-chrome/Default/Preferences"
 if [ -f "\$PREFS" ]; then
   sed -i 's/"exit_type":"[^"]*"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' "\$PREFS" 2>/dev/null || true
 fi
+# Clear stale single-instance locks from an unclean exit (hard power-off):
+# otherwise Chrome can refuse to start and every relaunch fails identically.
+# Guard on "no Chrome already running": if "Chrome (Regular)" is open when the
+# Kela Kiosk launcher fires, deleting its live lock would start a SECOND Chrome
+# on the same Default profile — the exact corruption the lock exists to prevent.
+if ! pgrep -u "\$(id -u)" -f google-chrome-stable >/dev/null 2>&1; then
+  rm -f "\$HOME/.config/google-chrome/"Singleton* 2>/dev/null || true
+fi
+
+# Wait (bounded ~30s) for the hub to answer before launching. Chrome caches an
+# ERR_CONNECTION_REFUSED page and never retries it, so launching into a slow
+# DHCP lease or a hub that's still coming up would strand a keyboardless tablet
+# on a dead error page. -k: the cert may not be installed yet. Launch anyway
+# after the deadline — kela-kiosk-watch restarts us when the hub recovers.
+deadline=\$(( SECONDS + 30 ))
+while [ "\$SECONDS" -lt "\$deadline" ]; do
+  curl -ks --max-time 2 -o /dev/null "\$KELA_LOCAL_URL" && break
+  sleep 2
+done
+
 exec /usr/bin/google-chrome-stable \\
   --kiosk \\
   --no-first-run --no-default-browser-check \\
@@ -447,9 +675,9 @@ exec /usr/bin/google-chrome-stable \\
   --touch-events=enabled \\
   --force-device-scale-factor=1.25 \\
   --check-for-update-interval=31536000 \\
-  ${KELA_LOCAL_URL} \\
-  ${KELA_LOCAL_URL}location-updater \\
-  http://192.168.88.210:6010/
+  "\$KELA_LOCAL_URL" \\
+  "\$LOCATION_UPDATER_URL" \\
+  "\$CAMERA_URL"
 EOF
 chmod 0755 /usr/local/bin/kela-kiosk
 
@@ -461,24 +689,87 @@ cat > "$KELA_HOME/.config/systemd/user/kela-kiosk.service" <<'EOF'
 Description=Kela kiosk (Chrome --kiosk on kela.local)
 PartOf=graphical-session.target
 After=graphical-session.target
+# Never give up. With Restart=always, systemd's DEFAULT start limit (5 starts
+# per 10s) would trip on an instant-crash loop — corrupt profile after a hard
+# power-off (these boxes run until the battery dies), a stale SingletonLock, or
+# the X display not yet imported into the user manager env — and drop the kiosk
+# into failed state permanently: a black desktop until reboot, i.e. the exact
+# opposite of self-healing. Disabling the limiter keeps it retrying forever.
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/local/bin/kela-kiosk
 Restart=always
-RestartSec=2
+# 5s (not 2s): a genuine crash-loop retries calmly instead of pegging the CPU,
+# and transient causes (X not ready yet) get a moment to clear between tries.
+RestartSec=5
 
 [Install]
 WantedBy=graphical-session.target
 EOF
 chown "$KELA_USER:$KELA_USER" "$KELA_HOME/.config/systemd/user/kela-kiosk.service"
 
-# Autostart entry: start the kiosk service at graphical login.
+# Hub-recovery watch: the launcher's pre-flight wait only helps at start, and
+# Restart=always doesn't fire on an error page (Chrome didn't crash). So if the
+# hub drops after launch, the kiosk keeps showing a stale ERR_CONNECTION_REFUSED
+# page forever. This watcher restarts the kiosk on an unreachable->reachable
+# transition, so error-page tabs get replaced with live content once the hub is
+# back — no keyboard (Ctrl+R) or remote intervention needed on a tablet.
+cat > /usr/local/bin/kela-kiosk-watch <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+
+KELA_LOCAL_URL='https://kela.local/'
+[ -r /etc/kela/station.conf ] && . /etc/kela/station.conf
+: "${KELA_LOCAL_URL:=https://kela.local/}"
+
+reachable() { curl -ks --max-time 2 -o /dev/null "$KELA_LOCAL_URL"; }
+
+# Seed with the current state so we only act on a genuine recovery edge, not on
+# the first poll.
+if reachable; then last=1; else last=0; fi
+
+while true; do
+  sleep 20
+  if reachable; then now=1; else now=0; fi
+  if [ "$last" -eq 0 ] && [ "$now" -eq 1 ]; then
+    # try-restart (not restart): only bounce a RUNNING kiosk stuck on an error
+    # page. If a technician escaped to the desktop while the hub was down, a
+    # hub recovery must NOT yank the kiosk back over their session — escape
+    # stays escaped until explicitly re-entered.
+    systemctl --user try-restart kela-kiosk.service || true
+  fi
+  last=$now
+done
+EOF
+chmod 0755 /usr/local/bin/kela-kiosk-watch
+
+cat > "$KELA_HOME/.config/systemd/user/kela-kiosk-watch.service" <<'EOF'
+[Unit]
+Description=Kela kiosk hub-recovery watch (restart kiosk when the hub comes back)
+PartOf=graphical-session.target
+After=graphical-session.target kela-kiosk.service
+# Independent of kela-kiosk (not PartOf it), so restarting the kiosk doesn't
+# restart the watcher. Never give up on the poll loop.
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/local/bin/kela-kiosk-watch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+chown "$KELA_USER:$KELA_USER" "$KELA_HOME/.config/systemd/user/kela-kiosk-watch.service"
+
+# Autostart entry: start the kiosk service + recovery watch at graphical login.
 install -d -o "$KELA_USER" -g "$KELA_USER" "$KELA_HOME/.config/autostart"
 cat > "$KELA_HOME/.config/autostart/kela-kiosk.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Kela kiosk
-Exec=sh -c 'systemctl --user daemon-reload; systemctl --user start kela-kiosk.service'
+Exec=sh -c 'systemctl --user daemon-reload; systemctl --user start kela-kiosk.service kela-kiosk-watch.service'
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 Terminal=false
@@ -649,12 +940,29 @@ EOF
 # OSK off (onboard is autostarted in 9f) and set a readable HiDPI scale.
 cat > /etc/dconf/db/local.d/10-kela-kiosk <<'EOF'
 [org/gnome/settings-daemon/plugins/media-keys]
-custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-escape/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cw/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-csw/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cq/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-ct/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cn/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c0/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c4/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c5/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c6/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c7/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c8/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c9/']
+custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-escape/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cw/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-csw/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cq/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-ct/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cn/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c0/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c4/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c5/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c6/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c7/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c8/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c9/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-csq/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-escape-a1/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-next-tab/']
 
 [org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-escape]
 name='Kela kiosk escape'
 command='/usr/local/bin/kela-kiosk-escape'
 binding='F2'
+
+# A1 bezel button (tablet-mode escape). Shares the escape script with F2 — the
+# stamp-file press counter means triple-press works from either. Fires when A1
+# emits KEY_PROG1 natively (XF86Launch1); the 9f hwdb A1->f2 path covers the
+# raw-scancode firmware instead.
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-escape-a1]
+name='Kela kiosk escape (A1)'
+command='/usr/local/bin/kela-kiosk-escape'
+binding='XF86Launch1'
+
+# A2 bezel button (tablet-mode next view). Injects Ctrl+Tab to cycle the three
+# kiosk tabs forward. Fires when A2 emits KEY_PROG2 natively (XF86Launch2); the
+# 9f hwdb A2->prog2 path covers the raw-scancode firmware instead.
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-next-tab]
+name='Kela kiosk next view'
+command='/usr/local/bin/kela-kiosk-next-tab'
+binding='XF86Launch2'
 
 [org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-cw]
 name='block close-tab'
@@ -670,6 +978,11 @@ binding='<Ctrl><Shift>w'
 name='block quit'
 command='/bin/true'
 binding='<Ctrl>q'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-csq]
+name='block quit (Chrome Ctrl+Shift+Q)'
+command='/bin/true'
+binding='<Ctrl><Shift>q'
 
 [org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-ct]
 name='block new-tab'
@@ -837,12 +1150,18 @@ Terminal=false
 EOF
 chown "$KELA_USER:$KELA_USER" "$KELA_HOME/.config/autostart/kela-session-init.desktop"
 
-# --- 9f. Kiosk escape (triple F2 docked / triple A1 tablet) + OSK ----------
-# The escape script counts trigger presses within a 1.5s window and, on the
-# 3rd, stops the kiosk service — dropping to plain GNOME. It's bound to F2 in
-# the 10-kela-kiosk dconf; the A1 bezel button is remapped to F2 via hwdb so
-# the same gesture works as a bare tablet. Runs as kela inside the session,
-# so `systemctl --user` works.
+# --- 9f. Kiosk bezel buttons (escape + next-view) + OSK --------------------
+# Tablet mode has no keyboard, so the CF-33's two bezel buttons drive the
+# kiosk:
+#   A1 = escape  — triple-press within 1.5s stops the kiosk (drops to GNOME).
+#   A2 = next view — injects Ctrl+Tab to cycle the three kiosk tabs.
+# Both reach us as XF86Launch1/XF86Launch2 GNOME bindings (10-kela-kiosk
+# dconf, 9d2). Depending on firmware the buttons either emit KEY_PROG1/PROG2
+# natively (mapped to XF86Launch1/2 already — no hwdb needed) or raw scancodes
+# that the hwdb file below remaps (A1->f2 reuses the F2 escape binding, A2->
+# prog2 lands on XF86Launch2). The escape script counts presses in a stamp
+# file, so the F2 and XF86Launch1 bindings share it. Runs as kela inside the
+# session, so `systemctl --user` works.
 cat > /usr/local/bin/kela-kiosk-escape <<'EOF'
 #!/usr/bin/env bash
 # Triple-press F2 (or A1, remapped to F2) within WINDOW_MS -> stop the kiosk.
@@ -862,22 +1181,45 @@ fi
 EOF
 chmod 0755 /usr/local/bin/kela-kiosk-escape
 
-# A1 bezel button -> F2 (so the escape works undocked). The A1 scancode
-# varies by firmware and MUST be captured on the unit, so this ships with the
-# mapping COMMENTED OUT — nothing is mis-remapped until it's filled in:
-#   sudo evtest            # press A1, read the MSC_SCAN "value <hex>"
-# then uncomment + set the device match + scancode below and apply:
-#   sudo systemd-hwdb update && sudo udevadm trigger
-# Until then, F2 (keyboard docked) is the escape; A1 does nothing.
+# A2 = next kiosk view. hwdb can only map a button to a single key, never to a
+# chord, so the Ctrl+Tab chord is injected here (Xorg session, so xdotool
+# works). No kiosk-active guard: after an escape, A2 just injects Ctrl+Tab into
+# whatever is focused — harmless.
+cat > /usr/local/bin/kela-kiosk-next-tab <<'EOF'
+#!/usr/bin/env bash
+# A2 bezel button -> cycle the three kiosk tabs forward (Ctrl+Tab).
+set -euo pipefail
+command -v xdotool >/dev/null 2>&1 || exit 0
+xdotool key --clearmodifiers ctrl+Tab
+EOF
+chmod 0755 /usr/local/bin/kela-kiosk-next-tab
+
+# Bezel buttons -> keysyms, for the firmware case where they emit raw scancodes
+# instead of KEY_PROG1/PROG2. The scancodes vary by unit and MUST be captured,
+# so this ships COMMENTED OUT — nothing is mis-remapped until it's filled in.
+# FIRST run `sudo evtest`, select the button device, and press A1/A2:
+#   * If evtest already reports KEY_PROG1 / KEY_PROG2 key events, DO NOTHING —
+#     the XF86Launch1/XF86Launch2 GNOME bindings (9d2) already handle them and
+#     this file must stay commented out.
+#   * Otherwise note each MSC_SCAN "value <hex>", uncomment the block, fill in
+#     the two scancodes (A1->f2, A2->prog2), and apply:
+#       sudo systemd-hwdb update && sudo udevadm trigger
+# Drop the pre-rename stub so a re-run on an older station leaves no duplicate.
 mkdir -p /etc/udev/hwdb.d
-cat > /etc/udev/hwdb.d/70-kela-cf33-a1.hwdb <<'EOF'
-# Kela CF-33: remap the A1 bezel application button to F2 for the kiosk escape.
-# Capture A1's scancode with `sudo evtest` (press A1, read the MSC_SCAN value),
-# then uncomment the two lines, set the name match + scancode, and run:
-#   sudo systemd-hwdb update && sudo udevadm trigger
+rm -f /etc/udev/hwdb.d/70-kela-cf33-a1.hwdb
+cat > /etc/udev/hwdb.d/70-kela-cf33-buttons.hwdb <<'EOF'
+# Kela CF-33: remap the A1/A2 bezel buttons for kiosk control.
+#   A1 -> f2    (reuses the F2 kiosk-escape binding)
+#   A2 -> prog2 (lands on the XF86Launch2 "next view" binding)
+# ONLY needed if the buttons emit raw scancodes. Capture with `sudo evtest`:
+#   - if evtest shows KEY_PROG1/KEY_PROG2 already, leave this commented out
+#     (XF86Launch1/XF86Launch2 GNOME bindings handle it, no remap required);
+#   - else read each button's MSC_SCAN value, uncomment below, set the name
+#     match + scancodes, then: sudo systemd-hwdb update && sudo udevadm trigger
 #
 #evdev:name:*Panasonic*:dmi:*
-#  KEYBOARD_KEY_<scancode>=f2
+#  KEYBOARD_KEY_<a1_scancode>=f2
+#  KEYBOARD_KEY_<a2_scancode>=prog2
 EOF
 systemd-hwdb update 2>/dev/null || true
 
@@ -1001,7 +1343,7 @@ iptables -L KELA_EGRESS -n -v 2>/dev/null || true
 
 # ---------- 11a. Strip games + bloat ----------------------------------------
 echo "==> [11/11] Removing games / bloat and blocking Bluetooth"
-apt-get purge -y \
+apt-get "${APT_LOCK[@]}" purge -y \
   aisleriot gnome-mahjongg gnome-mines gnome-sudoku gnome-2048 \
   gnome-chess gnome-klotski gnome-nibbles gnome-robots gnome-tetravex \
   gnome-taquin gnome-tali quadrapassel four-in-a-row five-or-more \
@@ -1056,9 +1398,9 @@ EOF
 update-initramfs -u
 
 # Purge BlueZ stack so nothing tries to reload modules
-apt-get purge -y bluez bluez-cups bluez-obexd 'gnome-bluetooth*' 2>/dev/null || true
-apt-get autoremove -y --purge
-apt-get clean
+apt-get "${APT_LOCK[@]}" purge -y bluez bluez-cups bluez-obexd 'gnome-bluetooth*' 2>/dev/null || true
+apt-get "${APT_LOCK[@]}" autoremove -y --purge
+apt-get "${APT_LOCK[@]}" clean
 
 # ---------- 12. kela-verify: machine-checked success ------------------------
 # The §4.3 manual checklist, as code. kela-first-boot-run runs this before it
@@ -1080,6 +1422,26 @@ opt() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then echo "PASS  $d"; PASS
 if [[ $EUID -ne 0 ]]; then echo "ERROR: run as root: sudo kela-verify" >&2; exit 2; fi
 KELA_HOME="$(getent passwd kela | cut -d: -f6)"
 
+# Site addressing (single source of truth) so checks assert the CONFIGURED
+# values, not hardcoded literals. Fallbacks keep `set -u` from crashing if the
+# file is missing — the "station.conf present" check below then FAILs cleanly.
+STATION_CONF=/etc/kela/station.conf
+[ -r "$STATION_CONF" ] && . "$STATION_CONF"
+KELA_LOCAL_IP="${KELA_LOCAL_IP:-}"
+KELA_LOCAL_HOST="${KELA_LOCAL_HOST:-}"
+KELA_LOCAL_URL="${KELA_LOCAL_URL:-}"
+LOCATION_UPDATER_URL="${LOCATION_UPDATER_URL:-}"
+CAMERA_URL="${CAMERA_URL:-}"
+
+echo "--- site addressing (single source of truth: /etc/kela/station.conf) ---"
+req "station.conf present"               test -f "$STATION_CONF"
+req "hub URL configured"                 test -n "$KELA_LOCAL_URL"
+req "location-updater URL configured"    test -n "$LOCATION_UPDATER_URL"
+req "camera URL configured"              test -n "$CAMERA_URL"
+req "hub host -> hub IP in /etc/hosts"   grep -qE "^${KELA_LOCAL_IP}[[:space:]]+${KELA_LOCAL_HOST}([[:space:]]|$)" /etc/hosts
+opt "hub reachable ($KELA_LOCAL_HOST)"   sh -c "curl -sk --max-time 5 -o /dev/null \"$KELA_LOCAL_URL\""
+opt "camera reachable"                   sh -c "curl -s --max-time 5 -o /dev/null \"$CAMERA_URL\""
+
 echo "--- remote access (a FAIL here means a stranded station) ---"
 req "tailscaled service active"          systemctl is-active --quiet tailscaled
 req "tailscale connected (has IPv4)"     tailscale ip -4
@@ -1091,6 +1453,11 @@ req "ufw active"                         sh -c 'ufw status | grep -q "Status: ac
 req "kela egress chain loaded"           iptables -S KELA_EGRESS
 req "kela-egress.service enabled"        systemctl is-enabled --quiet kela-egress.service
 
+echo "--- updatability (vendor apt repos, so central patching can reach them) ---"
+opt "tailscale apt repo configured"      test -f /etc/apt/sources.list.d/tailscale.list
+opt "anydesk apt repo configured"        test -f /etc/apt/sources.list.d/anydesk-stable.list
+opt "chrome apt repo configured"         test -f /etc/apt/sources.list.d/google-chrome.list
+
 echo "--- kiosk ---"
 req "GDM auto-login configured"          grep -q "AutomaticLogin=kela" /etc/gdm3/custom.conf
 req "GDM forced onto Xorg"               grep -q "^WaylandEnable=false" /etc/gdm3/custom.conf
@@ -1098,17 +1465,34 @@ req "Chrome installed"                   test -x /usr/bin/google-chrome-stable
 req "Chrome policy present"              test -f /etc/opt/chrome/policies/managed/kela-policy.json
 req "kiosk launcher present"             test -x /usr/local/bin/kela-kiosk
 req "kiosk user service present"         test -f "$KELA_HOME/.config/systemd/user/kela-kiosk.service"
+req "kiosk restart limit disabled"       grep -q '^StartLimitIntervalSec=0' "$KELA_HOME/.config/systemd/user/kela-kiosk.service"
+req "kiosk waits for hub before launch"  grep -q 'curl -ks --max-time 2' /usr/local/bin/kela-kiosk
+req "kiosk hub-recovery watch script"    test -x /usr/local/bin/kela-kiosk-watch
+req "kiosk hub-recovery watch service"   test -f "$KELA_HOME/.config/systemd/user/kela-kiosk-watch.service"
 req "kiosk autostart present"            test -f "$KELA_HOME/.config/autostart/kela-kiosk.desktop"
 req "kiosk escape script present"        test -x /usr/local/bin/kela-kiosk-escape
+req "kiosk next-view script present"     test -x /usr/local/bin/kela-kiosk-next-tab
+req "xdotool installed (A2 injection)"   test -x /usr/bin/xdotool
 req "kiosk keybinding dconf present"     test -f /etc/dconf/db/local.d/10-kela-kiosk
-req "kiosk opens location-updater tab"   grep -q "location-updater" /usr/local/bin/kela-kiosk
-req "kiosk opens camera tab"             grep -q "192.168.88.210:6010" /usr/local/bin/kela-kiosk
+req "A2 next-view binding present"       grep -q "kela-next-tab" /etc/dconf/db/local.d/10-kela-kiosk
+req "kiosk launcher sources station.conf" grep -q 'station.conf' /usr/local/bin/kela-kiosk
 req "Ctrl+0/4..9 tab-jumps blocked"      grep -q "kela-noop-c9" /etc/dconf/db/local.d/10-kela-kiosk
+req "Ctrl+Shift+Q (Chrome quit) blocked" grep -q "kela-noop-csq" /etc/dconf/db/local.d/10-kela-kiosk
 req "'Chrome (Regular)' launcher"        test -f /usr/share/applications/kela-chrome-regular.desktop
 req "'Kela Kiosk' launcher"              test -f /usr/share/applications/kela-kiosk.desktop
 req "onboard OSK installed"              test -x /usr/bin/onboard
 req "session-init autostart present"     test -f "$KELA_HOME/.config/autostart/kela-session-init.desktop"
-req "kela.local in /etc/hosts"           grep -qE "^[^#]*[[:space:]]kela\.local([[:space:]]|$)" /etc/hosts
+
+echo "--- kiosk runtime (WARNs during first-boot; meaningful on a re-run after reboot) ---"
+# Files existing != kiosk running. A station can pass every file check, reboot,
+# and sit on a dead session. These assert the kiosk is actually up. They're opt
+# (WARN) because the kiosk starts at graphical login, so during the first-boot
+# finalize run — before that session exists — they legitimately WARN; run
+# `sudo kela-verify` after reboot for the real signal (also the exact health
+# signal a future fleet endpoint would report).
+KELA_UID="$(id -u kela 2>/dev/null || true)"
+opt "kiosk service active"               sudo -u kela env XDG_RUNTIME_DIR="/run/user/${KELA_UID}" systemctl --user is-active --quiet kela-kiosk.service
+opt "Chrome kiosk process present"       pgrep -u kela -f 'google-chrome-stable.*--kiosk'
 
 echo "--- power / sleep / always-on ---"
 for t in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
@@ -1135,6 +1519,8 @@ opt "timesyncd active"                   systemctl is-active --quiet systemd-tim
 
 echo "--- server cert (optional: site server may not exist yet) ---"
 opt "kela server cert installed"         test -f /usr/local/share/ca-certificates/kela/kela-server.crt
+req "kela-cert-ensure script present"    test -x /usr/local/sbin/kela-cert-ensure
+req "kela-cert-ensure timer enabled"     systemctl is-enabled --quiet kela-cert-ensure.timer
 
 echo
 echo "kela-verify: ${PASS} pass, ${FAIL} fail, ${WARN} warn"
@@ -1194,8 +1580,9 @@ cat <<EOF
   Station info:  cat /etc/kela/build-info   (site, Tailscale IP, AnyDesk ID)
 
   Manual follow-ups:
-    1. If the site server didn't exist during build, install its cert once
-       it's online:  sudo kela-install-cert
+    1. Server cert: if the site server didn't exist during build, it installs
+       automatically within ~5 min of the server coming online (kela-cert-ensure
+       timer, self-heals on cert rotation). To skip the wait: sudo kela-install-cert
     2. Reboot to confirm:
          - Bluetooth stays blocked (rfkill list / lsmod | grep -i blue)
          - WiFi available (rfkill list / nmcli dev)
