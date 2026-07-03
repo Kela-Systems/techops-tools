@@ -73,7 +73,7 @@ bench/raythink-config-ui/logs/
 # Rugged operator USB builder — real secrets (live Tailscale auth key; commit
 # only secrets.env.example), ISOs (multi-GB, and the built ISO embeds the auth
 # key), and the offline package pool (~8 GB, regenerable)
-rugged_operator/usb-builder/secrets.env
+rugged_operator/usb-builder/secrets*.env
 *.iso
 rugged_operator/usb-builder/offline-pool/
 
