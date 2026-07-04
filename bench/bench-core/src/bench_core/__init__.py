@@ -371,6 +371,34 @@ def device_name(site_name: str, prefix: str = DEFAULT_NAME_PREFIX) -> str:
     return f"{prefix}{slug}"
 
 
+def assert_device_model(identity: dict, expected_prefix: str, tool_name: str) -> None:
+    """Abort the run unless the connected device is the model this pipeline is for.
+
+    Every RutOS family (OTD500, RUTM08, …) boots on the SAME factory IP
+    (192.168.1.1), so the bench's TCP/HTTP detection can't tell them apart — an
+    operator on the wrong tab would otherwise mis-name the unit (e.g. label a
+    RUTM08 `otd-<site>`), register it in RMS under the wrong series, and skip the
+    steps that don't apply.     `get_identity()` reads the authoritative model off
+    the device's manufacturer-info block; this is the one place we assert it.
+
+    Raises SystemExit (a hard failure) when the model doesn't match — including
+    when it couldn't be read at all ('unknown'), so a device we know nothing about
+    (the "behaving oddly" case, where a mix-up is most likely) is refused rather
+    than rubber-stamped.
+    """
+    model = (identity.get("model") or "").strip()
+    if not model or model.lower() == "unknown":
+        raise SystemExit(
+            f"Could not read the device model for the {tool_name} — refusing to "
+            "guess. Check the device is powered, cabled, and reachable, then retry.")
+    if not model.upper().startswith(expected_prefix.upper()):
+        raise SystemExit(
+            f"Wrong device for the {tool_name}: the connected unit reports "
+            f"model '{model}', but this tool provisions {expected_prefix}* "
+            "devices. Move to the matching configurator tab for this device "
+            "before running it.")
+
+
 # --- host-side network helpers -----------------------------------------------
 # When the OTD reboots for a firmware flash, the bench computer's Ethernet link
 # drops, and some hosts take a long time to re-acquire a 192.168.1.x lease once
@@ -584,7 +612,12 @@ class TeltonikaClient:
         identity = {
             "serial": _find_field(mnf, SERIAL_KEYS) or _find_field(dev, SERIAL_KEYS) or "unknown",
             "mac": _find_field(mnf, MAC_KEYS) or "unknown",
-            "model": _find_field(mnf, ("name",) + MODEL_KEYS) or "OTD500",
+            # "unknown" (not a family default) when neither source actually reported
+            # a model, so assert_device_model refuses to guess instead of rubber-
+            # stamping a device it couldn't read. Cosmetic OTD500/RUTM08 fallbacks
+            # for display live in each app's build_entry.
+            "model": (_find_field(mnf, ("name",) + MODEL_KEYS)
+                      or _find_field(dev, MODEL_KEYS) or "unknown"),
             "firmware": _find_field(dev, FW_KEYS) or "unknown",
             "imei": "unknown",
             "raw": raw,

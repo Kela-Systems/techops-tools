@@ -27,11 +27,44 @@ ROOT="$(pwd)"
 # The tools never auto-open their own browser tab (that's opt-in via
 # BENCH_OPEN_BROWSER=1); this launcher opens the one dashboard itself below.
 
+TOOL_PORTS="8001 8002 8003 8004 8005"
+DASH="$ROOT/launcher/index.html"
+
+# True if something is already listening on 127.0.0.1:$1 (bash /dev/tcp — no nc
+# dependency). A successful connect means a server owns the port.
+port_in_use() {
+  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3>&- 3<&-; return 0; }
+  return 1
+}
+
+# Open the dashboard with whatever's available: `open` on macOS, `xdg-open`
+# (or sensible-browser) on Linux, else just print the path to open manually.
+open_dashboard() {
+  if command -v open >/dev/null 2>&1; then open "$DASH" >/dev/null 2>&1 || true
+  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$DASH" >/dev/null 2>&1 || true
+  elif command -v sensible-browser >/dev/null 2>&1; then sensible-browser "$DASH" >/dev/null 2>&1 || true
+  else echo "  (no browser opener found — open this in your browser: file://$DASH)"; fi
+}
+
+# ── Guard against a double-launch ───────────────────────────────────────────
+# If a bench is already running, a second set would just fail to bind all five
+# ports (errors scrolling past) while the dashboard shows the FIRST instance's
+# green dots. Detect it and only (re)open the dashboard instead.
+for p in $TOOL_PORTS; do
+  if port_in_use "$p"; then
+    echo "A bench instance is already running (port $p is in use) — opening its dashboard."
+    open_dashboard
+    exit 0
+  fi
+done
+
 # ── Step 1: prepare the single shared venv + deps ──────────────────────────
 echo "Preparing the shared environment (pull + install; first run ~1 min)..."
 bench_ensure_venv || { read -r -p "Dependency setup failed. Press Return to close..." _; exit 1; }
 
 # ── Step 2: start the servers in the background ─────────────────────────────
+# Pass the running version to every tool so it can log/surface it (traceability).
+export BENCH_VERSION="$(bench_version)"
 pids=()
 cleanup() {
   echo
@@ -56,24 +89,11 @@ start "Teltonika OTD500" "otd-config-ui"      "otd_app.py"
 start "Teltonika RUTM08" "rutm-config-ui"     "rutm_app.py"
 start "Raythink Camera"  "raythink-config-ui" "raythink_app.py"
 
-# Give the servers a moment to come up (cold start is ~5s), then open the
-# dashboard once. The dashboard re-polls, so any tool still warming up will flip
-# to online on its own shortly after.
-sleep 6
-# Open the dashboard with whatever's available: `open` on macOS, `xdg-open`
-# (or sensible-browser) on Linux, else just print the path to open manually.
-DASH="$ROOT/launcher/index.html"
-if command -v open >/dev/null 2>&1; then
-  open "$DASH" >/dev/null 2>&1 || true
-elif command -v xdg-open >/dev/null 2>&1; then
-  xdg-open "$DASH" >/dev/null 2>&1 || true
-elif command -v sensible-browser >/dev/null 2>&1; then
-  sensible-browser "$DASH" >/dev/null 2>&1 || true
-else
-  echo "  (no browser opener found — open this in your browser: file://$DASH)"
-fi
+# Open the dashboard immediately — it self-polls every few seconds, so any tool
+# still doing its ~5s cold start shows a grey dot that flips green on its own.
+open_dashboard
 
 echo
-echo "All five tools are running. Dashboard: launcher/index.html"
+echo "All five tools are running (bench version: ${BENCH_VERSION:-unknown}). Dashboard: launcher/index.html"
 echo "Leave this window open. Press Ctrl+C to stop everything."
 wait

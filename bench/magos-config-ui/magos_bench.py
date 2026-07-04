@@ -34,8 +34,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-# Generic bench-UI helper shared with the Teltonika tools.
-from bench_core.bench_ui import slug
+# Generic bench-UI helpers shared with the Teltonika tools.
+from bench_core.bench_ui import bench_version, prune_json_logs, slug
 
 # The Magos device clients log through the "magos" logger; reuse its line format
 # so step lines render the same in every tool.
@@ -78,6 +78,9 @@ class MagosBench:
         self.log_dir = base_dir / "logs"
         self.log_dir.mkdir(exist_ok=True)
         self.log = self._setup_logging()
+        prune_json_logs(self.log_dir)  # trim any backlog left by earlier sessions
+        self.bench_version = bench_version(base_dir)
+        self.log.info("%s starting — bench version %s", self.title, self.bench_version)
         self.cfg: dict = dict(default_cfg)
         self._misses = 0
         # Monotonic clock + last-activity stamp drive the hands-free idle
@@ -220,6 +223,7 @@ class MagosBench:
         except OSError as e:
             self.log.warning("Could not write log file %s: %s", path, e)
             return None
+        prune_json_logs(self.log_dir)  # keep the folder bounded during long cycle-mode runs
         return str(path)
 
     # ── public state ──────────────────────────────────────────────────────────
@@ -227,6 +231,7 @@ class MagosBench:
     def public_state(self) -> dict:
         return {
             **self.state,
+            "bench_version": self.bench_version,
             "config": {k: v for k, v in self.cfg.items() if k != "password"},
             "password_set": bool(self.cfg.get("password")),
             "channel_ips": self.channel_ips,
@@ -505,8 +510,11 @@ class MagosBench:
                 while True:
                     await websocket.send_json(self.public_state())
                     await asyncio.sleep(1)
-            except (WebSocketDisconnect, Exception):
-                pass
+            except WebSocketDisconnect:
+                pass  # client closed the tab — normal
+            except Exception:
+                # Don't swallow real bugs silently; log so they're diagnosable.
+                self.log.exception("WebSocket state push failed.")
 
         self.register_routes(app)
         return app
@@ -518,6 +526,7 @@ class MagosBench:
         # HSTS — this is an HTTP-only server, and HTTPS would return 400.
         url = f"http://127.0.0.1:{self.port}"
         print(f"Starting {self.title} at {url}")
+        print(f"  version      : {self.bench_version}")
         print("  (open it as http://, NOT https:// — this is a plain-HTTP local server)")
         self.print_banner()
         app = self.build_app()

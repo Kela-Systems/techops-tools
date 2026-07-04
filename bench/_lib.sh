@@ -38,12 +38,23 @@ bench_git_pull() {
   git pull --ff-only || echo "  [warn] git pull failed (offline, or local changes) — launching what's on disk."
 }
 
+# Short git revision this checkout is on, or "unknown" (no git / not a repo).
+# Recorded at launch so 5+ stations can be told apart when debugging.
+bench_version() {
+  if command -v git >/dev/null 2>&1; then
+    git rev-parse --short HEAD 2>/dev/null || echo "unknown"
+  else
+    echo "unknown"
+  fi
+}
+
 # In the current directory (the bench root): pull, ensure .venv exists on a
 # >=3.10 Python, and (re)install requirements.txt on every launch. Returns
 # non-zero (with a message) on failure.
 bench_ensure_venv() {
   local py
   bench_git_pull
+  echo "  bench version: $(bench_version)"
   if [ -x ".venv/bin/python" ] && \
      ! .venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 10) else 1)' 2>/dev/null; then
     echo "  (existing .venv uses an unsupported Python — recreating)"
@@ -59,5 +70,9 @@ bench_ensure_venv() {
     "$py" -m venv .venv
     .venv/bin/python -m pip install --upgrade pip >/dev/null
   fi
-  .venv/bin/python -m pip install -r requirements.txt
+  # Fail-open, like bench_git_pull: an offline bench (the device subnets have no
+  # internet) or a flaky pip index must not block a launch when the .venv already
+  # has working packages. We only hard-abort above when .venv can't be created.
+  .venv/bin/python -m pip install -r requirements.txt \
+    || echo "  [warn] dependency install failed (offline, or a flaky pip index) — launching with the packages already in .venv."
 }

@@ -1,25 +1,26 @@
 @echo off
 REM ===========================================================================
-REM  Kela Bench - master launcher
+REM  Kela Bench - master launcher  (STABLE WRAPPER - keep this file byte-stable)
 REM
-REM  Double-click this to start ALL bench configurators at once and open the
-REM  dashboard in one browser tab. All tools run inside THIS one window:
+REM  Double-click this to start ALL bench configurators and open the dashboard.
 REM
-REM    Magos Radar      -> http://127.0.0.1:8001   (adapter on 192.168.40.x)
-REM    Magos APU        -> http://127.0.0.1:8002   (adapter on 192.168.40.x)
-REM    Teltonika OTD500 -> http://127.0.0.1:8003   (adapter on 192.168.1.x)
-REM    Teltonika RUTM08 -> http://127.0.0.1:8004   (adapter on 192.168.1.x)
-REM    Raythink Camera  -> http://127.0.0.1:8005   (adapter on 192.168.1.x)
+REM  WHY THIS FILE IS TINY (and must STAY tiny):
+REM  cmd.exe reads a .bat line-by-line by byte OFFSET from disk. A script that
+REM  `git pull`s ITSELF gets corrupted the instant the pull rewrites it -
+REM  execution resumes at a stale offset inside the new bytes - and that happens
+REM  on exactly the runs that carry an update (the ones you most need to work
+REM  when rolling changes to N stations). So this entry point only does the pull,
+REM  then hands off to bench-launch.bat, which is not open in cmd until AFTER the
+REM  pull finishes and is therefore safe to change.
 REM
-REM  All five tools share ONE .venv in this folder. Every launch pulls the
-REM  latest tools (git) and installs requirements (needs internet that once,
-REM  then it's a near-instant no-op). Set BENCH_NO_PULL=1 to freeze the on-disk
-REM  version.
+REM  DO NOT add launch logic here. Put every change in bench-launch.bat, and do
+REM  not let commits modify this file - if its byte length changes across a pull
+REM  it can corrupt its own run. Set BENCH_NO_PULL=1 to freeze the on-disk version.
 REM ===========================================================================
 setlocal
 cd /d "%~dp0"
 
-REM ── Pull the latest tools before launching (best-effort) ───────────────────
+REM ── Pull the latest tools before handing off (best-effort) ─────────────────
 if "%BENCH_NO_PULL%"=="1" (
   echo [skip] BENCH_NO_PULL=1 - launching the version already on disk.
 ) else (
@@ -34,59 +35,12 @@ if "%BENCH_NO_PULL%"=="1" (
 )
 echo.
 
-REM ── Locate a Python to build the shared venv with (first run only) ──────────
-set "PY="
-where py >nul 2>&1 && set "PY=py -3"
-if not defined PY (
-  where python >nul 2>&1 && set "PY=python"
+REM Hand off to the real launcher (freshly re-read from disk after the pull).
+REM Guard a broken checkout: without this the window just flash-closes with no
+REM readable error if the inner script is missing.
+if not exist "%~dp0bench-launch.bat" (
+  echo bench-launch.bat is missing - the checkout looks broken. Re-clone or run git pull, then try again.
+  pause
+  exit /b 1
 )
-
-if not exist ".venv\Scripts\python.exe" (
-  if not defined PY (
-    echo.
-    echo   Python was not found on PATH.
-    echo   Install Python 3.11+ from https://www.python.org/downloads/
-    echo   and tick "Add python.exe to PATH" during setup, then re-run this file.
-    echo.
-    pause
-    exit /b 1
-  )
-  echo Creating the shared virtual environment ^(first run only^)...
-  %PY% -m venv .venv || (echo Could not create the virtual environment. & pause & exit /b 1)
-  ".venv\Scripts\python.exe" -m pip install --upgrade pip
-)
-
-echo Installing/updating dependencies...
-".venv\Scripts\python.exe" -m pip install -r requirements.txt || (echo Dependency install failed. & pause & exit /b 1)
-echo.
-
-REM The tools never auto-open their own browser tab (that's opt-in via
-REM BENCH_OPEN_BROWSER=1); this launcher opens the one dashboard below instead.
-
-echo Starting all bench configurators in this window...
-REM /b runs each tool in THIS console instead of spawning its own window;
-REM /d sets the tool's working directory. Closing this window stops them all.
-start "Magos Radar"      /d "%~dp0magos-config-ui"    /b "%~dp0.venv\Scripts\python.exe" app.py
-start "Magos APU"        /d "%~dp0magos-config-ui"    /b "%~dp0.venv\Scripts\python.exe" apu_app.py
-start "Teltonika OTD500" /d "%~dp0otd-config-ui"      /b "%~dp0.venv\Scripts\python.exe" otd_app.py
-start "Teltonika RUTM08" /d "%~dp0rutm-config-ui"     /b "%~dp0.venv\Scripts\python.exe" rutm_app.py
-start "Raythink Camera"  /d "%~dp0raythink-config-ui" /b "%~dp0.venv\Scripts\python.exe" raythink_app.py
-
-REM Give the servers a moment to come up, then open the dashboard once.
-timeout /t 6 >nul
-start "" "%~dp0launcher\index.html"
-
-REM Optionally open the operator guide too (e.g. on the side screen). Off by
-REM default; set BENCH_OPEN_GUIDE=1 before running to also open it.
-if "%BENCH_OPEN_GUIDE%"=="1" start "" "%~dp0launcher\guide.html"
-
-echo.
-echo Dashboard opened: launcher\index.html  (guide: launcher\guide.html)
-echo All five tools are now running in THIS window.
-echo Leave it open while you work; close it (or press Ctrl+C) to stop ALL tools.
-echo.
-
-REM Keep this console alive so the tools keep running and stay attached to it.
-:bench_wait
-timeout /t 3600 >nul
-goto bench_wait
+call "%~dp0bench-launch.bat"

@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import logging.handlers
 import os
 import re
 import socket
@@ -44,6 +45,10 @@ except ImportError:  # pragma: no cover - requests is a hard dep in practice
 POLL_INTERVAL_SEC = 2.0
 DETECT_TIMEOUT_SEC = 1.0
 
+# Per-run JSON logs embed full raw device payloads, so cap how many we keep on an
+# operator machine that may run for months without a restart.
+JSON_LOG_RETENTION = 500
+
 # Shared static assets (bench.css / bench.js), served by every tool at /shared.
 SHARED_STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -63,7 +68,8 @@ def setup_device_logging(log_dir: Path, log_file: str,
     logger.setLevel(logging.INFO)
     logger.propagate = False
     if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
-        rolling = logging.FileHandler(log_dir / log_file, encoding="utf-8")
+        rolling = logging.handlers.RotatingFileHandler(
+            log_dir / log_file, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
         rolling.setFormatter(logging.Formatter("%(asctime)s " + LOG_LINE_FORMAT))
         logger.addHandler(rolling)
         console = logging.StreamHandler()
@@ -90,6 +96,35 @@ class StepCollector(logging.Handler):
 
 def slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "-", text or "unknown")
+
+
+def prune_json_logs(log_dir: Path, keep: int = JSON_LOG_RETENTION) -> None:
+    """Keep only the newest `keep` per-run JSON files in `log_dir`. Each embeds
+    full raw device payloads, so on a machine that runs for months (worst: the
+    radar/APU tools in cycle mode) they would otherwise accumulate until the disk
+    fills. Best-effort — never let a cleanup failure break a run. Shared by both
+    bench bases (BenchConfigurator and MagosBench) since it's the same pattern."""
+    with contextlib.suppress(OSError):
+        files = sorted(log_dir.glob("*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        for stale in files[keep:]:
+            with contextlib.suppress(OSError):
+                stale.unlink()
+
+
+def bench_version(base_dir: Path) -> str:
+    """Short git revision this bench is running: the BENCH_VERSION exported by the
+    launcher, else a direct git lookup, else 'unknown'. Lets an engineer tell 5+
+    stations apart when debugging 'works on my bench'."""
+    env = os.environ.get("BENCH_VERSION")
+    if env:
+        return env
+    with contextlib.suppress(Exception):
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(base_dir),
+                             capture_output=True, text=True, timeout=3)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    return "unknown"
 
 
 # ── MAC reading (ARP) ───────────────────────────────────────────────────────
@@ -206,6 +241,9 @@ class BenchConfigurator:
         self.log_dir = base_dir / "logs"
         self.log_dir.mkdir(exist_ok=True)
         self.logger = setup_device_logging(self.log_dir, self.log_filename, self.logger_name)
+        self._prune_logs()  # trim any backlog left by earlier sessions
+        self.bench_version = bench_version(base_dir)
+        self.logger.info("%s starting — bench version %s", self.title, self.bench_version)
         self.cfg: dict = self.load_config()
         self.state: dict = self.initial_state()
         self.state["config_loaded"] = bool(self.cfg)
@@ -242,6 +280,7 @@ class BenchConfigurator:
     def public_state(self) -> dict:
         busy = self.state["busy"]
         return {**self.state, "counts": self.counts(),
+                "bench_version": self.bench_version,
                 "config": redact_config(self.cfg),
                 "live_steps": list(self._live_collector.steps)[-200:]
                               if busy and self._live_collector else [],
@@ -320,6 +359,9 @@ class BenchConfigurator:
             "log": "\n".join(f"[{s['level']}] [{s['sn']}] {s['msg']}" for s in steps),
         }
 
+    def _prune_logs(self, keep: int = JSON_LOG_RETENTION) -> None:
+        prune_json_logs(self.log_dir, keep)
+
     def _save_log(self, entry: dict) -> Optional[str]:
         ts = datetime.now(timezone.utc)
         name = (f"{ts.strftime('%Y%m%d-%H%M%S')}_{slug(entry.get('hostname'))}_"
@@ -328,6 +370,7 @@ class BenchConfigurator:
         with contextlib.suppress(OSError):
             path.write_text(json.dumps({**entry, "timestamp": ts.isoformat()},
                                        indent=2, ensure_ascii=False), encoding="utf-8")
+            self._prune_logs()  # keep the folder bounded during long-running sessions
             return str(path)
         return None
 
@@ -491,6 +534,7 @@ class BenchConfigurator:
 
         url = f"http://127.0.0.1:{self.port}"
         print(f"Starting {self.title} at {url}")
+        print(f"  version      : {self.bench_version}")
         self.print_banner()
         app = self.build_app()
         # Tools are launched by the bench dashboard, which opens the one browser

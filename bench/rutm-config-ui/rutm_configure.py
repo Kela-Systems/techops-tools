@@ -41,6 +41,7 @@ from bench_core import (
     DEFAULT_USERNAME,
     LOG_LINE_FORMAT,
     TeltonikaClient,
+    assert_device_model,
     device_name,
     format_verification,
     host_iface_for,
@@ -58,15 +59,10 @@ DEFAULT_RUTM_LAN_IP = "192.168.88.1"
 
 
 class RutmClient(TeltonikaClient):
-    """TeltonikaClient with the RUTM08 specifics: wired-WAN internet wait,
-    correct model fallback, and the LAN-move step."""
-
-    def get_identity(self) -> dict:
-        identity = super().get_identity()
-        # The shared client falls back to model='OTD500' when mnfinfo is missing.
-        if identity.get("model") == "OTD500" and not identity.get("raw", {}).get("mnfinfo"):
-            identity["model"] = "RUTM08"
-        return identity
+    """TeltonikaClient with the RUTM08 specifics: wired-WAN internet wait and the
+    LAN-move step. (Model no longer needs fixing up here: the shared client reads
+    the real model from mnfinfo/REST and returns 'unknown' when it can't, so the
+    guard refuses to guess rather than defaulting to a family name.)"""
 
     def wait_for_internet(self, timeout: int = 180, target: str = "8.8.8.8") -> bool:
         """Same stability probe as the OTD's mobile wait (ICMP, HTTP fallback,
@@ -179,6 +175,10 @@ def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
         client.login(new_password)
 
     identity = client.get_identity()
+    # Guard against a wrong-tab mix-up: OTD500 and RUTM08 share the factory IP,
+    # so detection alone can't tell them apart. Abort before we name/register an
+    # OTD as a RUTM.
+    assert_device_model(identity, "RUTM", "RUTM08 configurator")
 
     # Critical step: aborts the run on failure.
     client.set_admin_password(new_password)

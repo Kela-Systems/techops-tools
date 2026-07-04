@@ -26,6 +26,7 @@ from bench_core import (
     DEFAULT_USERNAME,
     LOG_LINE_FORMAT,
     TeltonikaClient,
+    assert_device_model,
     device_name,
     format_verification,
     load_settings,
@@ -63,6 +64,10 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
                  "password (device may be half-provisioned by an earlier run).", e)
         client.login(new_password)
     identity = client.get_identity()
+    # Guard against a wrong-tab mix-up: OTD500 and RUTM08 share the factory IP,
+    # so detection alone can't tell them apart. Abort before we name/register a
+    # RUTM as an OTD.
+    assert_device_model(identity, "OTD", "OTD500 configurator")
     warnings = client.verify_identity(identity, expected or {})
 
     # Critical steps abort the run (login + password already ran above).
