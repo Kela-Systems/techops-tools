@@ -21,7 +21,6 @@ Everything in `../setup.md` still applies — this directory just automates §2
 | `/operator/operator-setup.sh` | exact copy of `../setup.sh` |
 | `/operator/secrets.env` | `TS_AUTHKEY` + `TS_TAGS` (treat the ISO as a secret!) |
 | `/operator/kela-first-boot-*` | UI prompt, root runner, autostart entry, sudoers drop-in |
-| `/extras/` *(offline build only)* | local apt pool: desktop + Tailscale/AnyDesk/Chrome `.debs` + `Packages` index |
 | `boot/grub/grub.cfg` | patched: default entry is "Auto-install (WILL ERASE DISK)" |
 
 ---
@@ -45,11 +44,6 @@ brew install xorriso
 hybrid BIOS+UEFI boot setup verbatim via `-boot_image any replay`), so no
 separate ISO extractor is needed.
 
-For an **offline-install ISO** (strongly recommended when imaging many
-laptops in parallel — see [Offline install](#offline-install-no-wan-during-install))
-you also need **Docker** (Desktop on macOS / engine on Linux) to run
-`collect-offline-packages.sh`.
-
 You also need:
 - The **Ubuntu 24.04.x Live Server amd64 ISO** from <https://releases.ubuntu.com/24.04/>
   (`ubuntu-24.04.x-live-server-amd64.iso`, ~2.5 GB).
@@ -66,7 +60,10 @@ You also need:
   90 days max, and a stick built from a stale key installs fine and then
   fails `tailscale up` in the field. The builder refuses to build with an
   expired key and warns when <14 days remain.
-- A USB stick of at least 8 GB (the customised ISO is ~5-6 GB)
+- A USB stick of at least 4 GB (the customised ISO is ~2.6 GB)
+- **Network at install time** (wired ethernet on the target) — the desktop
+  environment downloads from the archive during the install. For parallel
+  imaging, see [Parallel imaging](#parallel-imaging-bench-apt-cache).
 
 ---
 
@@ -80,17 +77,7 @@ You also need:
    chmod 600 secrets.env
    ```
 
-2. *(Recommended)* Build the offline package pool once — this is what makes
-   parallel installs fast (zero WAN during install). Needs Docker:
-
-   ```bash
-   ./collect-offline-packages.sh        # → ./offline-pool/ (~2 GB, a few min)
-   ```
-
-   Skip this step to build an **online**-install ISO instead (each laptop
-   downloads ~2 GB during install).
-
-3. Run the builder. It **auto-detects `./offline-pool`** and embeds it:
+2. Run the builder:
 
    ```bash
    ./build-iso.sh \
@@ -99,17 +86,12 @@ You also need:
        --secrets ./secrets.env
    ```
 
-   The build log prints either `Embedding offline package pool … (fully
-   offline install)` or `building an ONLINE-install ISO` so you know which
-   you got.
-
    Optional flags:
-   - `--offline-pool <dir>` — use a pool from a non-default location.
    - `--password '<plaintext>'` — override the kela password
      (default `Kelasys123!`, matching `setup.sh`).
    - `--volid 'My Label'` — change the ISO volume label.
 
-4. Write the resulting ISO to the USB stick.
+3. Write the resulting ISO to the USB stick.
 
    **Linux**:
 
@@ -156,10 +138,8 @@ You also need:
 3. Subiquity runs unattended:
    - Wipes the first internal disk (`storage.layout: direct`)
    - Creates the `kela` user with the baked password hash
-   - Installs the GNOME desktop (`ubuntu-desktop-minimal` + `gdm3`) — from
-     `/cdrom/extras` offline if the pool was embedded, else from the network
-   - On offline builds, copies the pool to `/opt/kela-pool` so first boot can
-     install Tailscale/AnyDesk/Chrome offline too
+   - Installs the GNOME desktop (`ubuntu-desktop-minimal` + `gdm3`) from the
+     archive — via the bench apt cache when `APT_PROXY` is set in secrets.env
    - Drops the operator payload into `/usr/local/sbin/` + `/etc/kela/`
    - Configures GDM auto-login for `kela`
    - Reboots (`shutdown: reboot`)
@@ -181,7 +161,7 @@ You also need:
      an IP **and** `kela-verify` (the §4.3 checklist as code) passes — a
      failed station keeps its retry wiring + auth key instead of stranding
    - Writes `/etc/kela/build-info` (site, Tailscale IP, **AnyDesk ID**,
-     script/pool versions) and, if `KELA_CHECKIN_URL` is set in
+     script version) and, if `KELA_CHECKIN_URL` is set in
      `secrets.env`, POSTs it to your inventory endpoint
    - Removes the autostart entry, the sudoers drop-in, and **shreds the
      secrets file** so the auth key isn't sitting on disk
@@ -197,54 +177,45 @@ You also need:
    to a normal desktop with triple-tap **F2** (docked) or triple-press **A1**
    (tablet); return via the "Kela Kiosk" app icon or a reboot.
 
-Total wall-clock on a CF-33 with a wired SSD-class disk: ~15-25 min
-(online build). With an **offline** ISO, no packages are downloaded at all —
-each laptop is independent (no shared WAN/mirror bottleneck), so N laptops in
-parallel cost the same network as one: zero. See below.
-end-to-end depending on apt mirror speed.
+Total wall-clock on a CF-33 with a wired SSD-class disk: ~30-45 min
+end-to-end (download + unpack/configure + first boot), less with a bench
+apt cache.
 
 ---
 
-## Offline install (no WAN during install)
+## Parallel imaging (bench apt cache)
 
-The slow part of imaging a laptop isn't the USB write (you flash each stick
-**once** and reuse it) — it's that every laptop otherwise re-downloads ~2 GB
-of packages over the WAN, **twice**:
+Each install downloads ~2 GB from the archive (the desktop, then
+Tailscale/AnyDesk/Chrome at first boot). Imaging many laptops in parallel
+over one uplink multiplies that. The fix is a standard caching proxy on the
+imaging bench — **not** baking packages into the ISO (we tried; the offline
+pool bought ~5 min of downloads per unit at the cost of a Docker-based
+dependency-closure pipeline, version-skew failures against the ISO base,
+snap phone-home hangs, and a 5–6 GB ISO — see git history):
 
-1. **Subiquity** pulls `ubuntu-desktop-minimal` + GNOME (~1.5–2 GB) — the
-   Server ISO has no desktop on it.
-2. **First boot** (`operator-setup.sh`) pulls Tailscale, AnyDesk, Chrome, and
-   (previously) ran `apt upgrade`.
+1. On any Linux box on the bench LAN (the VM test host is ideal):
 
-Run many laptops in parallel and they all fight one uplink + the apt mirrors,
-which is why each takes ~30 min. The offline ISO eliminates **all** of that:
+   ```bash
+   sudo apt install apt-cacher-ng     # listens on :3142
+   ```
 
-- `collect-offline-packages.sh` downloads the full dependency closure of the
-  desktop + tools, plus the Tailscale/AnyDesk/Chrome `.debs`, into
-  `./offline-pool/` (with a `Packages` index). It runs in a clean
-  `ubuntu:24.04` amd64 container so the closure is complete for the Server
-  target — and you only run it **once**.
-- `build-iso.sh` embeds that pool at `/cdrom/extras`.
-- During install, the desktop is installed from `/cdrom/extras` with apt
-  pointed at a local `file://` repo (`[trusted=yes]`, network sources
-  disabled). The pool is copied to `/opt/kela-pool` so first boot installs the
-  apps from it too. `kela-first-boot-run` deletes `/opt/kela-pool` (~2 GB)
-  after setup succeeds.
-- `operator-setup.sh` auto-detects `/opt/kela-pool`: if present it installs
-  from local debs; otherwise it falls back to the network exactly as before
-  (so the script is still usable on a normally-installed machine). The
-  redundant `apt upgrade` is now skipped by default (set `KELA_APT_UPGRADE=1`
-  to force it on an online run).
+2. In `secrets.env`, set:
 
-What offline ISO **does not** remove: the per-machine dpkg unpack/configure
-time (~10–15 min). But that's CPU+disk only, fully parallel, with no shared
-bottleneck — so it scales flat. Use **USB 3 sticks** so reading the pool off
-the stick isn't the new slow point.
+   ```bash
+   APT_PROXY=http://<bench-ip>:3142
+   ```
 
-> **Validate once:** after the first offline build, install a single laptop
-> with **ethernet unplugged**, all the way through first boot and
-> `sudo kela-verify`. If a package turns out to be missing, add it to
-> `TOOL_PKGS` in `collect-offline-packages.sh` and re-run it.
+3. Rebuild the ISO. Both the install-time desktop download and the
+   first-boot package installs route through the cache: the first unit
+   populates it, every subsequent unit downloads at LAN speed. The proxy is
+   deliberately **non-persistent** — nothing is written under `/etc/apt` on
+   the station, so field units never carry a dead bench proxy.
+
+Sticks built *without* `APT_PROXY` work anywhere with a network; the proxy
+is purely a bench-throughput optimization.
+
+> **Validate once per ISO revision:** install a single laptop end-to-end —
+> through first boot and `sudo kela-verify` — before batch-imaging with it.
 
 ### If the install looks hung (disk LED quiet, no visible progress)
 
@@ -272,7 +243,7 @@ with a quiet disk** — `kela: desktop install starting` followed by advancing
 success. A `dpkg.log` frozen 10+ min with idle CPU is a real stall: check the
 last package it logged. Known trap (fixed, kept here for recognition): the
 **firefox** transitional deb's postinst runs `snap install firefox` — a snap
-store phone-home that can never succeed offline; it is excluded/pinned out of
+store phone-home that hangs when the store is unreachable; it is pinned out of
 the build, and `api.snapcraft.io` is pointed at localhost during the install
 so any similar phone-home fails in seconds instead of hanging silently.
 

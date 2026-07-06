@@ -86,8 +86,6 @@ fi
 # ---- Cleanup so we never re-prompt and never leak the auth key -------------
 rm -f /home/kela/.config/autostart/kela-first-boot.desktop
 rm -f /etc/sudoers.d/kela-first-boot
-# Reclaim the offline package pool (~2 GB) now that everything is installed.
-rm -rf /opt/kela-pool /etc/apt/kela-offline.list
 # Shred the auth key from disk — operator-setup has already used it for `tailscale up`.
 # /etc/kela itself stays: build-info + site live there.
 if command -v shred >/dev/null 2>&1; then

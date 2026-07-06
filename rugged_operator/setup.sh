@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-05.2"
+SETUP_VERSION="2026-07-06.1"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -103,10 +103,9 @@ EOF
 chmod 0644 /etc/kela/station.conf
 
 # ---------- 0. wait for network ----------------------------------------------
-# A slow DHCP lease at first boot fails the Tailscale/cert steps. Even
-# offline-pool installs need the network for `tailscale up`, so wait up to
-# 45s for a default route — then warn-and-continue (the Tailscale gate in
-# kela-first-boot-run keeps the retry path if connectivity never comes).
+# A slow DHCP lease at first boot fails the apt/Tailscale/cert steps, so wait
+# up to 45s for a default route — then warn-and-continue (the Tailscale gate
+# in kela-first-boot-run keeps the retry path if connectivity never comes).
 echo "==> [0/11] Waiting for a default route (max 45s)"
 for _ in $(seq 1 45); do
   ip route show default 2>/dev/null | grep -q . && break
@@ -159,84 +158,40 @@ systemctl mask unattended-upgrades.service 2>/dev/null || true
 # Kill any in-flight job that already grabbed the lock before we got here.
 systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
 
-# Offline mode: when the ISO baked an offline pool into /opt/kela-pool, install
-# everything from there (no network). The build-iso/late-commands flow leaves
-# the pool in place; kela-first-boot-run removes it after first boot succeeds.
-KELA_POOL_DIR="${KELA_POOL_DIR:-/opt/kela-pool}"
+# Optional bench apt cache (APT_PROXY, from secrets.env or the environment):
+# points apt at e.g. apt-cacher-ng on the imaging bench so N parallel builds
+# download packages once at LAN speed. Deliberately non-persistent — nothing
+# is written under /etc/apt, so a station imaged at the bench never carries a
+# dead proxy to the field.
+APT_PROXY="${APT_PROXY:-}"
 APT_OPTS=()
-if [[ -f "$KELA_POOL_DIR/Packages" ]]; then
-  OFFLINE_APT=1
-  printf 'deb [trusted=yes] file:%s ./\n' "$KELA_POOL_DIR" > /etc/apt/kela-offline.list
-  APT_OPTS=( -o Dir::Etc::SourceList=/etc/apt/kela-offline.list -o Dir::Etc::SourceParts=/dev/null )
-  echo "    Offline pool detected at $KELA_POOL_DIR — installing from local debs."
-else
-  OFFLINE_APT=0
+if [[ -n "$APT_PROXY" ]]; then
+  APT_OPTS+=( -o "Acquire::http::Proxy=${APT_PROXY}" -o "Acquire::https::Proxy=${APT_PROXY}" )
+  echo "    apt proxy: ${APT_PROXY}"
 fi
 
 # Wait up to 10 min for the dpkg/apt lock instead of failing hard if something
 # still holds it. Applied to the wrapper AND the raw apt-get calls below.
 APT_LOCK=( -o DPkg::Lock::Timeout=600 )
 
-# apt_get: routes through the offline pool when OFFLINE_APT=1, else normal apt.
 apt_get() { apt-get "${APT_LOCK[@]}" "${APT_OPTS[@]}" "$@"; }
-
-# In offline mode the third-party debs install from the pool, but their upstream
-# repos are never configured (the online branches in §3/§4/§5 are skipped) and
-# the pool is deleted after first boot — so Tailscale/AnyDesk/Chrome would be
-# frozen at pool-collection versions forever, and central "apt upgrade over
-# Tailscale" would only ever touch Ubuntu packages. Lay down the keyrings +
-# .list files the collector shipped in the pool, so the repos are configured
-# (even if unreachable until patch time). The offline install below still uses
-# APT_OPTS (pool-only source list), so these vendor lists are ignored during
-# install and only take effect once the station is patched online later.
-install_pool_repos() {
-  local rc="$KELA_POOL_DIR/repo-config"
-  if [[ ! -d "$rc" ]]; then
-    echo "    WARN: no repo-config in pool — vendor repos won't be configured;" \
-         "Tailscale/AnyDesk/Chrome will be unpatchable. Re-collect the pool."
-    return 0
-  fi
-  install -m 0755 -d /usr/share/keyrings /etc/apt/keyrings /etc/apt/sources.list.d
-  # Keyring paths must match the signed-by= targets inside the .list files.
-  [[ -f "$rc/keyrings/tailscale-archive-keyring.gpg" ]] && \
-    install -m 0644 "$rc/keyrings/tailscale-archive-keyring.gpg" /usr/share/keyrings/
-  [[ -f "$rc/keyrings/keys.anydesk.com.asc" ]] && \
-    install -m 0644 "$rc/keyrings/keys.anydesk.com.asc" /etc/apt/keyrings/
-  [[ -f "$rc/keyrings/google-chrome.gpg" ]] && \
-    install -m 0644 "$rc/keyrings/google-chrome.gpg" /etc/apt/keyrings/
-  install -m 0644 "$rc"/lists/*.list /etc/apt/sources.list.d/ 2>/dev/null || true
-  echo "    Vendor repos configured from pool (Tailscale/AnyDesk/Chrome)."
-}
-[[ "$OFFLINE_APT" == "1" ]] && install_pool_repos
 
 apt_get update -y
 
 # apt upgrade is intentionally skipped (it was a redundant re-download). Patch
-# centrally over Tailscale instead. Set KELA_APT_UPGRADE=1 to force it online.
-if [[ "$OFFLINE_APT" == "0" && "${KELA_APT_UPGRADE:-0}" == "1" ]]; then
-  apt-get "${APT_LOCK[@]}" upgrade -y
+# centrally over Tailscale instead. Set KELA_APT_UPGRADE=1 to force it.
+if [[ "${KELA_APT_UPGRADE:-0}" == "1" ]]; then
+  apt_get upgrade -y
 fi
 
-BASE_PKGS=(curl wget ca-certificates apt-transport-https
-           gnupg lsb-release ufw rfkill openssh-server
-           libnss3-tools power-profiles-daemon dconf-cli
-           onboard evtest xdotool)
-if [[ "$OFFLINE_APT" == "1" ]]; then
-  # Offline: all three vendor packages are already in the pool, so install them
-  # in this SAME transaction — one dpkg lock cycle + one trigger run instead of
-  # four (saves a couple of minutes per station). §3/§4/§5 then skip their own
-  # install and only do the per-service configuration.
-  apt_get install -y "${BASE_PKGS[@]}" tailscale anydesk google-chrome-stable
-else
-  # Online: each vendor needs its repo/deb set up first, so they stay separate.
-  apt_get install -y "${BASE_PKGS[@]}"
-fi
+apt_get install -y curl wget ca-certificates apt-transport-https \
+                   gnupg lsb-release ufw rfkill openssh-server \
+                   libnss3-tools power-profiles-daemon dconf-cli \
+                   onboard evtest xdotool
 
 # ---------- 3. Tailscale ----------------------------------------------------
 echo "==> [3/11] Installing Tailscale"
-# Offline: already installed in the combined §2 transaction. Online: vendor
-# script (adds the repo + installs).
-if [[ "$OFFLINE_APT" == "0" ]] && ! command -v tailscale >/dev/null 2>&1; then
+if ! command -v tailscale >/dev/null 2>&1; then
   curl -fsSL https://tailscale.com/install.sh | sh
 fi
 systemctl enable --now tailscaled
@@ -287,17 +242,15 @@ fi
 
 # ---------- 4. AnyDesk ------------------------------------------------------
 echo "==> [4/11] Installing AnyDesk"
-# Offline: already installed in the combined §2 transaction. Online: add the
-# vendor repo, then install.
-if [[ "$OFFLINE_APT" == "0" ]]; then
+if ! command -v anydesk >/dev/null 2>&1; then
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://keys.anydesk.com/repos/DEB-GPG-KEY \
        -o /etc/apt/keyrings/keys.anydesk.com.asc
   chmod a+r /etc/apt/keyrings/keys.anydesk.com.asc
   echo "deb [signed-by=/etc/apt/keyrings/keys.anydesk.com.asc] http://deb.anydesk.com/ all main" \
        > /etc/apt/sources.list.d/anydesk-stable.list
-  apt-get "${APT_LOCK[@]}" update -y
-  apt-get "${APT_LOCK[@]}" install -y anydesk
+  apt_get update -y
+  apt_get install -y anydesk
 fi
 
 # `anydesk --set-password` needs the service running — enable it first and
@@ -324,12 +277,12 @@ fi
 
 # ---------- 5. Google Chrome + telemetry suppression ------------------------
 echo "==> [5/11] Installing Google Chrome"
-# Offline: already installed in the combined §2 transaction. Online: fetch the
-# vendor deb and install it.
-if [[ "$OFFLINE_APT" == "0" ]]; then
+# The vendor deb self-registers Google's apt repo in its postinst, so central
+# patching covers Chrome afterwards.
+if ! command -v google-chrome-stable >/dev/null 2>&1; then
   TMP_DEB="$(mktemp --suffix=.deb)"
   wget -qO "$TMP_DEB" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-  apt-get "${APT_LOCK[@]}" install -y "$TMP_DEB"
+  apt_get install -y "$TMP_DEB"
   rm -f "$TMP_DEB"
 fi
 
@@ -1551,7 +1504,6 @@ echo "==> Writing /etc/kela/build-info"
 mkdir -p /etc/kela
 TS_IP="$(tailscale ip -4 2>/dev/null | head -1 || true)"
 ANYDESK_ID="$(anydesk --get-id 2>/dev/null || true)"
-POOL_INFO_LINE="$(tr '\n' ' ' < "${KELA_POOL_DIR}/POOL_INFO" 2>/dev/null || true)"
 cat > /etc/kela/build-info <<EOF
 site=${SITE_NAME}
 hostname=${HOSTNAME_NEW}
@@ -1559,8 +1511,6 @@ setup_version=${SETUP_VERSION}
 built_at=$(date -Iseconds)
 tailscale_ip=${TS_IP}
 anydesk_id=${ANYDESK_ID}
-offline_pool=${OFFLINE_APT}
-pool_info=${POOL_INFO_LINE}
 EOF
 chmod 644 /etc/kela/build-info
 sed 's/^/    /' /etc/kela/build-info

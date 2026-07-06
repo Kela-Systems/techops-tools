@@ -150,7 +150,7 @@ The script handles:
 1. Hostname (`${SITE_NAME}-operator`, updates `/etc/hosts`)
   - **Timezone** `Asia/Jerusalem` + **NTP** from the site server `192.168.88.10` (`/etc/systemd/timesyncd.conf.d/kela-ntp.conf`), with `ntp.ubuntu.com` as fallback (123/udp is allowed out) so a drifted RTC recovers even when the hub is down
   - Waits up to 45s for a default route first — first boot can race DHCP
-2. `apt update` + base tools (including `libnss3-tools` for `certutil`). If an offline pool is present at `/opt/kela-pool` (baked by the offline-install USB), all installs — base tools, Tailscale, AnyDesk, Chrome — come from there with **no network**; otherwise they come from the network as usual. `apt upgrade` is skipped by default (set `KELA_APT_UPGRADE=1` to force it on an online run); patch centrally over Tailscale instead.
+2. `apt update` + base tools (including `libnss3-tools` for `certutil`). All installs come from the network; if `APT_PROXY` is set (secrets.env or env), apt routes through the bench cache — non-persistent, so field units never carry a dead proxy. `apt upgrade` is skipped by default (set `KELA_APT_UPGRADE=1` to force it); patch centrally over Tailscale instead.
 3. **Tailscale** — installs, enables `tailscaled`, and if `TS_AUTHKEY` is set, runs `tailscale up --reset --authkey=… --hostname=<site>-operator --accept-routes [--advertise-tags=…]` and waits for an IPv4
 4. **AnyDesk** (installs, sets unattended password to `Kelasys123!`)
 5. **Google Chrome** + managed policy that disables telemetry, pins the homepage / new-tab / startup to `https://kela.local/`, hardens the browser (DevTools off, incognito off, printing off, downloads blocked), and installs managed bookmarks (locked "Kela" folder): מערכת קלע → `https://kela.local/`, שינוי מיקום אתר → `https://kela.local/location-updater`, ממשק מצלמה → `http://192.168.88.210:6010`. `RestoreOnStartupURLs` is set to the same three views. **Note:** the kiosk opens those three views as tabs directly (§8), so in-page links aren't required; the bookmarks matter mainly from the **Chrome (Regular)** launcher, where the bookmark bar is shown.
@@ -186,7 +186,7 @@ The script handles:
     - `apt purge bluez bluez-cups bluez-obexd gnome-bluetooth*`
 3. `kela-verify` **+ build-info**:
   - installs `/usr/local/sbin/kela-verify` — the §4.3 checklist as code (remote access, firewall, kiosk wiring, sleep masking, bluetooth, NTP; PASS/FAIL per check, non-zero exit on any required failure). The USB first-boot runner refuses to finalize unless it passes; re-run any time with `sudo kela-verify`
-    - writes `/etc/kela/build-info`: site, hostname, setup version, build date, Tailscale IP, **AnyDesk ID** (`anydesk --get-id` — no manual GUI step), offline-pool stamp
+    - writes `/etc/kela/build-info`: site, hostname, setup version, build date, Tailscale IP, **AnyDesk ID** (`anydesk --get-id` — no manual GUI step)
     - if `KELA_CHECKIN_URL` is set, POSTs build-info there (best-effort) so fleet inventory builds itself
 
 
@@ -329,4 +329,4 @@ station keeps its retry wiring instead of stranding unreachable.
 
 Build prerequisites, secrets format, and re-run / failure recovery are in `[usb-builder/README.md](./usb-builder/README.md)`. Treat the resulting `.iso` (and the USB stick) as a secret — the Tailscale auth key is baked in until first-boot finishes, at which point `kela-first-boot-run` shreds it.
 
-**Installing many laptops in parallel?** Build an **offline** ISO so no laptop touches the WAN during install — run `usb-builder/collect-offline-packages.sh` once (needs Docker), then `build-iso.sh` auto-embeds the pool. See the [Offline install](./usb-builder/README.md#offline-install-no-wan-during-install) section.
+**Installing many laptops in parallel?** Run `apt-cacher-ng` on the imaging bench and set `APT_PROXY` in `secrets.env` — the first unit populates the cache, the rest download at LAN speed. See [Parallel imaging](./usb-builder/README.md#parallel-imaging-bench-apt-cache).

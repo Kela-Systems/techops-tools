@@ -25,10 +25,10 @@
 #  Optional flags:
 #    --password '<plaintext>'   Override the kela password (default Kelasys123!)
 #    --volid    'Kela Operator' ISO volume label (default same)
-#    --offline-pool <dir>       Offline .deb pool from collect-offline-packages.sh.
-#                               Auto-detected at ./offline-pool if present.
-#                               When embedded, the install needs NO network:
-#                               the desktop + apps install from /cdrom/extras.
+#
+#  The install requires a network (the desktop comes from the archive). For
+#  parallel bench imaging, set APT_PROXY in secrets.env to an apt-cacher-ng
+#  on the bench so N units download the desktop once at LAN speed.
 #
 #  Build host requirements:
 #    All:    xorriso  (the only hard dep)
@@ -60,7 +60,6 @@ OUTPUT_ISO=""
 SECRETS_FILE=""
 KELA_PASSWORD="Kelasys123!"
 VOLID="Kela Operator"
-OFFLINE_POOL=""
 
 usage() {
   sed -n '/^# =\{5,\}/,/^# =\{5,\}/p' "$0" | sed 's/^# \{0,2\}//'
@@ -74,7 +73,6 @@ while [[ $# -gt 0 ]]; do
     --secrets)  SECRETS_FILE="$2";  shift 2 ;;
     --password) KELA_PASSWORD="$2"; shift 2 ;;
     --volid)    VOLID="$2";         shift 2 ;;
-    --offline-pool) OFFLINE_POOL="$2"; shift 2 ;;
     -h|--help)  usage ;;
     *)          echo "unknown arg: $1" >&2; usage ;;
   esac
@@ -106,18 +104,6 @@ INPUT_ISO="$(abs_path "$INPUT_ISO")"
 OUTPUT_ISO="$(abs_path "$OUTPUT_ISO")"
 SECRETS_FILE="$(abs_path "$SECRETS_FILE")"
 
-# Offline pool: explicit flag wins; otherwise auto-detect ./offline-pool.
-if [[ -z "$OFFLINE_POOL" && -d "$SCRIPT_DIR/offline-pool" ]]; then
-  OFFLINE_POOL="$SCRIPT_DIR/offline-pool"
-fi
-if [[ -n "$OFFLINE_POOL" ]]; then
-  OFFLINE_POOL="$(abs_path "$OFFLINE_POOL")"
-  if [[ ! -f "$OFFLINE_POOL/Packages" ]]; then
-    echo "ERROR: --offline-pool '$OFFLINE_POOL' has no Packages index." >&2
-    echo "       Run ./collect-offline-packages.sh first (or omit for an online install ISO)." >&2
-    exit 1
-  fi
-fi
 
 # ---- 1. validate secrets ---------------------------------------------------
 echo "==> Validating secrets file"
@@ -305,31 +291,6 @@ XORRISO_CMD=(
 
 if [[ -f "$STAGING/boot/grub/loopback.cfg" ]]; then
   XORRISO_CMD+=( -map "$STAGING/boot/grub/loopback.cfg" /boot/grub/loopback.cfg )
-fi
-
-if [[ -n "$OFFLINE_POOL" ]]; then
-  POOL_MB="$(( $(du -sk "$OFFLINE_POOL" | cut -f1) / 1024 ))"
-  echo "==> Embedding offline package pool (${POOL_MB} MB) → /extras (fully offline install)"
-  XORRISO_CMD+=( -map "$OFFLINE_POOL" /extras )
-
-  # Warn on a stale pool: package (incl. security) versions drift and skew vs the
-  # ISO point release. POOL_INFO carries an ISO8601-UTC pool_built_at stamp.
-  POOL_BUILT="$(sed -n 's/^pool_built_at=//p' "$OFFLINE_POOL/POOL_INFO" 2>/dev/null | head -1)"
-  if [[ -n "$POOL_BUILT" ]]; then
-    # Portable across GNU date (Linux) and BSD date (macOS build host).
-    POOL_EPOCH="$(date -u -d "$POOL_BUILT" +%s 2>/dev/null \
-      || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$POOL_BUILT" +%s 2>/dev/null || true)"
-    if [[ -n "$POOL_EPOCH" ]]; then
-      POOL_AGE_DAYS=$(( ( $(date -u +%s) - POOL_EPOCH ) / 86400 ))
-      if (( POOL_AGE_DAYS > 60 )); then
-        echo "    WARN: offline pool is ${POOL_AGE_DAYS} days old (built ${POOL_BUILT})."
-        echo "          Package/security versions may be stale and skewed vs the ISO."
-        echo "          Consider re-running collect-offline-packages.sh before shipping."
-      fi
-    fi
-  fi
-else
-  echo "==> No offline pool — building an ONLINE-install ISO (needs network during install)"
 fi
 
 XORRISO_CMD+=( -commit )
