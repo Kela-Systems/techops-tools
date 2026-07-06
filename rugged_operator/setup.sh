@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-06.6"
+SETUP_VERSION="2026-07-06.7"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -43,8 +43,14 @@ ANYDESK_PASS="Kelasys123!"
 KELA_LOCAL_IP="${KELA_LOCAL_IP:-192.168.88.10}"
 KELA_LOCAL_HOST="${KELA_LOCAL_HOST:-kela.local}"
 KELA_LOCAL_URL="https://${KELA_LOCAL_HOST}/"
-LOCATION_UPDATER_URL="${LOCATION_UPDATER_URL:-${KELA_LOCAL_URL}location-updater}"
-CAMERA_URL="${CAMERA_URL:-http://192.168.88.210:6010/}"
+# Kiosk tabs. TAB1 defaults to the hub; TAB2/TAB3 are OPTIONAL — each opens
+# an extra tab only when set (e.g. TAB2=https://kela.local/location-updater,
+# TAB3=http://192.168.88.210:6010/ for a camera). Configure in secrets.env at
+# build time, or edit station.conf on-box + restart the kiosk. A default
+# build opens ONE tab (the hub).
+TAB1="${TAB1:-${KELA_LOCAL_URL}}"
+TAB2="${TAB2:-}"
+TAB3="${TAB3:-}"
 NTP_SERVER="${NTP_SERVER:-${KELA_LOCAL_IP}}"
 
 # Tailscale (optional — if TS_AUTHKEY unset, `tailscale up` is left manual)
@@ -94,8 +100,9 @@ SITE_NAME='${SITE_NAME}'
 KELA_LOCAL_IP='${KELA_LOCAL_IP}'
 KELA_LOCAL_HOST='${KELA_LOCAL_HOST}'
 KELA_LOCAL_URL='${KELA_LOCAL_URL}'
-LOCATION_UPDATER_URL='${LOCATION_UPDATER_URL}'
-CAMERA_URL='${CAMERA_URL}'
+TAB1='${TAB1}'
+TAB2='${TAB2}'
+TAB3='${TAB3}'
 NTP_SERVER='${NTP_SERVER}'
 CERT_FETCH_HOST='${CERT_FETCH_HOST}'
 CERT_FETCH_PORT='${CERT_FETCH_PORT}'
@@ -298,10 +305,22 @@ fi
 #  - homepage + new-tab + startup pinned to kela.local
 #  - managed bookmarks (live in a locked "Kela" folder on the bookmark bar)
 # NOTE: --kiosk hides the bookmark bar, so those bookmarks are only reachable
-# from the "Chrome (Regular)" launcher; the kela.local app must provide
-# in-page navigation to the location-updater and camera views. No URL
-# allow/blocklist here — confinement is via --kiosk + the §10b egress lock,
-# which keeps the "Chrome (Regular)" launcher LAN-only too.
+# from the "Chrome (Regular)" launcher; in the kiosk, extra views exist only
+# as the TAB2/TAB3 tabs (or via in-app navigation). No URL allow/blocklist
+# here — confinement is via --kiosk + the §10b egress lock, which keeps the
+# "Chrome (Regular)" launcher LAN-only too.
+# Build the tab list as JSON fragments — only configured tabs appear in the
+# startup URLs and managed bookmarks. Bookmark names are the URLs themselves
+# (generic tabs carry no baked-in semantic names).
+TABS_JSON="\"${TAB1}\""
+BOOKMARKS_JSON="{ \"name\": \"${TAB1}\", \"url\": \"${TAB1}\" }"
+for _tab in "$TAB2" "$TAB3"; do
+  if [[ -n "$_tab" ]]; then
+    TABS_JSON+=", \"${_tab}\""
+    BOOKMARKS_JSON+=", { \"name\": \"${_tab}\", \"url\": \"${_tab}\" }"
+  fi
+done
+
 mkdir -p /etc/opt/chrome/policies/managed
 cat > /etc/opt/chrome/policies/managed/kela-policy.json <<JSON
 {
@@ -327,18 +346,12 @@ cat > /etc/opt/chrome/policies/managed/kela-policy.json <<JSON
   "NewTabPageLocation": "${KELA_LOCAL_URL}",
   "ShowHomeButton": true,
   "RestoreOnStartup": 4,
-  "RestoreOnStartupURLs": [
-    "${KELA_LOCAL_URL}",
-    "${LOCATION_UPDATER_URL}",
-    "${CAMERA_URL}"
-  ],
+  "RestoreOnStartupURLs": [ ${TABS_JSON} ],
 
   "BookmarkBarEnabled": true,
   "ManagedBookmarks": [
     { "toplevel_name": "Kela" },
-    { "name": "מערכת קלע", "url": "${KELA_LOCAL_URL}" },
-    { "name": "שינוי מיקום אתר", "url": "${LOCATION_UPDATER_URL}" },
-    { "name": "ממשק מצלמה", "url": "${CAMERA_URL}" }
+    ${BOOKMARKS_JSON}
   ]
 }
 JSON
@@ -588,13 +601,14 @@ rm -f "$KELA_HOME/.config/autostart/chrome-kela.desktop"
 # panel readable (tune on-device). No --disable-pinch: the hub map needs
 # pinch-zoom (handled by the page, independent of viewport pinch).
 #
-# The three URLs open as tabs in the single kiosk window (command-line URLs
-# are authoritative and override RestoreOnStartup). Docked, operators switch
-# between them with Ctrl+Tab or Ctrl+1/2/3; in tablet mode the A2 bezel button
-# cycles forward via Ctrl+Tab (kela-kiosk-next-tab, §9f). Ctrl+0 and Ctrl+4..9
-# are swallowed by the 10-kela-kiosk dconf (§9d) so stray number keys can't
-# jump to a phantom tab or reset zoom. Keep this tab order in sync with
-# ManagedBookmarks (§5): 1 = kela hub, 2 = location-updater, 3 = camera.
+# Configured tabs (TAB1..TAB3, station.conf) open in one kiosk window —
+# command-line URLs are authoritative and override RestoreOnStartup. Only
+# non-empty tabs open, so a one-tab site is just "TAB2/TAB3 unset". Docked,
+# operators switch with Ctrl+Tab or Ctrl+1..3; in tablet mode the A2 bezel
+# button cycles forward via Ctrl+Tab (kela-kiosk-next-tab, §9f). Ctrl+0 and
+# Ctrl+4..9 are swallowed by the 10-kela-kiosk dconf (§9d) so stray number
+# keys can't jump to a phantom tab or reset zoom. The §5 policy generates
+# RestoreOnStartupURLs + ManagedBookmarks from the same TAB values.
 cat > /usr/local/bin/kela-kiosk <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -602,10 +616,18 @@ set -euo pipefail
 # Tab URLs come from the single source of truth. The values below are the
 # build-time defaults; /etc/kela/station.conf (sourced next) overrides them, so
 # re-pointing this station in the field is a station.conf edit + kiosk restart.
+# KELA_LOCAL_URL stays separate from TAB1: it is the HUB (pre-flight wait +
+# recovery watch key on it) even if TAB1 is overridden to something else.
 KELA_LOCAL_URL='${KELA_LOCAL_URL}'
-LOCATION_UPDATER_URL='${LOCATION_UPDATER_URL}'
-CAMERA_URL='${CAMERA_URL}'
+TAB1='${TAB1}'
+TAB2='${TAB2}'
+TAB3='${TAB3}'
 [ -r /etc/kela/station.conf ] && . /etc/kela/station.conf
+
+# Only configured tabs open (if/fi, not &&: set -e would abort on empty TAB2).
+TABS=( "\$TAB1" )
+if [ -n "\$TAB2" ]; then TABS+=( "\$TAB2" ); fi
+if [ -n "\$TAB3" ]; then TABS+=( "\$TAB3" ); fi
 
 PREFS="\$HOME/.config/google-chrome/Default/Preferences"
 if [ -f "\$PREFS" ]; then
@@ -639,9 +661,7 @@ exec /usr/bin/google-chrome-stable \\
   --touch-events=enabled \\
   --force-device-scale-factor=1.25 \\
   --check-for-update-interval=31536000 \\
-  "\$KELA_LOCAL_URL" \\
-  "\$LOCATION_UPDATER_URL" \\
-  "\$CAMERA_URL"
+  "\${TABS[@]}"
 EOF
 chmod 0755 /usr/local/bin/kela-kiosk
 
@@ -973,10 +993,11 @@ name='block new-window'
 command='/bin/true'
 binding='<Ctrl>n'
 
-# Kiosk tab nav: Ctrl+Tab and Ctrl+1/2/3 (kela hub / location-updater /
-# camera) are left alone so they reach Chrome. Ctrl+0 (zoom reset) and
-# Ctrl+4..9 (jump-to-tab-N / last-tab) are grabbed to /bin/true so stray
-# number keys can't reset zoom or land on a phantom tab.
+# Kiosk tab nav: Ctrl+Tab and Ctrl+1/2/3 (the configured TAB1..TAB3) are
+# left alone so they reach Chrome. Ctrl+0 (zoom reset) and Ctrl+4..9
+# (jump-to-tab-N / last-tab) are grabbed to /bin/true so stray number keys
+# can't reset zoom or land on a phantom tab. With fewer than three tabs the
+# unused Ctrl+2/3 are harmless no-ops.
 [org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/kela-noop-c0]
 name='block zoom-reset'
 command='/bin/true'
@@ -1455,17 +1476,19 @@ STATION_CONF=/etc/kela/station.conf
 KELA_LOCAL_IP="${KELA_LOCAL_IP:-}"
 KELA_LOCAL_HOST="${KELA_LOCAL_HOST:-}"
 KELA_LOCAL_URL="${KELA_LOCAL_URL:-}"
-LOCATION_UPDATER_URL="${LOCATION_UPDATER_URL:-}"
-CAMERA_URL="${CAMERA_URL:-}"
+TAB1="${TAB1:-}"
+TAB2="${TAB2:-}"
+TAB3="${TAB3:-}"
 
 echo "--- site addressing (single source of truth: /etc/kela/station.conf) ---"
 req "station.conf present"               test -f "$STATION_CONF"
 req "hub URL configured"                 test -n "$KELA_LOCAL_URL"
-req "location-updater URL configured"    test -n "$LOCATION_UPDATER_URL"
-req "camera URL configured"              test -n "$CAMERA_URL"
+req "TAB1 (kiosk main view) configured"  test -n "$TAB1"
 req "hub host -> hub IP in /etc/hosts"   grep -qE "^${KELA_LOCAL_IP}[[:space:]]+${KELA_LOCAL_HOST}([[:space:]]|$)" /etc/hosts
 opt "hub reachable ($KELA_LOCAL_HOST)"   sh -c "curl -sk --max-time 5 -o /dev/null \"$KELA_LOCAL_URL\""
-opt "camera reachable"                   sh -c "curl -s --max-time 5 -o /dev/null \"$CAMERA_URL\""
+# TAB2/TAB3 are optional — checked only when configured.
+[ -n "$TAB2" ] && opt "TAB2 reachable ($TAB2)" sh -c "curl -sk --max-time 5 -o /dev/null \"$TAB2\""
+[ -n "$TAB3" ] && opt "TAB3 reachable ($TAB3)" sh -c "curl -sk --max-time 5 -o /dev/null \"$TAB3\""
 
 echo "--- remote access (a FAIL here means a stranded station) ---"
 req "tailscaled service active"          systemctl is-active --quiet tailscaled

@@ -168,7 +168,8 @@ You also need:
    - Reboots
 
 6. From that point on the machine boots straight into **Chrome `--kiosk`**
-   showing three views (hub / location-updater / camera) as tabs in one
+   showing the configured views (`TAB1`..`TAB3` in secrets.env; default is
+   the hub alone) as tabs in one
    full-screen window (no address bar or bookmark bar — the locked "Kela"
    bookmarks are reachable from the "Chrome (Regular)" launcher),
    self-relaunching if closed, microphone muted by default, and reachable via
