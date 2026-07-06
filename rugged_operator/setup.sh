@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-06.2"
+SETUP_VERSION="2026-07-06.3"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -1306,6 +1306,14 @@ ufw status verbose
 iptables -L KELA_EGRESS -n -v 2>/dev/null || true
 
 # ---------- 11a. Strip games + bloat ----------------------------------------
+# CASCADE WARNING: purging a package that sits in the desktop's Depends chain
+# makes apt remove ubuntu-desktop-minimal / gnome-shell / gdm3 WITH it, -y and
+# silently — a bench unit shipped desktop-less this way (the §12 tripwire
+# below now catches it). Before adding anything here, dry-run on a built unit:
+#   apt-get purge -s <pkg> | grep -E 'gdm3|gnome-shell|ubuntu-desktop'
+# gnome-initial-setup is deliberately NOT purged (it can be a hard dep of
+# ubuntu-desktop-minimal); its wizard is suppressed via the
+# gnome-initial-setup-done file instead.
 echo "==> [11/11] Removing games / bloat and blocking Bluetooth"
 apt-get "${APT_LOCK[@]}" purge -y \
   aisleriot gnome-mahjongg gnome-mines gnome-sudoku gnome-2048 \
@@ -1318,7 +1326,6 @@ apt-get "${APT_LOCK[@]}" purge -y \
   simple-scan deja-dup \
   'libreoffice*' \
   gnome-todo gnome-weather gnome-clocks gnome-contacts gnome-maps \
-  gnome-initial-setup \
   || true
 
 # ---------- 11b. Block Bluetooth (rfkill + module blacklist + purge bluez) --
@@ -1362,8 +1369,26 @@ EOF
 update-initramfs -u
 
 # Purge BlueZ stack so nothing tries to reload modules
-apt-get "${APT_LOCK[@]}" purge -y bluez bluez-cups bluez-obexd 'gnome-bluetooth*' 2>/dev/null || true
+# Daemon stack only. Do NOT purge 'gnome-bluetooth*': gnome-shell depends on
+# the gnome-bluetooth library chain, and that glob cascaded into removing
+# gnome-shell + gdm3 + ubuntu-desktop-minimal — silently (-y + discarded
+# stderr) — leaving a text-console "kiosk". Bluetooth is already dead five
+# other ways (rfkill, masked service, module blacklist, initramfs, BlueZ
+# purge); the GNOME UI libs are harmless. stderr is kept visible so any
+# future cascade shows in the first-boot log.
+apt-get "${APT_LOCK[@]}" purge -y bluez bluez-cups bluez-obexd || true
 apt-get "${APT_LOCK[@]}" autoremove -y --purge
+
+# Tripwire: if any purge/autoremove above cascaded into the desktop, fail HERE
+# with a named cause — not five minutes later as a bare kela-verify FAIL.
+for p in ubuntu-desktop-minimal gdm3 gnome-shell; do
+  if ! dpkg -s "$p" >/dev/null 2>&1; then
+    echo "ERROR: bloat purge cascaded — '$p' was removed. A package in the" >&2
+    echo "       §11 purge lists sits in the desktop's Depends chain." >&2
+    echo "       Check: grep 'Remove:' /var/log/apt/history.log | tail -2" >&2
+    exit 1
+  fi
+done
 apt-get "${APT_LOCK[@]}" clean
 
 # ---------- 12. kela-verify: machine-checked success ------------------------
