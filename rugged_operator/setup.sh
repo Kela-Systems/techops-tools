@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-06.1"
+SETUP_VERSION="2026-07-06.2"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -192,7 +192,10 @@ apt_get install -y curl wget ca-certificates apt-transport-https \
 # ---------- 3. Tailscale ----------------------------------------------------
 echo "==> [3/11] Installing Tailscale"
 if ! command -v tailscale >/dev/null 2>&1; then
-  curl -fsSL https://tailscale.com/install.sh | sh
+  # --retry-all-errors: vendor endpoints blip (AnyDesk's keyserver once served
+  # Cloudflare 522 mid-build, killing a 20-min run at the last mile). Ride out
+  # short blips; a genuine outage still fails cleanly to the re-run path.
+  curl -fsSL --retry 5 --retry-delay 15 --retry-all-errors https://tailscale.com/install.sh | sh
 fi
 systemctl enable --now tailscaled
 
@@ -244,7 +247,8 @@ fi
 echo "==> [4/11] Installing AnyDesk"
 if ! command -v anydesk >/dev/null 2>&1; then
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://keys.anydesk.com/repos/DEB-GPG-KEY \
+  curl -fsSL --retry 5 --retry-delay 15 --retry-all-errors \
+       https://keys.anydesk.com/repos/DEB-GPG-KEY \
        -o /etc/apt/keyrings/keys.anydesk.com.asc
   chmod a+r /etc/apt/keyrings/keys.anydesk.com.asc
   echo "deb [signed-by=/etc/apt/keyrings/keys.anydesk.com.asc] http://deb.anydesk.com/ all main" \
@@ -281,7 +285,8 @@ echo "==> [5/11] Installing Google Chrome"
 # patching covers Chrome afterwards.
 if ! command -v google-chrome-stable >/dev/null 2>&1; then
   TMP_DEB="$(mktemp --suffix=.deb)"
-  wget -qO "$TMP_DEB" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+  curl -fsSL --retry 5 --retry-delay 15 --retry-all-errors \
+       -o "$TMP_DEB" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
   apt_get install -y "$TMP_DEB"
   rm -f "$TMP_DEB"
 fi
