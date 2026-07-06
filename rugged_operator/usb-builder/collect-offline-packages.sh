@@ -3,17 +3,22 @@
 #  collect-offline-packages.sh — build the offline .deb pool for the Kela
 #  operator ISO (option "3a": fully offline install, no WAN during install).
 #
-#  Runs a clean ubuntu:24.04 amd64 container so the FULL dependency closure of
-#  the desktop + tools is downloaded (not just the deltas vs. your host), then
-#  adds the third-party debs (Tailscale, AnyDesk, Chrome) and builds a flat
+#  Runs a clean ubuntu:24.04 amd64 container and downloads the COMPLETE
+#  recursive dependency closure (Depends + Pre-Depends) of the desktop + tools,
+#  then adds the third-party debs (Tailscale, AnyDesk, Chrome) and builds a flat
 #  apt repo index (Packages/Packages.gz). The result drops into ./offline-pool
 #  and is embedded into the ISO by build-iso.sh.
 #
-#  Why a container: `apt-get install --download-only` on your own machine skips
-#  anything already installed. A pristine ubuntu:24.04 base is a subset of the
-#  Ubuntu **Server** base we install onto, so everything the container skips is
-#  guaranteed already present on the target — making this closure sufficient
-#  for an offline server-ISO install.
+#  Why the full closure (not just `apt-get install --download-only`):
+#  --download-only fetches only what the container is MISSING and silently skips
+#  packages already present in the ubuntu:24.04 image. Those are NOT guaranteed
+#  to exist on the target Server base, so they go missing from the pool and the
+#  offline desktop install dies with "gnome-shell ... not installable" (plus the
+#  cascade behind it). We therefore enumerate the whole hard-dependency closure
+#  and download every piece, then VALIDATE that the set resolves from the pool
+#  ALONE (empty base) — a check independent of whatever the target base ships.
+#  If the pool can't satisfy the install, the collect FAILS instead of shipping
+#  a half-pool that strands a field unit.
 #
 #  Requirements on the build host:
 #    - Docker (Desktop on macOS, or engine on Linux)
@@ -95,15 +100,36 @@ docker run --rm --platform linux/amd64 \
 
     apt-get update
 
-    # Resolve + download the whole closure in one shot for version consistency.
-    apt-get install -y --download-only \
-      $DESKTOP_PKGS $TOOL_PKGS $THIRDPARTY_PKGS
+    ALL_PKGS="$DESKTOP_PKGS $TOOL_PKGS $THIRDPARTY_PKGS"
 
-    # Belt-and-braces: explicitly fetch the top-level tool debs too, in case any
-    # are part of the container base (and therefore skipped above) but absent
-    # from the target server base.
+    # (1) Resolve + download the delta the container is missing. Recommends ON,
+    #     so a normal desktop`s recommended extras are captured where available.
+    #     firefox- (trailing-dash exclusion): it is a snap-transitional deb
+    #     whose postinst runs `snap install firefox` — a snap-store phone-home
+    #     that can NEVER succeed during an offline install (it wedged a bench
+    #     unit at "status half-installed firefox"). user-data excludes + pins
+    #     it on the target too; keeping it out of the pool is the third belt.
+    apt-get install -y --download-only $ALL_PKGS firefox-
+
+    # (2) Force-download the ENTIRE hard-dependency closure (Depends +
+    #     Pre-Depends), INCLUDING packages already in this container image that
+    #     step (1) silently skips. This is the fix for the offline
+    #     "gnome-shell not installable" cascade: those skipped base deps are
+    #     absent from the target Server base too, so the pool must carry them.
+    #     Tiny seed covers the rare Pre-Depends on dpkg/apt themselves.
+    SEED="dpkg apt"
+    CLOSURE="$(apt-cache depends --recurse \
+                 --no-recommends --no-suggests --no-conflicts \
+                 --no-breaks --no-replaces --no-enhances \
+                 $ALL_PKGS 2>/dev/null \
+               | awk "/^[a-zA-Z0-9]/ {print \$1}" | sort -u || true)"
+    # Keep only real, downloadable packages (drop virtual/Provides-only names,
+    # which have no Filename and would abort a batch download).
+    REAL="$(apt-cache show $CLOSURE $SEED 2>/dev/null \
+            | awk "/^Package: / {p=\$2} /^Filename: / {print p}" | sort -u || true)"
     cd /out
-    apt-get download $TOOL_PKGS 2>/dev/null || true
+    apt-get download $REAL 2>/dev/null \
+      || for p in $REAL; do apt-get download "$p" 2>/dev/null || true; done
 
     # Gather every fetched .deb into /out.
     cp -n /var/cache/apt/archives/*.deb /out/ 2>/dev/null || true
@@ -113,6 +139,31 @@ docker run --rm --platform linux/amd64 \
     rm -f Packages Packages.gz
     dpkg-scanpackages --multiversion . /dev/null > Packages
     gzip -kf Packages
+
+    # --- Completeness gate: resolve from the pool ALONE, empty base ----------
+    # Point apt at the pool only AND tell it nothing is installed
+    # (Dir::State::status=/dev/null). If the whole set resolves, an offline
+    # install on the (larger) Server base is guaranteed to resolve too. This is
+    # the check that would have caught the original truncated pool. Recommends
+    # off: we only guarantee the hard-dependency closure.
+    echo "==> Validating offline closure (pool-only, empty base)"
+    printf "deb [trusted=yes] file:/out ./\n" > /etc/apt/pool-only.list
+    apt-get -o Dir::Etc::SourceList=/etc/apt/pool-only.list \
+            -o Dir::Etc::SourceParts=/dev/null update >/dev/null 2>&1 || true
+    if ! apt-get install -s -y \
+            -o Dir::Etc::SourceList=/etc/apt/pool-only.list \
+            -o Dir::Etc::SourceParts=/dev/null \
+            -o Dir::State::status=/dev/null \
+            -o APT::Install-Recommends=false \
+            $ALL_PKGS >/tmp/kela-sim.log 2>&1; then
+      echo "ERROR: offline pool INCOMPLETE — the package set does not resolve" >&2
+      echo "       from the pool alone. The build is aborting so this does not" >&2
+      echo "       strand a field unit. Unsatisfied:" >&2
+      grep -E "Depends:|not installable|but it is not|Unable to correct" /tmp/kela-sim.log \
+        | sort -u | sed "s/^/         /" >&2
+      exit 1
+    fi
+    echo "    OK: desktop + tools + third-party resolve from the pool alone."
 
     # Ship the vendor repo config (keyrings + .list files) alongside the debs.
     # Offline installs pull Tailscale/AnyDesk/Chrome from the pool but never

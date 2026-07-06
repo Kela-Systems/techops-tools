@@ -24,6 +24,17 @@ if [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
   fi
 fi
 
+# The terminal we get exec'd into (xterm/gnome-terminal on first boot) can come
+# up with a line-discipline `erase` char that doesn't match the Backspace key
+# the keyboard sends (xterm often sends ^H while the tty expects ^?), which
+# makes Backspace a no-op at the plain `read` prompts below. Reset to a sane
+# state and force erase to DEL. Combined with `read -e` (readline, which binds
+# both ^? and ^H to backward-delete-char), Backspace works either way.
+if [[ -t 0 ]]; then
+  stty sane 2>/dev/null || true
+  stty erase '^?' 2>/dev/null || true
+fi
+
 clear
 cat <<'BANNER'
 ============================================================================
@@ -36,7 +47,7 @@ BANNER
 SITE_NAME=""
 if [[ -r /etc/kela/site ]]; then
   PRESET="$(head -n1 /etc/kela/site | tr -d '[:space:]')"
-  if [[ "$PRESET" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]]; then
+  if [[ "$PRESET" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ && "$PRESET" != *-operator ]]; then
     SITE_NAME="$PRESET"
     echo
     echo "Site name was set at install time: ${SITE_NAME}"
@@ -63,14 +74,18 @@ the site identifier.
 BANNER
 
   while true; do
-    read -rp "Site name: " SITE_NAME
+    read -erp "Site name: " SITE_NAME
     if [[ ! "$SITE_NAME" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]]; then
       echo "  ! invalid — try again."
       continue
     fi
+    if [[ "$SITE_NAME" == *-operator ]]; then
+      echo "  ! don't include '-operator' — it's appended automatically (hostname becomes <site>-operator)."
+      continue
+    fi
     # The name is permanent (hostname, Tailscale name) — make typos cheap to
     # catch now, not after deployment.
-    read -rp "  Build as '${SITE_NAME}-operator' — correct? [y/N] " CONFIRM
+    read -erp "  Build as '${SITE_NAME}-operator' — correct? [y/N] " CONFIRM
     [[ "$CONFIRM" =~ ^[Yy]$ ]] && break
     echo
   done

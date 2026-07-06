@@ -242,8 +242,39 @@ bottleneck — so it scales flat. Use **USB 3 sticks** so reading the pool off
 the stick isn't the new slow point.
 
 > **Validate once:** after the first offline build, install a single laptop
-> with **ethernet unplugged**. If a package turns out to be missing, add it to
+> with **ethernet unplugged**, all the way through first boot and
+> `sudo kela-verify`. If a package turns out to be missing, add it to
 > `TOOL_PKGS` in `collect-offline-packages.sh` and re-run it.
+
+### If the install looks hung (disk LED quiet, no visible progress)
+
+From the installer shell (`Ctrl+Alt+F2`, or Help → Enter shell):
+
+```bash
+journalctl --no-pager | grep 'kela:' | tail   # which phase are we in?
+watch -n15 'chroot /target dpkg -l 2>/dev/null | grep -c "^ii"'   # count climbing = installing
+ps aux | grep -E 'apt-get|dpkg|cp' | grep -v grep
+```
+
+> **WARNING — do not leave anything open under `/target`.** You can
+> `tail -f /target/var/log/dpkg.log` for per-package detail, but you MUST
+> Ctrl-C it before the install finishes: any process holding a file open
+> under `/target` makes curtin's final unmount fail (`umount` exit 32) and
+> **crashes an otherwise-successful install at teardown**. Same for shells
+> `cd`'d into `/target`. The `watch` command above is safe (its probes are
+> transient). If you hit this anyway — subiquity traceback with
+> "returned non-zero exit status 32" — the install is fine: find the holder
+> with `fuser -vm /target`, kill it, `umount -R /target`, reboot.
+
+The desktop configure phase is CPU-bound and legitimately runs **15–25 min
+with a quiet disk** — `kela: desktop install starting` followed by advancing
+`dpkg.log` lines means it's healthy. `kela: desktop install DONE` marks
+success. A `dpkg.log` frozen 10+ min with idle CPU is a real stall: check the
+last package it logged. Known trap (fixed, kept here for recognition): the
+**firefox** transitional deb's postinst runs `snap install firefox` — a snap
+store phone-home that can never succeed offline; it is excluded/pinned out of
+the build, and `api.snapcraft.io` is pointed at localhost during the install
+so any similar phone-home fails in seconds instead of hanging silently.
 
 ---
 

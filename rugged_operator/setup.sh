@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-03.4"
+SETUP_VERSION="2026-07-05.2"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -249,9 +249,15 @@ done
 
 if [[ -n "$TS_AUTHKEY" ]]; then
   echo "==> Bringing Tailscale up as $HOSTNAME_NEW"
+  # --timeout: without it `tailscale up` retries the control plane FOREVER —
+  # an unattended first boot with no cable (or a key pending admin approval)
+  # hangs indefinitely instead of falling through to the WARN below and the
+  # first-boot gate's clear "Tailscale NOT connected" message. 2 min is ample
+  # for a healthy link+auth; on failure the gate keeps the retry wiring.
   TS_UP_ARGS=( --reset \
                --authkey="$TS_AUTHKEY" \
                --hostname="$HOSTNAME_NEW" \
+               --timeout=120s \
                --accept-routes )
 
   if [[ -n "$TS_TAGS" ]]; then
@@ -1459,6 +1465,15 @@ opt "anydesk apt repo configured"        test -f /etc/apt/sources.list.d/anydesk
 opt "chrome apt repo configured"         test -f /etc/apt/sources.list.d/google-chrome.list
 
 echo "--- kiosk ---"
+# The desktop itself, not just its config files: a bench unit once passed
+# every check below with NO display manager installed (the USB desktop
+# install had silently not completed) — the gate vouched for a kiosk that
+# could only boot to a text console. Any hard runtime dependency of the
+# kiosk design belongs here as a req.
+req "desktop metapackage installed"      dpkg -s ubuntu-desktop-minimal
+req "gdm3 installed"                     dpkg -s gdm3
+req "Xorg installed (WaylandEnable=false needs it)" dpkg -s xserver-xorg-core
+req "default boot target is graphical"   sh -c 'systemctl get-default | grep -q graphical'
 req "GDM auto-login configured"          grep -q "AutomaticLogin=kela" /etc/gdm3/custom.conf
 req "GDM forced onto Xorg"               grep -q "^WaylandEnable=false" /etc/gdm3/custom.conf
 req "Chrome installed"                   test -x /usr/bin/google-chrome-stable
