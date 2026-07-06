@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-06.7"
+SETUP_VERSION="2026-07-06.8"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -51,6 +51,11 @@ KELA_LOCAL_URL="https://${KELA_LOCAL_HOST}/"
 TAB1="${TAB1:-${KELA_LOCAL_URL}}"
 TAB2="${TAB2:-}"
 TAB3="${TAB3:-}"
+# Display names for the managed bookmarks in Chrome (Regular) — cosmetic
+# only (kiosk tabs have no visible labels). Default: the tab's URL.
+TAB1_NAME="${TAB1_NAME:-${TAB1}}"
+TAB2_NAME="${TAB2_NAME:-${TAB2}}"
+TAB3_NAME="${TAB3_NAME:-${TAB3}}"
 NTP_SERVER="${NTP_SERVER:-${KELA_LOCAL_IP}}"
 
 # Tailscale (optional — if TS_AUTHKEY unset, `tailscale up` is left manual)
@@ -103,6 +108,9 @@ KELA_LOCAL_URL='${KELA_LOCAL_URL}'
 TAB1='${TAB1}'
 TAB2='${TAB2}'
 TAB3='${TAB3}'
+TAB1_NAME='${TAB1_NAME}'
+TAB2_NAME='${TAB2_NAME}'
+TAB3_NAME='${TAB3_NAME}'
 NTP_SERVER='${NTP_SERVER}'
 CERT_FETCH_HOST='${CERT_FETCH_HOST}'
 CERT_FETCH_PORT='${CERT_FETCH_PORT}'
@@ -310,16 +318,18 @@ fi
 # here — confinement is via --kiosk + the §10b egress lock, which keeps the
 # "Chrome (Regular)" launcher LAN-only too.
 # Build the tab list as JSON fragments — only configured tabs appear in the
-# startup URLs and managed bookmarks. Bookmark names are the URLs themselves
-# (generic tabs carry no baked-in semantic names).
+# startup URLs and managed bookmarks. Bookmark names come from TABn_NAME
+# (default: the URL itself).
 TABS_JSON="\"${TAB1}\""
-BOOKMARKS_JSON="{ \"name\": \"${TAB1}\", \"url\": \"${TAB1}\" }"
-for _tab in "$TAB2" "$TAB3"; do
-  if [[ -n "$_tab" ]]; then
-    TABS_JSON+=", \"${_tab}\""
-    BOOKMARKS_JSON+=", { \"name\": \"${_tab}\", \"url\": \"${_tab}\" }"
-  fi
-done
+BOOKMARKS_JSON="{ \"name\": \"${TAB1_NAME}\", \"url\": \"${TAB1}\" }"
+if [[ -n "$TAB2" ]]; then
+  TABS_JSON+=", \"${TAB2}\""
+  BOOKMARKS_JSON+=", { \"name\": \"${TAB2_NAME}\", \"url\": \"${TAB2}\" }"
+fi
+if [[ -n "$TAB3" ]]; then
+  TABS_JSON+=", \"${TAB3}\""
+  BOOKMARKS_JSON+=", { \"name\": \"${TAB3_NAME}\", \"url\": \"${TAB3}\" }"
+fi
 
 mkdir -p /etc/opt/chrome/policies/managed
 cat > /etc/opt/chrome/policies/managed/kela-policy.json <<JSON
