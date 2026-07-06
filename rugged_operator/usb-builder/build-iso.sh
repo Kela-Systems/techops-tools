@@ -243,6 +243,10 @@ menuentry "Kela Operator — Auto-install (WILL ERASE DISK)" {
     echo "e.g. fob-12) and the whole install + first-boot setup runs hands-off"
     echo "to completion. Or just press Enter to be prompted after the install."
     echo ""
+    echo "NOTE: no backspace here. If you mistype, keep going — after the"
+    echo "install, the first-boot screen shows the name and gives you 15"
+    echo "seconds to correct it before building."
+    echo ""
     echo -n "Site name: "
     read kela_site
     set gfxpayload=keep

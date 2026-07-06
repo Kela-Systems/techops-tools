@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-06.5"
+SETUP_VERSION="2026-07-06.6"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -757,13 +757,28 @@ Categories=Network;WebBrowser;
 Terminal=false
 EOF
 
+# Distinct icon so "Kela Kiosk" and "Chrome (Regular)" are tell-apart-able in
+# the dock/app grid (both used to show the stock Chrome icon).
+install -d /usr/share/icons/hicolor/scalable/apps
+cat > /usr/share/icons/hicolor/scalable/apps/kela-kiosk.svg <<'EOF'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#1a5fb4"/>
+  <rect x="10" y="14" width="44" height="30" rx="3" fill="#ffffff"/>
+  <rect x="14" y="18" width="36" height="22" rx="1" fill="#1a5fb4"/>
+  <rect x="26" y="46" width="12" height="4" fill="#ffffff"/>
+  <text x="32" y="35.5" font-family="sans-serif" font-size="15" font-weight="bold"
+        fill="#ffffff" text-anchor="middle">K</text>
+</svg>
+EOF
+gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
+
 cat > /usr/share/applications/kela-kiosk.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Kela Kiosk
 Comment=Return to kiosk mode
 Exec=sh -c 'systemctl --user start kela-kiosk.service'
-Icon=google-chrome
+Icon=kela-kiosk
 Categories=Network;
 Terminal=false
 EOF
@@ -1030,6 +1045,19 @@ screen-keyboard-enabled=false
 [org/onboard/auto-show]
 enabled=true
 
+# Dock pins (visible only after a kiosk escape): kiosk return, LAN-only
+# Chrome, and a terminal — the three things a technician reaches for.
+[org/gnome/shell]
+favorite-apps=['kela-kiosk.desktop', 'kela-chrome-regular.desktop', 'org.gnome.Terminal.desktop']
+
+# Hebrew input alongside US — the hub UI is Hebrew and operators type into
+# its forms. Switch layouts with Super+Space (deliberately NOT blanked by the
+# lockdown; the bare overlay-key is). onboard follows the active layout.
+# LOCKED (see locks file): GNOME materializes a per-user input-sources value
+# at first login, and an unlocked system default would lose to it.
+[org/gnome/desktop/input-sources]
+sources=[('xkb', 'us'), ('xkb', 'il')]
+
 [org/gnome/desktop/interface]
 text-scaling-factor=1.25
 EOF
@@ -1055,6 +1083,7 @@ cat > /etc/dconf/db/local.d/locks/10-kela-kiosk <<'EOF'
 /org/gnome/desktop/wm/keybindings/switch-to-workspace-up
 /org/gnome/desktop/wm/keybindings/switch-to-workspace-down
 /org/gnome/desktop/a11y/applications/screen-keyboard-enabled
+/org/gnome/desktop/input-sources/sources
 EOF
 
 dconf update
@@ -1485,6 +1514,9 @@ req "Ctrl+0/4..9 tab-jumps blocked"      grep -q "kela-noop-c9" /etc/dconf/db/lo
 req "Ctrl+Shift+Q (Chrome quit) blocked" grep -q "kela-noop-csq" /etc/dconf/db/local.d/10-kela-kiosk
 req "'Chrome (Regular)' launcher"        test -f /usr/share/applications/kela-chrome-regular.desktop
 req "'Kela Kiosk' launcher"              test -f /usr/share/applications/kela-kiosk.desktop
+req "kiosk launcher has distinct icon"   test -f /usr/share/icons/hicolor/scalable/apps/kela-kiosk.svg
+req "dock favorites pinned"              grep -q "favorite-apps=" /etc/dconf/db/local.d/10-kela-kiosk
+req "Hebrew keyboard layout configured"  grep -q "'il'" /etc/dconf/db/local.d/10-kela-kiosk
 req "onboard OSK installed"              test -x /usr/bin/onboard
 req "session-init autostart present"     test -f "$KELA_HOME/.config/autostart/kela-session-init.desktop"
 

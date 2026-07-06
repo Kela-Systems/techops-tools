@@ -51,7 +51,18 @@ if [[ -r /etc/kela/site ]]; then
     SITE_NAME="$PRESET"
     echo
     echo "Site name was set at install time: ${SITE_NAME}"
-    echo "Continuing automatically — no input needed."
+    echo "This machine will be built as '${SITE_NAME}-operator'."
+    # GRUB's read has no backspace, so a typo at the boot menu can't be fixed
+    # where it was made. This 15s window is the correction point — without
+    # costing zero-touch: press Enter to re-enter the name, or do nothing and
+    # the build continues hands-off.
+    if read -t 15 -rp "Press Enter within 15s to CHANGE the site name, or wait to continue... " _; then
+      echo "Re-entering site name."
+      SITE_NAME=""
+    else
+      echo
+      echo "Continuing automatically."
+    fi
   else
     echo
     echo "NOTE: ignoring invalid pre-set site name '${PRESET}' — please re-enter."
