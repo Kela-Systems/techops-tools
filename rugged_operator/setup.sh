@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-06.3"
+SETUP_VERSION="2026-07-06.4"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -1158,34 +1158,31 @@ xdotool key --clearmodifiers ctrl+Tab
 EOF
 chmod 0755 /usr/local/bin/kela-kiosk-next-tab
 
-# Bezel buttons -> keysyms, for the firmware case where they emit raw scancodes
-# instead of KEY_PROG1/PROG2. The scancodes vary by unit and MUST be captured,
-# so this ships COMMENTED OUT — nothing is mis-remapped until it's filled in.
-# FIRST run `sudo evtest`, select the button device, and press A1/A2:
-#   * If evtest already reports KEY_PROG1 / KEY_PROG2 key events, DO NOTHING —
-#     the XF86Launch1/XF86Launch2 GNOME bindings (9d2) already handle them and
-#     this file must stay commented out.
-#   * Otherwise note each MSC_SCAN "value <hex>", uncomment the block, fill in
-#     the two scancodes (A1->f2, A2->prog2), and apply:
-#       sudo systemd-hwdb update && sudo udevadm trigger
+# Bezel buttons -> keysyms. Captured on real CF-33 hardware (2026-07-06,
+# device "Panasonic Laptop Support"): A1 = scan 09 (firmware default
+# KEY_BATTERY), A2 = scan 0a (firmware default KEY_SUSPEND — which only did
+# nothing because sleep is masked). The match is scoped to the Panasonic ACPI
+# button device AND Panasonic DMI vendor, so it cannot touch the keyboard,
+# touchscreen, or non-Panasonic hardware. If a different firmware revision
+# leaves the buttons inert: re-capture with `sudo evtest` (press each button,
+# read the MSC_SCAN value), update the scancodes here, and re-run setup.sh —
+# or edit the file on-box and: sudo systemd-hwdb update && sudo udevadm trigger
 # Drop the pre-rename stub so a re-run on an older station leaves no duplicate.
 mkdir -p /etc/udev/hwdb.d
 rm -f /etc/udev/hwdb.d/70-kela-cf33-a1.hwdb
 cat > /etc/udev/hwdb.d/70-kela-cf33-buttons.hwdb <<'EOF'
 # Kela CF-33: remap the A1/A2 bezel buttons for kiosk control.
-#   A1 -> f2    (reuses the F2 kiosk-escape binding)
-#   A2 -> prog2 (lands on the XF86Launch2 "next view" binding)
-# ONLY needed if the buttons emit raw scancodes. Capture with `sudo evtest`:
-#   - if evtest shows KEY_PROG1/KEY_PROG2 already, leave this commented out
-#     (XF86Launch1/XF86Launch2 GNOME bindings handle it, no remap required);
-#   - else read each button's MSC_SCAN value, uncomment below, set the name
-#     match + scancodes, then: sudo systemd-hwdb update && sudo udevadm trigger
-#
-#evdev:name:*Panasonic*:dmi:*
-#  KEYBOARD_KEY_<a1_scancode>=f2
-#  KEYBOARD_KEY_<a2_scancode>=prog2
+#   A1 (scan 09) -> f2    = kiosk escape (triple-press, same binding as F2)
+#   A2 (scan 0a) -> prog2 = next view (XF86Launch2 binding)
+# Captured on-device 2026-07-06. If the buttons are inert on another firmware
+# revision, re-capture with `sudo evtest` and update the scancodes, then:
+#   sudo systemd-hwdb update && sudo udevadm trigger
+evdev:name:Panasonic Laptop Support:dmi:bvn*:bvr*:bd*:svnPanasonic*:*
+ KEYBOARD_KEY_09=f2
+ KEYBOARD_KEY_0a=prog2
 EOF
 systemd-hwdb update 2>/dev/null || true
+udevadm trigger 2>/dev/null || true
 
 # On-screen keyboard (onboard) for tablet use — auto-shows on text-field
 # focus (org.onboard/auto-show enabled in the 10-kela-kiosk dconf). More
