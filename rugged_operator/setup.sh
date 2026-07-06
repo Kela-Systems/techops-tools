@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-06.4"
+SETUP_VERSION="2026-07-06.5"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -1147,14 +1147,24 @@ chmod 0755 /usr/local/bin/kela-kiosk-escape
 
 # A2 = next kiosk view. hwdb can only map a button to a single key, never to a
 # chord, so the Ctrl+Tab chord is injected here (Xorg session, so xdotool
-# works). No kiosk-active guard: after an escape, A2 just injects Ctrl+Tab into
+# works). Two details validated on real hardware — do not simplify away:
+#   - gsd holds an active keyboard grab while the shortcut key is physically
+#     down; an XTest injection during the grab is delivered to gsd, NOT
+#     Chrome, and silently vanishes. The sleep waits out the key release.
+#   - the environment gsd spawns from can lack DISPLAY/XAUTHORITY, killing
+#     xdotool instantly — export session defaults.
+# No kiosk-active guard: after an escape, A2 just injects Ctrl+Tab into
 # whatever is focused — harmless.
 cat > /usr/local/bin/kela-kiosk-next-tab <<'EOF'
 #!/usr/bin/env bash
 # A2 bezel button -> cycle the three kiosk tabs forward (Ctrl+Tab).
-set -euo pipefail
+set -uo pipefail
 command -v xdotool >/dev/null 2>&1 || exit 0
-xdotool key --clearmodifiers ctrl+Tab
+export DISPLAY="${DISPLAY:-:0}"
+export XAUTHORITY="${XAUTHORITY:-/run/user/$(id -u)/gdm/Xauthority}"
+# Wait out gsd's shortcut grab (released when the button is let go).
+sleep 0.35
+exec xdotool key --clearmodifiers ctrl+Tab
 EOF
 chmod 0755 /usr/local/bin/kela-kiosk-next-tab
 
