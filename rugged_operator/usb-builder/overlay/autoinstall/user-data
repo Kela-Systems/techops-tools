@@ -50,42 +50,78 @@ autoinstall:
         dhcp6: false
         optional: true
 
-  # No install-time update fetch — keeps the base install network-independent
-  # (offline-pool builds need this). Patch centrally over Tailscale later.
-
-  # Don't make the base install hard-depend on a reachable archive mirror.
-  # When the offline pool is embedded (/cdrom/extras), the desktop installs
-  # from it in late-commands and no network is touched at all.
+  # No install-time update fetch — the base system comes from the ISO pool;
+  # patch centrally over Tailscale later. fallback keeps the BASE install
+  # resilient to a flaky mirror (the desktop step in late-commands still
+  # requires the network and fails loudly without it).
   apt:
     geoip: false
     fallback: offline-install
 
-  # openssh-server comes from the Server ISO pool (offline-safe) via the ssh:
-  # section above. The desktop environment (ubuntu-desktop-minimal + gdm3) is
-  # NOT on the Server ISO, so it's installed in late-commands — from the local
-  # offline pool if present, otherwise from the network.
+  # openssh-server comes from the Server ISO pool via the ssh: section above.
+  # The desktop environment (ubuntu-desktop-minimal + gdm3) is NOT on the
+  # Server ISO, so it's installed from the archive in late-commands — the
+  # install therefore REQUIRES a network (plug ethernet before booting the
+  # stick). For parallel bench imaging, set APT_PROXY in secrets.env to an
+  # apt-cacher-ng on the bench: the desktop downloads once at LAN speed.
+
+  # Nothing during the install should contact the snap store: Subiquity polls
+  # it (a bounded ~20-min retry loop that looks like a hang at the bench),
+  # and snap-transitional debs phone it from maintainer scripts (the firefox
+  # deb's postinst runs `snap install firefox` — it once wedged an install at
+  # "status half-installed firefox"). Fail FAST: point the store at localhost
+  # in the live environment so any store contact dies in seconds with a
+  # visible error instead of a silent retry loop. (The target chroot gets the
+  # same guard around the desktop install below; firefox itself is pinned out.)
+  early-commands:
+    - echo '127.0.0.1 api.snapcraft.io' >> /etc/hosts
 
   # All file installs happen here. /target is the new root; /cdrom is the
   # mounted ISO. Files under /cdrom/operator/ came from usb-builder/overlay/.
   late-commands:
     # ---- install the desktop environment (GNOME + gdm3) ------------------
-    # Offline if the pool is embedded (/cdrom/extras), else from the network.
-    # The pool is copied to /target/opt/kela-pool and LEFT there so first-boot
-    # (operator-setup.sh) can install Tailscale/AnyDesk/Chrome offline too;
-    # kela-first-boot-run removes it once setup succeeds.
+    # From the archive (network required), optionally via a bench apt cache.
     - |
-      if [ -f /cdrom/extras/Packages ]; then
-        echo "kela: OFFLINE desktop install from /cdrom/extras"
-        cp -a /cdrom/extras /target/opt/kela-pool
-        printf 'deb [trusted=yes] file:/opt/kela-pool ./\n' > /target/etc/apt/kela-offline.list
-        curtin in-target --target=/target -- apt-get -o Dir::Etc::SourceList=/etc/apt/kela-offline.list -o Dir::Etc::SourceParts=/dev/null update
-        curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get -o Dir::Etc::SourceList=/etc/apt/kela-offline.list -o Dir::Etc::SourceParts=/dev/null install -y ubuntu-desktop-minimal gdm3 gnome-terminal
-        rm -f /target/etc/apt/kela-offline.list
-      else
-        echo "kela: ONLINE desktop install from archive"
-        curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get update
-        curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-desktop-minimal gdm3 gnome-terminal
+      # set -e is load-bearing: curtin runs this block via `sh -c` WITHOUT -e,
+      # so a failed apt would otherwise fall through to the cleanup lines, the
+      # block would exit 0, and curtin would declare the install successful —
+      # shipping a desktop-less unit that boots to a text console. With -e a
+      # failure aborts the autoinstall visibly at the bench.
+      set -e
+      # Target-side snap-store guard for the duration of the desktop install
+      # (removed after): any maintainer script that reaches for the store
+      # fails instantly instead of hanging dpkg. firefox is kept out via the
+      # pin (-1 = never a candidate, so its Recommends is skipped silently) —
+      # a kiosk that ships Chrome has no use for a snap-transitional firefox.
+      printf '127.0.0.1 api.snapcraft.io\n' >> /target/etc/hosts
+      mkdir -p /target/etc/apt/preferences.d
+      printf 'Package: firefox\nPin: release *\nPin-Priority: -1\n' \
+        > /target/etc/apt/preferences.d/kela-no-firefox
+      # Optional bench apt cache: APT_PROXY in secrets.env (baked on the ISO)
+      # points apt at e.g. apt-cacher-ng on the imaging bench, so N parallel
+      # installs download the ~2 GB desktop once at LAN speed. Deliberately
+      # non-persistent — the options exist only on these commands, so a unit
+      # imaged at the bench never carries a dead proxy to the field.
+      APT_PROXY="$(. /cdrom/operator/secrets.env 2>/dev/null; echo "${APT_PROXY:-}")"
+      PROXY_OPTS=""
+      if [ -n "$APT_PROXY" ]; then
+        PROXY_OPTS="-o Acquire::http::Proxy=$APT_PROXY -o Acquire::https::Proxy=$APT_PROXY"
+        echo "kela: using apt proxy $APT_PROXY"
       fi
+      echo "kela: desktop install from archive"
+      curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get $PROXY_OPTS update
+      echo "kela: desktop install starting (download+unpack+configure, ~15-25 min; disk can go quiet during configure — progress: tail -f /target/var/log/dpkg.log, and Ctrl-C it before the install ends)"
+      curtin in-target --target=/target -- env DEBIAN_FRONTEND=noninteractive apt-get $PROXY_OPTS -o Dpkg::Use-Pty=0 install -y ubuntu-desktop-minimal gdm3 gnome-terminal
+      sed -i '/api\.snapcraft\.io/d' /target/etc/hosts
+      echo "kela: desktop install DONE"
+
+    # ---- disarm the apt-daily timers before first boot ------------------
+    # apt-daily.timer is Persistent=true, so it can fire seconds into first
+    # boot — minutes before the operator answers the site prompt and setup.sh
+    # §2 disables it — and hold the dpkg lock. setup.sh's 600s lock-wait
+    # absorbs it, but at parallel-imaging scale that's wasted idle minutes per
+    # station. Disabling here (idempotent) means the racers never arm at all.
+    - curtin in-target --target=/target -- systemctl disable apt-daily.timer apt-daily-upgrade.timer || true
 
     # ---- auto-login so the first-boot prompt can run in a GUI session
     - mkdir -p /target/etc/gdm3

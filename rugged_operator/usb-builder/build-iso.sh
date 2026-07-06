@@ -25,10 +25,10 @@
 #  Optional flags:
 #    --password '<plaintext>'   Override the kela password (default Kelasys123!)
 #    --volid    'Kela Operator' ISO volume label (default same)
-#    --offline-pool <dir>       Offline .deb pool from collect-offline-packages.sh.
-#                               Auto-detected at ./offline-pool if present.
-#                               When embedded, the install needs NO network:
-#                               the desktop + apps install from /cdrom/extras.
+#
+#  The install requires a network (the desktop comes from the archive). For
+#  parallel bench imaging, set APT_PROXY in secrets.env to an apt-cacher-ng
+#  on the bench so N units download the desktop once at LAN speed.
 #
 #  Build host requirements:
 #    All:    xorriso  (the only hard dep)
@@ -60,7 +60,6 @@ OUTPUT_ISO=""
 SECRETS_FILE=""
 KELA_PASSWORD="Kelasys123!"
 VOLID="Kela Operator"
-OFFLINE_POOL=""
 
 usage() {
   sed -n '/^# =\{5,\}/,/^# =\{5,\}/p' "$0" | sed 's/^# \{0,2\}//'
@@ -74,7 +73,6 @@ while [[ $# -gt 0 ]]; do
     --secrets)  SECRETS_FILE="$2";  shift 2 ;;
     --password) KELA_PASSWORD="$2"; shift 2 ;;
     --volid)    VOLID="$2";         shift 2 ;;
-    --offline-pool) OFFLINE_POOL="$2"; shift 2 ;;
     -h|--help)  usage ;;
     *)          echo "unknown arg: $1" >&2; usage ;;
   esac
@@ -106,18 +104,6 @@ INPUT_ISO="$(abs_path "$INPUT_ISO")"
 OUTPUT_ISO="$(abs_path "$OUTPUT_ISO")"
 SECRETS_FILE="$(abs_path "$SECRETS_FILE")"
 
-# Offline pool: explicit flag wins; otherwise auto-detect ./offline-pool.
-if [[ -z "$OFFLINE_POOL" && -d "$SCRIPT_DIR/offline-pool" ]]; then
-  OFFLINE_POOL="$SCRIPT_DIR/offline-pool"
-fi
-if [[ -n "$OFFLINE_POOL" ]]; then
-  OFFLINE_POOL="$(abs_path "$OFFLINE_POOL")"
-  if [[ ! -f "$OFFLINE_POOL/Packages" ]]; then
-    echo "ERROR: --offline-pool '$OFFLINE_POOL' has no Packages index." >&2
-    echo "       Run ./collect-offline-packages.sh first (or omit for an online install ISO)." >&2
-    exit 1
-  fi
-fi
 
 # ---- 1. validate secrets ---------------------------------------------------
 echo "==> Validating secrets file"
@@ -257,6 +243,10 @@ menuentry "Kela Operator — Auto-install (WILL ERASE DISK)" {
     echo "e.g. fob-12) and the whole install + first-boot setup runs hands-off"
     echo "to completion. Or just press Enter to be prompted after the install."
     echo ""
+    echo "NOTE: no backspace here. If you mistype, keep going — after the"
+    echo "install, the first-boot screen shows the name and gives you 15"
+    echo "seconds to correct it before building."
+    echo ""
     echo -n "Site name: "
     read kela_site
     set gfxpayload=keep
@@ -307,14 +297,6 @@ if [[ -f "$STAGING/boot/grub/loopback.cfg" ]]; then
   XORRISO_CMD+=( -map "$STAGING/boot/grub/loopback.cfg" /boot/grub/loopback.cfg )
 fi
 
-if [[ -n "$OFFLINE_POOL" ]]; then
-  POOL_MB="$(( $(du -sk "$OFFLINE_POOL" | cut -f1) / 1024 ))"
-  echo "==> Embedding offline package pool (${POOL_MB} MB) → /extras (fully offline install)"
-  XORRISO_CMD+=( -map "$OFFLINE_POOL" /extras )
-else
-  echo "==> No offline pool — building an ONLINE-install ISO (needs network during install)"
-fi
-
 XORRISO_CMD+=( -commit )
 
 "${XORRISO_CMD[@]}"
@@ -337,7 +319,8 @@ cat <<EOF
       sync
       diskutil eject /dev/diskN
 
-  Then boot the rugged from USB (F12 → UEFI USB). Installation is
+  Then boot the CF-33 from USB (hold F2 at the Panasonic logo -> Setup ->
+  boot the USB; keyboard docked). Installation is
   unattended; on first boot the operator will be prompted for the site
   name once, and the build finishes automatically.
 ============================================================================

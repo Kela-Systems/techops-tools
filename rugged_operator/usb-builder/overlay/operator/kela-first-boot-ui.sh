@@ -24,6 +24,17 @@ if [[ ! -t 0 ]] || [[ ! -t 1 ]]; then
   fi
 fi
 
+# The terminal we get exec'd into (xterm/gnome-terminal on first boot) can come
+# up with a line-discipline `erase` char that doesn't match the Backspace key
+# the keyboard sends (xterm often sends ^H while the tty expects ^?), which
+# makes Backspace a no-op at the plain `read` prompts below. Reset to a sane
+# state and force erase to DEL. Combined with `read -e` (readline, which binds
+# both ^? and ^H to backward-delete-char), Backspace works either way.
+if [[ -t 0 ]]; then
+  stty sane 2>/dev/null || true
+  stty erase '^?' 2>/dev/null || true
+fi
+
 clear
 cat <<'BANNER'
 ============================================================================
@@ -36,11 +47,22 @@ BANNER
 SITE_NAME=""
 if [[ -r /etc/kela/site ]]; then
   PRESET="$(head -n1 /etc/kela/site | tr -d '[:space:]')"
-  if [[ "$PRESET" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]]; then
+  if [[ "$PRESET" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ && "$PRESET" != *-operator ]]; then
     SITE_NAME="$PRESET"
     echo
     echo "Site name was set at install time: ${SITE_NAME}"
-    echo "Continuing automatically — no input needed."
+    echo "This machine will be built as '${SITE_NAME}-operator'."
+    # GRUB's read has no backspace, so a typo at the boot menu can't be fixed
+    # where it was made. This 15s window is the correction point — without
+    # costing zero-touch: press Enter to re-enter the name, or do nothing and
+    # the build continues hands-off.
+    if read -t 15 -rp "Press Enter within 15s to CHANGE the site name, or wait to continue... " _; then
+      echo "Re-entering site name."
+      SITE_NAME=""
+    else
+      echo
+      echo "Continuing automatically."
+    fi
   else
     echo
     echo "NOTE: ignoring invalid pre-set site name '${PRESET}' — please re-enter."
@@ -63,14 +85,18 @@ the site identifier.
 BANNER
 
   while true; do
-    read -rp "Site name: " SITE_NAME
+    read -erp "Site name: " SITE_NAME
     if [[ ! "$SITE_NAME" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]]; then
       echo "  ! invalid — try again."
       continue
     fi
+    if [[ "$SITE_NAME" == *-operator ]]; then
+      echo "  ! don't include '-operator' — it's appended automatically (hostname becomes <site>-operator)."
+      continue
+    fi
     # The name is permanent (hostname, Tailscale name) — make typos cheap to
     # catch now, not after deployment.
-    read -rp "  Build as '${SITE_NAME}-operator' — correct? [y/N] " CONFIRM
+    read -erp "  Build as '${SITE_NAME}-operator' — correct? [y/N] " CONFIRM
     [[ "$CONFIRM" =~ ^[Yy]$ ]] && break
     echo
   done
@@ -84,4 +110,21 @@ echo
 
 # NOPASSWD sudo is granted by /etc/sudoers.d/kela-first-boot (drop-in is
 # self-removed by the runner on success).
-sudo /usr/local/sbin/kela-first-boot-run "$SITE_NAME"
+#
+# On success the runner reboots, so control never returns here. On failure it
+# prints retry guidance and exits non-zero — but this UI runs in an exec'd
+# gnome-terminal/xterm that closes the instant the script exits, so hold the
+# window open until the operator has read the message (the retry wiring and the
+# log survive regardless; the autostart prompt re-appears on the next boot).
+if ! sudo /usr/local/sbin/kela-first-boot-run "$SITE_NAME"; then
+  echo
+  echo "============================================================================"
+  echo "  SETUP FAILED — this machine is NOT finished."
+  echo "  Details and the exact retry command are in:"
+  echo "      /var/log/kela-first-boot.log"
+  echo "  The setup will retry automatically on the next reboot."
+  echo "============================================================================"
+  echo
+  read -rp "Press Enter to close this window..." _ || true
+  exit 1
+fi

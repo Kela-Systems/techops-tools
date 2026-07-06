@@ -17,6 +17,13 @@ if [[ ! "$SITE_NAME" =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]]; then
   echo "ERROR: SITE_NAME '$SITE_NAME' has illegal characters" >&2
   exit 1
 fi
+# The hostname becomes <site>-operator automatically; a site name that
+# already ends in -operator produced a real "<x>-operator-operator" unit.
+if [[ "$SITE_NAME" == *-operator ]]; then
+  echo "ERROR: SITE_NAME must not end in '-operator' — pass the bare site id" >&2
+  echo "       (e.g. 'fob-12', which becomes hostname 'fob-12-operator')" >&2
+  exit 1
+fi
 
 LOG="/var/log/kela-first-boot.log"
 mkdir -p "$(dirname "$LOG")"
@@ -79,8 +86,6 @@ fi
 # ---- Cleanup so we never re-prompt and never leak the auth key -------------
 rm -f /home/kela/.config/autostart/kela-first-boot.desktop
 rm -f /etc/sudoers.d/kela-first-boot
-# Reclaim the offline package pool (~2 GB) now that everything is installed.
-rm -rf /opt/kela-pool /etc/apt/kela-offline.list
 # Shred the auth key from disk — operator-setup has already used it for `tailscale up`.
 # /etc/kela itself stays: build-info + site live there.
 if command -v shred >/dev/null 2>&1; then
