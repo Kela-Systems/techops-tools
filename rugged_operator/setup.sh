@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-06.8"
+SETUP_VERSION="2026-07-06.9"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -272,26 +272,33 @@ if ! command -v anydesk >/dev/null 2>&1; then
   apt_get install -y anydesk
 fi
 
-# `anydesk --set-password` needs the service running — enable it first and
-# wait for it, instead of relying on the deb postinst having started it.
+# `anydesk --set-password` needs the service running AND initialized — wait
+# for `--get-id` to answer (the ID exists only after first-start init), not
+# merely for systemd to report "active".
 systemctl enable --now anydesk
-for _ in $(seq 1 15); do
-  systemctl is-active --quiet anydesk && break
+for _ in $(seq 1 30); do
+  anydesk --get-id >/dev/null 2>&1 && break
   sleep 1
 done
 
 echo "==> Setting AnyDesk unattended password"
+# ONE line on stdin — the CLI reads a single line, not a passwd-style
+# confirmation pair (the old double-line form failed silently for weeks and
+# only surfaced as a verify WARN). Success is judged by ground truth — a
+# pwd_hash in system.conf — not the exit code, so the retry loop and
+# kela-verify can never disagree about whether this worked.
 ANYDESK_PASS_SET=0
 for _ in 1 2 3; do
-  if echo -e "${ANYDESK_PASS}\n${ANYDESK_PASS}" | anydesk --set-password; then
+  printf '%s\n' "${ANYDESK_PASS}" | anydesk --set-password || true
+  if grep -qi pwd_hash /etc/anydesk/system.conf 2>/dev/null; then
     ANYDESK_PASS_SET=1
     break
   fi
   sleep 2
 done
 if [[ "$ANYDESK_PASS_SET" != "1" ]]; then
-  echo "WARN: anydesk --set-password failed — set it manually:"
-  echo "      echo -e 'PASS\\nPASS' | sudo anydesk --set-password"
+  echo "WARN: unattended password did not take (no pwd_hash in /etc/anydesk/system.conf)."
+  echo "      Set it manually:  printf '%s\\n' 'THEPASSWORD' | sudo anydesk --set-password"
 fi
 
 # ---------- 5. Google Chrome + telemetry suppression ------------------------
@@ -1504,7 +1511,10 @@ echo "--- remote access (a FAIL here means a stranded station) ---"
 req "tailscaled service active"          systemctl is-active --quiet tailscaled
 req "tailscale connected (has IPv4)"     tailscale ip -4
 req "anydesk service active"             systemctl is-active --quiet anydesk
-opt "anydesk unattended password set"    grep -qi pwd_hash /etc/anydesk/system.conf
+# req, not opt: AnyDesk without the unattended password is not a working
+# remote-access fallback — this silently WARNed for weeks while §4's
+# double-line stdin bug made every set-password attempt fail.
+req "anydesk unattended password set"    grep -qi pwd_hash /etc/anydesk/system.conf
 
 echo "--- firewall ---"
 req "ufw active"                         sh -c 'ufw status | grep -q "Status: active"'
