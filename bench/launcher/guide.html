@@ -42,6 +42,7 @@
   .pill.magos { background: #1f2d1f; color: #7ee787; }
   .pill.telt  { background: #14223a; color: #79c0ff; }
   .pill.cam   { background: #2d2418; color: #f0c674; }
+  .pill.spk   { background: #2a1a2e; color: #d2a8ff; }
   .note { border-left: 3px solid var(--accent); background: #121722; padding: 10px 16px;
           border-radius: 0 8px 8px 0; margin: 12px 0; }
   .note.warn { border-left-color: var(--warn); }
@@ -81,8 +82,9 @@
     <a href="#magos">4. Magos Radar &amp; APU</a><br>
     <a href="#teltonika">5. Teltonika OTD500 &amp; RUTM08</a><br>
     <a href="#camera">6. Raythink camera</a><br>
-    <a href="#issues">7. Known issues &amp; fixes</a><br>
-    <a href="#help">8. When to call an engineer</a>
+    <a href="#speaker">7. Provision-ISR speaker</a><br>
+    <a href="#issues">8. Known issues &amp; fixes</a><br>
+    <a href="#help">9. When to call an engineer</a>
   </div>
 
   <!-- 1 -->
@@ -90,7 +92,7 @@
   <ol class="big">
     <li>Double-click <code>Start Bench Tools.bat</code> on the desktop.</li>
     <li>A black window opens and stays open — <b>leave it open all day.</b> Closing it stops every tool.</li>
-    <li>After a few seconds the <b>dashboard</b> opens in the browser with five tool cards.</li>
+    <li>After a few seconds the <b>dashboard</b> opens in the browser with six tool cards.</li>
     <li>Click the card for whatever you're about to plug in. A green
         <span class="dot up"></span> dot means that tool is ready.</li>
   </ol>
@@ -183,7 +185,20 @@
     next number when a camera finishes cleanly — a failed camera keeps its number for the retry.</div>
 
   <!-- 7 -->
-  <h2 id="issues">7. Known issues &amp; quick fixes</h2>
+  <h2 id="speaker">7. Provision-ISR speaker <span class="pill spk">DHCP — no fixed address</span></h2>
+  <p>The speaker gets its address from DHCP, so there's nothing to type: plug it in and the tool
+     <b>finds it by itself</b> (it scans the bench networks — this can take a few seconds longer
+     than the other tools). When the page shows <i>Speaker detected</i> with its address, just
+     click <b>Configure</b>.</p>
+  <p>The tool sets the password, the time server, uploads the announcement audio file, and
+     <b>moves the speaker to <code>192.168.88.70</code> as the last step</b>, then verifies it.</p>
+  <div class="note warn"><b>One speaker at a time.</b> Every speaker ends up on the <b>same</b>
+    final address (<code>192.168.88.70</code>), so finish and unplug one before connecting the next.</div>
+  <div class="note"><b>"Media file missing" on the page?</b> The announcement audio file isn't in
+    place — tell an engineer. The speaker can't be fully configured without it.</div>
+
+  <!-- 8 -->
+  <h2 id="issues">8. Known issues &amp; quick fixes</h2>
 
   <div class="card">
     <h3><span class="dot"></span> A tool card stays grey</h3>
@@ -197,7 +212,8 @@
     <p>Wrong network for that device. Magos units use the <code>192.168.40.x</code> port; Teltonika and
        camera units use the <code>192.168.1.x</code> port. Make sure it's the right cable/port, fully
        seated, and the device has finished booting (give it ~30 seconds). Try once more before asking
-       for help.</p>
+       for help. The <b>speaker</b> is different — it uses DHCP, so it just needs a port whose network
+       hands out addresses; give it up to a minute to get one after plugging in.</p>
   </div>
 
   <div class="card">
@@ -220,11 +236,11 @@
        <i>tab</i> is fine — the tools keep running; reopen the tab from the dashboard.)</p>
   </div>
 
-  <!-- 8 -->
-  <h2 id="help">8. When to call an engineer</h2>
+  <!-- 9 -->
+  <h2 id="help">9. When to call an engineer</h2>
   <ul>
     <li>A tool card never turns green even after restarting <code>Start Bench Tools.bat</code>.</li>
-    <li>The page reports a <b>missing firmware image</b> or missing configuration.</li>
+    <li>The page reports a <b>missing firmware image</b>, <b>missing media file</b>, or missing configuration.</li>
     <li>The same device fails the same step twice after a retry.</li>
     <li>You're unsure which profile / channel / IP a job should use.</li>
   </ul>

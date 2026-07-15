@@ -7,7 +7,7 @@
 # newest 3.10+ interpreter available and rebuild a venv that was made with an
 # older one.
 #
-# All five tools share ONE virtual environment at the bench root (this folder).
+# All the tools share ONE virtual environment at the bench root (this folder).
 
 # Echo the path of the newest available Python >= 3.10, or return 1.
 bench_pick_python() {

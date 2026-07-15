@@ -12,7 +12,7 @@ How to provision devices at the bench. Keep this open on the side screen.
 
 1. Double-click `Start Bench Tools.bat` on the desktop.
 2. A black window opens and stays open — **leave it open all day.** Closing it stops every tool.
-3. After a few seconds the **dashboard** opens in the browser with five tool cards.
+3. After a few seconds the **dashboard** opens in the browser with six tool cards.
 4. Click the card for whatever you're about to plug in. A **green dot** means that tool is ready.
 
 > **First start of the day / after an update** can take a minute while it updates and
@@ -129,7 +129,26 @@ login, and **moves the camera to** `192.168.88.<number>` **as the last step**, t
 
 
 
-## 7. Known issues & quick fixes
+## 7. Provision-ISR speaker  *(DHCP — no fixed address)*
+
+The speaker gets its address from DHCP, so there's nothing to type: plug it in and the tool
+**finds it by itself** (it scans the bench networks — this can take a few seconds longer than the
+other tools). When the page shows *Speaker detected* with its address, just click **Configure**.
+
+The tool sets the password, the time server, uploads the announcement audio file, and **moves the
+speaker to** `192.168.88.70` **as the last step**, then verifies it.
+
+> ⚠️ **One speaker at a time.** Every speaker ends up on the **same** final address
+> (`192.168.88.70`), so finish and unplug one before connecting the next.
+
+> **"Media file missing" on the page?** The announcement audio file isn't in place — tell an
+> engineer. The speaker can't be fully configured without it.
+
+---
+
+
+
+## 8. Known issues & quick fixes
 
 **A tool card stays grey**
 The tool isn't up yet. On the first start of the day it's still installing — wait a minute and it
@@ -139,6 +158,8 @@ turns green. If it never turns green, close the black window and run `Start Benc
 Wrong network for that device. Magos units use the `192.168.40.x` port; Teltonika and camera units
 use the `192.168.1.x` port. Make sure it's the right cable/port, fully seated, and the device has
 finished booting (give it ~30 seconds). Try once more before asking for help.
+The **speaker** is different — it uses DHCP, so it just needs a port whose network hands out
+addresses; give it up to a minute to get one after plugging in.
 
 **Configuration failed (red error)**
 Read the message at the top — it usually says which step failed. Click **Dismiss**, leave the device
@@ -157,10 +178,10 @@ tools keep running; reopen the tab from the dashboard.)
 
 
 
-## 8. When to call an engineer
+## 9. When to call an engineer
 
 - A tool card never turns green even after restarting `Start Bench Tools.bat`.
-- The page reports a **missing firmware image** or missing configuration.
+- The page reports a **missing firmware image**, **missing media file**, or missing configuration.
 - The same device fails the same step twice after a retry.
 - You're unsure which profile / channel / IP a job should use.
 

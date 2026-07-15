@@ -48,8 +48,8 @@ open_dashboard() {
 }
 
 # ── Guard against a double-launch ───────────────────────────────────────────
-# If a bench is already running, a second set would just fail to bind all five
-# ports (errors scrolling past) while the dashboard shows the FIRST instance's
+# If a bench is already running, a second set would just fail to bind all the
+# tool ports (errors scrolling past) while the dashboard shows the FIRST instance's
 # green dots. Detect it and only (re)open the dashboard instead.
 for p in $TOOL_PORTS; do
   if port_in_use "$p"; then

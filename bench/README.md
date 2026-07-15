@@ -23,7 +23,7 @@ double-click differs.
    - **macOS/Linux:** run `./start-bench.sh` from a terminal in this folder
 
    It pulls the latest tools (`git`), sets up the shared environment, launches
-   all five tools, and opens the dashboard in your browser.
+   all the tools, and opens the dashboard in your browser.
 3. On the dashboard, click the tool for whatever you're plugging in. A green dot
    means that tool is up; grey means it's still starting (first run installs
    dependencies — give it a moment) or stopped.
@@ -40,10 +40,11 @@ double-click launcher  →  dashboard  ┌────────────�
                                      │  ● Teltonika OTD500  :8003   192.168.1.x  │
                                      │  ● Teltonika RUTM08  :8004   192.168.1.x  │
                                      │  ● Raythink Camera   :8005   192.168.1.x  │
+                                     │  ● ISR Speaker       :8006   DHCP (scan)  │
                                      └───────────────────────────────────────────┘
 ```
 
-There is a single launcher that starts all five tools together (they run side by
+There is a single launcher that starts all the tools together (they run side by
 side on fixed, non-colliding ports). To stop everything, close the launcher
 window (Windows) or press Ctrl+C in the terminal (macOS/Linux).
 
@@ -68,6 +69,7 @@ window (Windows) or press Ctrl+C in the terminal (macOS/Linux).
 | `otd-config-ui/` | Teltonika **OTD500** | 8003 | one device at a time, factory `192.168.1.1` |
 | `rutm-config-ui/` | Teltonika **RUTM08** | 8004 | one device at a time, factory `192.168.1.1` |
 | `raythink-config-ui/` | Raythink **thermal camera** | 8005 | factory `192.168.1.123`, RPC2 API |
+| `speaker-config-ui/` | Provision-ISR **IP speaker** | 8006 | arrives on **DHCP** — auto-scans `192.168.1/2/88.0/24` |
 
 The ports are fixed and don't collide, so all the tools run side by side under
 the one launcher.
@@ -80,11 +82,12 @@ the one launcher.
   RutOS device client, and the small shared helpers (`load_settings`,
   `make_step_runner`, `tcp_port_open`, the logging context, `format_verification`).
   Every tool installs it editable (`-e ./bench-core[ui]`), which is why the tool
-  folders must stay siblings inside `bench/`. The Raythink camera tool reuses the
-  same bench-UI base but ships its own device client (`raythink_camera.py`, a
-  Dahua-OEM RPC2 JSON client) instead of the Teltonika one — proof the base is
-  protocol-agnostic.
-- **One shared `.venv`** lives at the `bench/` root and is used by all five
+  folders must stay siblings inside `bench/`. The Raythink camera and
+  Provision-ISR speaker tools reuse the same bench-UI base but ship their own
+  device clients (`raythink_camera.py`, a Dahua-OEM RPC2 JSON client, and
+  `speaker_client.py`, a session-cookie CGI client) instead of the Teltonika
+  one — proof the base is protocol-agnostic.
+- **One shared `.venv`** lives at the `bench/` root and is used by all the
   tools. The launchers (`Start Bench Tools.bat` / `start-bench.sh`) create it on
   first run, `git pull` (unless `BENCH_NO_PULL=1`), and re-sync the single
   `requirements.txt` every run (a near-instant no-op once installed). Only the

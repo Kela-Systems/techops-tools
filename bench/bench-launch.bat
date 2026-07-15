@@ -31,7 +31,7 @@ where git >nul 2>nul && for /f "delims=" %%v in ('git rev-parse --short HEAD 2^>
 echo Bench version: %BENCH_VERSION%
 
 REM ── Guard against a double-launch ───────────────────────────────────────────
-REM If a bench is already running, a second set would just fail to bind all five
+REM If a bench is already running, a second set would just fail to bind all the
 REM ports (errors scrolling past) while the dashboard shows the FIRST instance's
 REM green dots. Detect a listening tool port and only (re)open the dashboard.
 set "BENCH_ALREADY="
