@@ -63,12 +63,19 @@ bench/rutm-config-ui/firmware/
 bench/raythink-config-ui/config/raythink.config.json
 bench/raythink-config-ui/ip_state.json
 
+# Provision-ISR speaker tool — real config (copy from the example) + the media
+# file dropped into config/media/ (site-specific audio; keep out of git)
+bench/speaker-config-ui/config/speaker.config.json
+bench/speaker-config-ui/config/media/*
+!bench/speaker-config-ui/config/media/.gitkeep
+
 # Logs
 *.log
 bench/magos-config-ui/logs/
 bench/otd-config-ui/logs/
 bench/rutm-config-ui/logs/
 bench/raythink-config-ui/logs/
+bench/speaker-config-ui/logs/
 
 # Rugged operator USB builder — real secrets (live Tailscale auth key; commit
 # only secrets.env.example), ISOs (multi-GB, and the built ISO embeds the auth

@@ -11,8 +11,9 @@
 #    Teltonika OTD500 -> http://127.0.0.1:8003   (adapter on 192.168.1.x)
 #    Teltonika RUTM08 -> http://127.0.0.1:8004   (adapter on 192.168.1.x)
 #    Raythink Camera  -> http://127.0.0.1:8005   (adapter on 192.168.1.x)
+#    ISR Speaker      -> http://127.0.0.1:8006   (DHCP — scans 192.168.1/2/88.x)
 #
-#  All five tools share ONE .venv in this folder. Every launch pulls the latest
+#  All the tools share ONE .venv in this folder. Every launch pulls the latest
 #  tools (git) and installs requirements (needs internet that once, then it's a
 #  near-instant no-op). Set BENCH_NO_PULL=1 to freeze the on-disk version.
 #
@@ -27,7 +28,7 @@ ROOT="$(pwd)"
 # The tools never auto-open their own browser tab (that's opt-in via
 # BENCH_OPEN_BROWSER=1); this launcher opens the one dashboard itself below.
 
-TOOL_PORTS="8001 8002 8003 8004 8005"
+TOOL_PORTS="8001 8002 8003 8004 8005 8006"
 DASH="$ROOT/launcher/index.html"
 
 # True if something is already listening on 127.0.0.1:$1 (bash /dev/tcp — no nc
@@ -88,12 +89,13 @@ start "Magos APU"        "magos-config-ui"    "apu_app.py"
 start "Teltonika OTD500" "otd-config-ui"      "otd_app.py"
 start "Teltonika RUTM08" "rutm-config-ui"     "rutm_app.py"
 start "Raythink Camera"  "raythink-config-ui" "raythink_app.py"
+start "ISR Speaker"      "speaker-config-ui"  "speaker_app.py"
 
 # Open the dashboard immediately — it self-polls every few seconds, so any tool
 # still doing its ~5s cold start shows a grey dot that flips green on its own.
 open_dashboard
 
 echo
-echo "All five tools are running (bench version: ${BENCH_VERSION:-unknown}). Dashboard: launcher/index.html"
+echo "All bench tools are running (bench version: ${BENCH_VERSION:-unknown}). Dashboard: launcher/index.html"
 echo "Leave this window open. Press Ctrl+C to stop everything."
 wait
