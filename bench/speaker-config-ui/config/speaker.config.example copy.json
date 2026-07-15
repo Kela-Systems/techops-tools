@@ -1,0 +1,35 @@
+{
+  "_comment": "Copy to speaker.config.json (gitignored) and adjust as needed. Shared settings applied to every Provision-ISR IP speaker (one speaker at a time — no per-device inputs).",
+
+  "username": "admin",
+  "scheme": "http",
+
+  "_comment_detection": "The speaker arrives on DHCP, so there is no fixed factory IP: the tool sweeps these subnets for a host answering HTTP whose landing page is the speaker's (<title>IP Speaker</title>). http_port is the device's web port (80 unless changed). For a dev port-forward, run the CLI with --host 127.0.0.1:8080 instead of scanning.",
+  "scan_subnets": ["192.168.1.0/24", "192.168.2.0/24", "192.168.88.0/24"],
+  "http_port": 80,
+
+  "_comment_pw": "Factory login is admin/123456; the tool changes it to new_password. A re-run of an already-configured speaker falls back to new_password automatically.",
+  "initial_password": "123456",
+  "new_password": "Kelasys123!",
+
+  "_comment_ntp": "timezone is the device's own encoding: 720 + the UTC offset in minutes (840 = GMT+2 Israel standard, 900 = GMT+3). interval is the NTP poll interval the web UI uses (minutes).",
+  "ntp": {
+    "server": "192.168.88.10",
+    "timezone": 840,
+    "interval": 10
+  },
+
+  "_comment_media": "The media file (.mp3/.wav) uploaded to user slot media_slot (0-9). Relative paths resolve against this config/ folder — drop the file into config/media/. The device has only ~4 MB free for user files.",
+  "media_file": "media/announcement.mp3",
+  "media_slot": 0,
+
+  "_comment_static": "The speaker moves to this static IP as the LAST step (the connection drops; the tool reconnects on the new address and renews the bench PC's DHCP lease). ip_move_timeout: seconds to wait for it to answer there.",
+  "static": {
+    "ip": "192.168.88.70",
+    "netmask": "255.255.255.0",
+    "gateway": "192.168.88.1",
+    "dns1": "192.168.88.1",
+    "dns2": ""
+  },
+  "ip_move_timeout": 120
+}

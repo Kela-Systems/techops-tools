@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Provision-ISR Speaker Configurator</title>
+<link rel="icon" type="image/png" href="/shared/favicon.png">
+<link rel="stylesheet" href="/shared/bench.css">
+</head>
+<body>
+<div class="container">
+  <header style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;">
+    <div class="brand">
+      <img class="brand-logo" src="/shared/favicon.png" alt="Kela Bench">
+      <h1>Provision-ISR Speaker Configurator<span class="sub">Connect a speaker (DHCP) &rarr; detected &rarr; Configure &rarr; next.</span></h1>
+    </div>
+    <span id="conn" class="conn">connecting…</span>
+  </header>
+
+  <div id="status" class="status s-waiting" aria-live="polite">
+    <span id="statusIcon" class="dot"></span>
+    <div class="txt">
+      <div class="phase" id="phaseText">Waiting</div>
+      <div class="msg" id="msgText">…</div>
+    </div>
+    <button id="dismissBtn" class="btn-outline hidden" onclick="dismiss()">Dismiss</button>
+  </div>
+
+  <!-- DEVICE FORM (visible while a speaker is detected and idle) -->
+  <div class="card form-card" id="formCard" style="display:none;">
+    <h3>New speaker</h3>
+    <div class="form-row">
+      <div class="field">
+        <label>Detected at</label>
+        <div class="preview mono" id="detectedAt">—</div>
+      </div>
+      <div class="field field-actions">
+        <label aria-hidden="true">&nbsp;</label>
+        <div class="btn-row">
+          <button id="goBtn" class="btn-primary" onclick="submitConfigure()">Configure</button>
+        </div>
+      </div>
+    </div>
+    <div class="preview" id="namePreview"></div>
+  </div>
+
+  <!-- LIVE PROGRESS (visible while configuring) -->
+  <div class="card" id="liveCard" style="display:none;">
+    <h3>Progress log</h3>
+    <pre id="liveLog" class="log" style="margin-top:0;max-height:300px;"></pre>
+  </div>
+
+  <!-- LAST RESULT -->
+  <div class="card" id="resultCard" style="display:none;">
+    <h3>Last speaker</h3>
+    <div class="identity" id="identity"></div>
+    <table class="verify hidden" id="verifyTable">
+      <thead><tr><th>check</th><th>result</th></tr></thead>
+      <tbody id="verifyBody"></tbody>
+    </table>
+    <pre id="lastLog" class="log hidden"></pre>
+  </div>
+
+  <!-- SESSION HISTORY -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <h3 style="margin:0;">This session</h3>
+      <button class="btn-outline" onclick="reloadAll()">Reload config</button>
+    </div>
+    <div style="margin-bottom:8px;">
+      <span class="pill">done <b id="cDone">0</b></span>
+      <span class="pill">failed <b id="cErr">0</b></span>
+    </div>
+    <table>
+      <thead><tr><th>Status</th><th>Speaker</th><th>IP</th><th>MAC</th><th>Serial</th><th>FW</th><th>Took</th><th>Time</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="8" class="muted">No speakers configured yet.</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- SETTINGS SUMMARY -->
+  <div class="card">
+    <h3>Shared settings (speaker.config.json)</h3>
+    <div id="settingsSummary" class="settings-summary"><span class="muted">No config loaded.</span></div>
+    <p class="muted" style="margin-top:10px;">Per-speaker logs are saved under <span class="mono">speaker-config-ui/logs/</span> (one JSON per speaker + a rolling <span class="mono">speaker-config.log</span>).</p>
+  </div>
+</div>
+
+<script src="/shared/bench.js"></script>
+<script>
+let lastPhase = null;
+let curState = {};
+
+async function reloadAll(){ await postJSON('/api/reload'); }
+async function dismiss(){ await postJSON('/api/dismiss'); }
+
+async function submitConfigure(){
+  $('goBtn').disabled = true;
+  await postJSON('/api/configure', {}, {buttons: ['goBtn']});
+}
+
+function render(s){
+  curState = s;
+  const st = $('status');
+  st.className = 'status s-' + s.phase;
+  const labels = { waiting:'Waiting', detected:'Speaker detected',
+    configuring:'Configuring…', configured:'Configured ✓', error:'Error' };
+  let phaseLabel = labels[s.phase] || s.phase;
+  if (s.phase === 'configuring' && s.run_seconds != null)
+    phaseLabel = `Configuring… ${fmtDur(s.run_seconds)}`;
+  $('phaseText').textContent = phaseLabel;
+  $('msgText').textContent = s.message || '';
+
+  const icon = $('statusIcon');
+  icon.className = s.phase === 'configuring' ? 'spin'
+    : 'dot' + ((s.phase === 'waiting' || s.phase === 'detected') ? ' pulse' : '');
+
+  $('dismissBtn').classList.toggle('hidden', s.phase !== 'error' && s.phase !== 'configured');
+
+  // device form: shown while detected and idle
+  const showForm = s.phase === 'detected' && !s.busy;
+  const fc = $('formCard');
+  if (showForm){
+    fc.style.display = '';
+    $('detectedAt').textContent = (s.active_host || '—')
+      + (s.active_mac ? `  (MAC ${s.active_mac})` : '');
+    $('namePreview').innerHTML = `Will set the password, NTP <b>${esc(s.ntp_server||'—')}</b>, `
+      + `upload <b>${esc(s.media_file||'—')}</b>, and move the speaker to `
+      + `<b class="mono">${esc(s.target_ip||'—')}</b>.`
+      + (s.media_found ? '' : ' <b style="color:#f85149;">Media file missing — fix the config first.</b>');
+    $('goBtn').disabled = false;
+  } else {
+    fc.style.display = 'none';
+  }
+
+  renderLiveLog(s);
+
+  if (s.phase === 'detected' && lastPhase !== 'detected')
+    st.animate([{transform:'scale(1)'},{transform:'scale(1.03)'},{transform:'scale(1)'}],{duration:450,easing:'ease-out'});
+  document.title = (s.phase === 'detected' ? '● ' : '') + 'Provision-ISR Speaker Configurator';
+  lastPhase = s.phase;
+
+  // session counts + history
+  const c = s.counts || {done:0,error:0};
+  $('cDone').textContent = c.done; $('cErr').textContent = c.error;
+  const body = $('histBody');
+  const rows = s.history || [];
+  if (!rows.length){
+    body.innerHTML = '<tr><td colspan="8" class="muted">No speakers configured yet.</td></tr>';
+  } else {
+    const badge = (st)=> st==='ok' ? '<span class="badge badge-ok">DONE</span>'
+      : '<span class="badge badge-err">FAILED</span>';
+    body.innerHTML = rows.map(r=>`<tr>
+      <td>${badge(r.status)}</td><td>${esc(r.hostname||'')}</td>
+      <td class="mono">${esc(r.ip||'—')}</td>
+      <td class="mono">${esc(r.mac||'—')}</td>
+      <td class="mono">${esc(r.serial||'—')}</td><td>${esc(r.firmware||'—')}</td>
+      <td>${r.duration_s!=null?fmtDur(r.duration_s):'—'}</td>
+      <td class="muted">${esc(r.time||'')}</td></tr>`).join('');
+  }
+
+  // last result
+  const lr = s.last_result;
+  if (lr){
+    $('resultCard').style.display = '';
+    $('identity').innerHTML = `
+      <span>speaker <b>${esc(lr.hostname||'—')}</b></span>
+      <span>IP <b class="mono">${esc(lr.ip||'—')}</b></span>
+      <span>MAC <b class="mono">${esc(lr.mac||'—')}</b></span>
+      <span>serial <b class="mono">${esc(lr.serial||'—')}</b></span>
+      <span>fw <b class="mono">${esc(lr.firmware||'—')}</b></span>` +
+      (lr.duration_s != null ? `<span>took <b>${fmtDur(lr.duration_s)}</b></span>` : '');
+    renderVerifyTable(lr.verification, 'verifyTable', 'verifyBody');
+    const lg = $('lastLog');
+    let txt = lr.log || '';
+    if (lr.error) txt += '\nERROR: ' + lr.error;
+    if (txt.trim()){ lg.textContent = txt.trim(); lg.classList.remove('hidden'); } else lg.classList.add('hidden');
+  } else { $('resultCard').style.display = 'none'; }
+
+  // settings summary
+  const cfg = s.config || {};
+  if (Object.keys(cfg).length){
+    $('settingsSummary').innerHTML = `
+      <span>detection <b>DHCP scan: ${esc((s.scan_subnets||[]).join(', ')||'—')}</b></span>
+      <span>static IP <b class="mono">${esc(s.target_ip||'—')}</b></span>
+      <span>gateway <b>${esc(s.gateway||'—')}</b></span>
+      <span>netmask <b>${esc(s.netmask||'—')}</b></span>
+      <span>NTP <b>${esc(s.ntp_server||'—')}</b></span>
+      <span>password <b>${esc(cfg.new_password||'(unset)')}</b></span>
+      <span>media <b>${esc(s.media_file||'—')}</b></span>`;
+  }
+}
+connectBenchWS(render);
+</script>
+</body>
+</html>
