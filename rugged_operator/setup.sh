@@ -26,7 +26,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: setup failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-07-06.9"
+SETUP_VERSION="2026-07-19.1"
 
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
@@ -285,19 +285,26 @@ echo "==> Setting AnyDesk unattended password"
 # ONE line on stdin — the CLI reads a single line, not a passwd-style
 # confirmation pair (the old double-line form failed silently for weeks and
 # only surfaced as a verify WARN). Success is judged by ground truth — a
-# pwd_hash in system.conf — not the exit code, so the retry loop and
+# stored hash in system.conf — not the exit code, so the retry loop and
 # kela-verify can never disagree about whether this worked.
+# Key name is version-dependent: AnyDesk 7 wrote ad.anynet.pwd_hash, AnyDesk 8
+# writes ad.security.permission_profiles._unattended_access.pwd — match both
+# (the 8.x-only grep for 'pwd_hash' kept stations in a first-boot retry loop
+# even though the password had actually been set).
+anydesk_pass_stored() {
+  grep -qiE '(pwd_hash|_unattended_access\.pwd)=[0-9a-f]' /etc/anydesk/system.conf 2>/dev/null
+}
 ANYDESK_PASS_SET=0
 for _ in 1 2 3; do
   printf '%s\n' "${ANYDESK_PASS}" | anydesk --set-password || true
-  if grep -qi pwd_hash /etc/anydesk/system.conf 2>/dev/null; then
+  if anydesk_pass_stored; then
     ANYDESK_PASS_SET=1
     break
   fi
   sleep 2
 done
 if [[ "$ANYDESK_PASS_SET" != "1" ]]; then
-  echo "WARN: unattended password did not take (no pwd_hash in /etc/anydesk/system.conf)."
+  echo "WARN: unattended password did not take (no stored hash in /etc/anydesk/system.conf)."
   echo "      Set it manually:  printf '%s\\n' 'THEPASSWORD' | sudo anydesk --set-password"
 fi
 
@@ -1514,7 +1521,11 @@ req "anydesk service active"             systemctl is-active --quiet anydesk
 # req, not opt: AnyDesk without the unattended password is not a working
 # remote-access fallback — this silently WARNed for weeks while §4's
 # double-line stdin bug made every set-password attempt fail.
-req "anydesk unattended password set"    grep -qi pwd_hash /etc/anydesk/system.conf
+# Key name is version-dependent (AnyDesk 7: ad.anynet.pwd_hash; AnyDesk 8:
+# ad.security.permission_profiles._unattended_access.pwd) — match both, or a
+# correctly-built AnyDesk 8 station FAILs this check forever and the first-boot
+# gate never finalizes (install loop on every reboot).
+req "anydesk unattended password set"    grep -qiE '(pwd_hash|_unattended_access\.pwd)=[0-9a-f]' /etc/anydesk/system.conf
 
 echo "--- firewall ---"
 req "ufw active"                         sh -c 'ufw status | grep -q "Status: active"'
@@ -1552,6 +1563,26 @@ req "kiosk next-view script present"     test -x /usr/local/bin/kela-kiosk-next-
 req "xdotool installed (A2 injection)"   test -x /usr/bin/xdotool
 req "kiosk keybinding dconf present"     test -f /etc/dconf/db/local.d/10-kela-kiosk
 req "A2 next-view binding present"       grep -q "kela-next-tab" /etc/dconf/db/local.d/10-kela-kiosk
+# The remap must be ACTIVE on the device, not just present as a file on disk:
+# the .hwdb can exist while the compiled hwdb.bin predates it or the udev
+# trigger never re-processed the device — the bezel buttons then sit on their
+# firmware defaults (A1=KEY_BATTERY, A2=KEY_SUSPEND) and are silently dead.
+# udev stores the matched KEYBOARD_KEY_* properties in its db at device
+# processing time (boot coldplug or trigger), so this asserts the whole
+# hwdb-update -> trigger -> keymap chain, and re-verifies on every boot's
+# kela-verify run.
+kela_btn_remap_active() {
+  local ev
+  ev="$(awk -F'"' '/^N: Name="Panasonic Laptop Support"/{f=1} f && /^H: Handlers=/{match($0, /event[0-9]+/); print substr($0, RSTART, RLENGTH); exit}' /proc/bus/input/devices)"
+  [ -n "$ev" ] || return 1
+  udevadm info "/dev/input/$ev" 2>/dev/null | grep -q '^E: KEYBOARD_KEY_09=f2' \
+    && udevadm info "/dev/input/$ev" 2>/dev/null | grep -q '^E: KEYBOARD_KEY_0a=prog2'
+}
+if grep -q 'Name="Panasonic Laptop Support"' /proc/bus/input/devices 2>/dev/null; then
+  req "A1/A2 bezel remap active on device" kela_btn_remap_active
+else
+  opt "A1/A2 bezel remap active (no Panasonic button device found)" false
+fi
 req "kiosk launcher sources station.conf" grep -q 'station.conf' /usr/local/bin/kela-kiosk
 req "Ctrl+0/4..9 tab-jumps blocked"      grep -q "kela-noop-c9" /etc/dconf/db/local.d/10-kela-kiosk
 req "Ctrl+Shift+Q (Chrome quit) blocked" grep -q "kela-noop-csq" /etc/dconf/db/local.d/10-kela-kiosk

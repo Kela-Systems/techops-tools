@@ -2,7 +2,7 @@
 
 # crop_raster.sh - Crop orthophoto and DTM to a square region around a center point
 #
-# Usage: ./crop_raster.sh [-i] [-c <lat,lon>] [-r <radius>] [-o <output_dir>] [--site <name>] [--upload]
+# Usage: ./crop_raster.sh [-i] [-c <lat,lon>] [-r <radius>] [-o <output_dir>] [--site <name>] [--upload] [--tar]
 #
 # Options:
 #   -i, --interactive  Interactive mode (prompt for coordinates and radius)
@@ -11,6 +11,7 @@
 #   -o, --output       Output directory (default: tiff_output)
 #   --site <name>      Create a site folder from template and move outputs there
 #   --upload           Upload site folder to S3 (requires --site)
+#   --tar              Create a .tar.gz archive of the site folder (requires --site)
 #   -h, --help         Show this help message
 
 set -e
@@ -31,7 +32,7 @@ SITE_TEMPLATE="${SITE_TEMPLATE:-$GIS_DATA_DIR/site-template}"
 AWS_PROFILE="${AWS_PROFILE:-MapEditor-781540302536}"
 
 usage() {
-    echo "Usage: $0 [-i] [-c <lat,lon>] [-r <radius>] [-o <output_dir>] [--site <name>] [--upload]"
+    echo "Usage: $0 [-i] [-c <lat,lon>] [-r <radius>] [-o <output_dir>] [--site <name>] [--upload] [--tar]"
     echo ""
     echo "Crop orthophoto and DTM to a square region around a center point."
     echo ""
@@ -42,6 +43,7 @@ usage() {
     echo "  -o, --output       Output directory (default: tiff_output)"
     echo "  --site <name>      Create a site folder from template and move outputs there"
     echo "  --upload           Upload site folder to S3 (requires --site)"
+    echo "  --tar              Create a .tar.gz archive of the site folder (requires --site)"
     echo "  -h, --help         Show this help message"
     echo ""
     echo "Examples:"
@@ -49,6 +51,7 @@ usage() {
     echo "  $0 -c 32.869847,35.698983 -r 1000"
     echo "  $0 -c \"32.869847, 35.698983\" -r 1000"
     echo "  $0 -i --site my-site --upload"
+    echo "  $0 -c 32.869847,35.698983 -r 1000 --site my-site --tar"
     exit 1
 }
 
@@ -124,6 +127,7 @@ crop_raster() {
 # Parse command line arguments
 INTERACTIVE=false
 UPLOAD=false
+TARBALL=false
 SITE_NAME=""
 
 while [[ $# -gt 0 ]]; do
@@ -158,6 +162,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --upload)
             UPLOAD=true
+            shift
+            ;;
+        --tar)
+            TARBALL=true
             shift
             ;;
         -h|--help)
@@ -210,6 +218,12 @@ fi
 # --upload requires --site
 if [[ "$UPLOAD" == true && -z "$SITE_NAME" ]]; then
     echo "Error: --upload requires --site"
+    exit 1
+fi
+
+# --tar requires --site
+if [[ "$TARBALL" == true && -z "$SITE_NAME" ]]; then
+    echo "Error: --tar requires --site"
     exit 1
 fi
 
@@ -293,6 +307,19 @@ if [[ -n "$SITE_NAME" ]]; then
     else
         echo "WARNING: DTM was not cropped, skipping move"
     fi
+fi
+
+# Create .tar.gz archive of the site folder
+if [[ "$TARBALL" == true ]]; then
+    TARBALL_PATH="$GIS_DATA_DIR/$SITE_NAME.tar.gz"
+
+    echo ""
+    echo "========================================"
+    echo "Creating archive"
+    echo "========================================"
+
+    tar -czf "$TARBALL_PATH" --exclude ".DS_Store" -C "$SITE_DIR" .
+    echo "Archive created: $TARBALL_PATH"
 fi
 
 # Upload to S3
