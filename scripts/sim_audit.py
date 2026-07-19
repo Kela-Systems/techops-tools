@@ -13,6 +13,9 @@ Usage:
   python3 sim_audit.py --no-rms-cmd   # skip RMS command-channel enrichment
   python3 sim_audit.py --no-ssh       # skip SSH fallback enrichment
   python3 sim_audit.py --no-html      # skip the interactive HTML report
+  python3 sim_audit.py --no-droam-usage             # skip per-SIM usage detail calls
+  python3 sim_audit.py --devices otd-kela-fob-05    # on-demand: scope to matching devices
+  python3 sim_audit.py --iccids 8935201...,8935... # on-demand: scope by ICCID
 
 Enrichment surfaces standby SIM slots RMS doesn't report as active and pairs each
 device to its Tailscale node. Two paths, best-effort:
@@ -137,6 +140,58 @@ def fetch_rms_rate_limit() -> dict | None:
     return info
 
 
+LICENSE_EXPIRING_DAYS = 30  # window (days) for the "expiring soon" flag
+
+
+def _parse_rms_dt(value: str | None) -> datetime | None:
+    """Parse an RMS timestamp ('YYYY-MM-DD HH:MM:SS') to a datetime, or None."""
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def extract_license(dev: dict) -> dict:
+    """
+    Pull the RMS Management-credit (license) info from a raw device object and
+    derive status signals. All fields come from the existing /devices response,
+    so this adds no API calls.
+    """
+    activated = bool(dev.get("credit_activated"))
+    enabled = bool(dev.get("credit_enabled"))
+    expire_raw = dev.get("credit_expire_date")
+    expire_dt = _parse_rms_dt(expire_raw)
+
+    days_left = None
+    expired = False
+    expiring_soon = False
+    if expire_dt is not None:
+        days_left = (expire_dt - datetime.now()).days
+        expired = days_left < 0
+        expiring_soon = 0 <= days_left <= LICENSE_EXPIRING_DAYS
+
+    return {
+        "pack": dev.get("management_credit_type_name"),
+        "type": dev.get("management_credit_type"),
+        "type_id": dev.get("management_credit_type_id"),
+        "data_pack": dev.get("data_credit_type_name"),
+        "activated": activated,
+        "enabled": enabled,
+        "active": activated and enabled,
+        "auto_extend": bool(dev.get("auto_extend_credit")),
+        "expire_date": expire_raw,
+        "days_left": days_left,
+        "expired": expired,
+        "expiring_soon": expiring_soon,
+        "monitoring_enabled": bool(dev.get("monitoring_enabled")),
+        "extended_warranty": dev.get("extended_warranty"),
+    }
+
+
 def extract_device_record(dev: dict) -> dict:
     """Normalise a raw RMS device into a clean record with all relevant fields."""
 
@@ -223,6 +278,7 @@ def extract_device_record(dev: dict) -> dict:
         "is_esim": dev.get("esim", False),
         "tags": [t.get("name") for t in (dev.get("tags") or [])],
         "tailscale": dev.get("_tailscale") or {"name": None, "ip": None, "online": False, "match": "none"},
+        "license": extract_license(dev),
         "sims": sims,
     }
 
@@ -298,8 +354,14 @@ def _strip_html(text: str) -> str:
     return _re.sub(r"<[^>]+>", "", text).strip()
 
 
-def fetch_droam_sims() -> list[dict]:
-    """Fetch all SIM records from Droam via its internal AJAX table endpoint."""
+def fetch_droam_sims(with_usage: bool = True,
+                     usage_iccids: set[str] | None = None) -> list[dict]:
+    """Fetch all SIM records from Droam via its internal AJAX table endpoint.
+
+    When with_usage is set, also enriches each SIM with authoritative used/limit
+    from the per-SIM detail endpoint (one extra request per SIM). usage_iccids, if
+    given, scopes that per-SIM fetch to just those ICCIDs (on-demand runs).
+    """
     if not DROAM_URL:
         raise ValueError("DROAM_URL not set in .env")
     if not DROAM_USERNAME or not DROAM_PASSWORD:
@@ -348,7 +410,202 @@ def fetch_droam_sims() -> list[dict]:
         page += 1
 
     print(f"  → {len(sims)} Droam SIMs total\n", flush=True)
+
+    if with_usage and sims:
+        enrich_droam_usage(s, sims, only_iccids=usage_iccids)
+
     return sims
+
+
+def iccid_canonical(iccid: str | None) -> str:
+    """
+    Canonical ICCID key for matching across sources.
+
+    RMS/UCI and Droam can report the same SIM with different lengths (18/19/20
+    digits) and an optional trailing Luhn check digit or `F` padding. We reduce
+    to digits-only; callers also compare on the 18-digit prefix to bridge those
+    length differences. Returns '' for empty/garbage input.
+    """
+    digits = _re.sub(r"\D", "", iccid or "")
+    return digits
+
+
+def _iccid_keys(*iccids: str | None) -> set[str]:
+    """Canonical match keys for one or more ICCIDs: full digits + 18-digit prefix."""
+    keys: set[str] = set()
+    for v in iccids:
+        c = iccid_canonical(v)
+        if c:
+            keys.add(c)
+            if len(c) >= 18:
+                keys.add(c[:18])
+    return keys
+
+
+def filter_scope_devices(devices: list[dict], names: str, iccids: str) -> list[dict]:
+    """
+    Return the subset of raw RMS devices matching --devices (name substrings) or
+    --iccids (active-slot ICCIDs). Empty filters → all devices unchanged.
+    """
+    name_terms = [t.strip().lower() for t in (names or "").split(",") if t.strip()]
+    want_iccids: set[str] = set()
+    for t in (iccids or "").split(","):
+        want_iccids |= _iccid_keys(t)
+    if not name_terms and not want_iccids:
+        return devices
+
+    out = []
+    for d in devices:
+        nm = (d.get("name") or "").lower()
+        name_hit = any(term in nm for term in name_terms)
+        icc_hit = bool(want_iccids & _iccid_keys(d.get("iccid"), d.get("iccid_2")))
+        if name_hit or icc_hit:
+            out.append(d)
+    return out
+
+
+def _to_float(text: str | None) -> float | None:
+    """Parse a Droam numeric cell (e.g. '1,234.50', '-', '') to float or None."""
+    if text is None:
+        return None
+    t = str(text).strip().replace(",", "")
+    if t in ("", "-", "—", "N/A", "n/a"):
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        return None
+
+
+def parse_plan_limit_mb(plan_text: str) -> float | None:
+    """
+    Best-effort extraction of a data cap (in MB) from a Droam plan name,
+    e.g. 'Global 10GB Monthly' -> 10240, '500 MB' -> 500. None if not found.
+    """
+    if not plan_text:
+        return None
+    m = _re.search(r"(\d+(?:\.\d+)?)\s*(TB|GB|MB)\b", plan_text, _re.IGNORECASE)
+    if not m:
+        return None
+    value = float(m.group(1))
+    unit = m.group(2).upper()
+    return value * {"MB": 1, "GB": 1024, "TB": 1024 * 1024}[unit]
+
+
+_DROAM_USAGE_PATH = "/data/sim_card/last_usages"
+
+
+def _droam_num(text: str | None) -> float | None:
+    """
+    Parse a Droam-formatted number to float. Droam uses space (or NBSP) thousands
+    separators and a '.' decimal, e.g. '299 500.00' -> 299500.0, '1 048 576' -> 1048576.0.
+    """
+    if text is None:
+        return None
+    cleaned = str(text).replace("\u00a0", "").replace(" ", "").replace(",", "").strip()
+    cleaned = _re.sub(r"[^\d.]", "", cleaned)
+    if not cleaned or cleaned == ".":
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def parse_droam_usage_html(html: str) -> dict:
+    """
+    Parse the `html` from POST /data/sim_card/last_usages/{id} into usage numbers.
+
+    Returns {used_mb, limit_mb, daily_mb, day_labels}. Fields are None/[] when absent.
+    'This month' -> used, 'Init balance' -> plan data cap (limit).
+    """
+    html = html or ""
+
+    def after_label(label: str) -> float | None:
+        m = _re.search(_re.escape(label) + r"(.*?)MB", html, _re.S)
+        if not m:
+            return None
+        # last number-ish run before the MB unit
+        nums = _re.findall(r"[\d\u00a0 ,.]+", m.group(1))
+        return _droam_num(nums[-1]) if nums else None
+
+    used_mb = after_label("This month")
+    limit_mb = after_label("Init balance")
+
+    daily_mb: list[float] = []
+    m = _re.search(r"barData\s*=\s*\[([^\]]*)\]", html)
+    if m:
+        daily_mb = [float(x) for x in _re.findall(r"-?\d+(?:\.\d+)?", m.group(1))]
+
+    day_labels: list[str] = []
+    m = _re.search(r"days\s*=\s*\[([^\]]*)\]", html)
+    if m:
+        day_labels = _re.findall(r'"([^"]*)"', m.group(1))
+
+    return {"used_mb": used_mb, "limit_mb": limit_mb,
+            "daily_mb": daily_mb, "day_labels": day_labels}
+
+
+def fetch_droam_usage_one(session: requests.Session, sim_id, retries: int = 2) -> dict | None:
+    """Fetch + parse per-SIM usage detail. None on failure (after retries).
+
+    Retries with a short backoff to ride out transient throttling — this runs
+    per-SIM across the whole fleet, so a small failure rate compounds otherwise.
+    """
+    base = DROAM_URL.rstrip("/")
+    url = f"{base}{_DROAM_USAGE_PATH}/{sim_id}"
+    for attempt in range(retries + 1):
+        try:
+            r = session.post(url, headers=_droam_ajax_headers(session), timeout=30)
+            if r.status_code == 200:
+                body = r.json()
+                if body.get("ack") == "success":
+                    return parse_droam_usage_html(body.get("html", ""))
+        except (requests.RequestException, ValueError):
+            pass
+        if attempt < retries:
+            _time.sleep(0.75 * (attempt + 1))
+    return None
+
+
+def enrich_droam_usage(session: requests.Session, raw_sims: list[dict],
+                       max_workers: int = 6, only_iccids: set[str] | None = None) -> int:
+    """
+    Attach `_usage` (authoritative used/limit) to each raw Droam SIM via the
+    per-SIM detail endpoint. Mutates in place; returns how many were enriched.
+    Parallel but modest, since Droam is session-sensitive.
+
+    When only_iccids is given (canonical keys incl. 18-digit prefixes), only SIMs
+    whose ICCID matches are fetched — used to scope on-demand runs to a few devices.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    targets = []
+    for r in raw_sims:
+        if not r.get("id"):
+            continue
+        if only_iccids is not None:
+            if not (_iccid_keys(normalise_droam_sim(r).get("iccid")) & only_iccids):
+                continue
+        targets.append(r)
+    scope_note = f" scoped to {len(targets)} of {len(raw_sims)}" if only_iccids is not None else ""
+    print(f"Fetching per-SIM usage from Droam ({len(targets)} SIMs{scope_note})...", flush=True)
+    done = 0
+
+    def _one(raw: dict):
+        return raw, fetch_droam_usage_one(session, raw["id"])
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_one, r) for r in targets]
+        for i, fut in enumerate(as_completed(futures), 1):
+            raw, usage = fut.result()
+            if usage:
+                raw["_usage"] = usage
+                done += 1
+            if i % 100 == 0:
+                print(f"  ...{i}/{len(targets)}", flush=True)
+    print(f"  → usage enriched for {done}/{len(targets)} SIMs\n", flush=True)
+    return done
 
 
 def normalise_droam_sim(raw: dict) -> dict:
@@ -358,24 +615,82 @@ def normalise_droam_sim(raw: dict) -> dict:
         val = raw.get(field) or ""
         return _strip_html(str(val)) if "<" in str(val) else str(val).strip()
 
-    # status badge text: "Active", "Inactive", "Suspended", etc.
-    status_text = plain("status")
-    if "active" in status_text.lower():
-        status_text = "Active"
-    elif "inactive" in status_text.lower():
+    # Droam renders these as icon/badge spans where the label lives in a
+    # data-tooltip-text attribute or a bg-*/text-* CSS class rather than as text,
+    # so strip-tags alone yields ''. Parse the attribute first, then fall back.
+    def _badge(field: str) -> str:
+        html = str(raw.get(field) or "")
+        m = _re.search(r'data-tooltip-text="([^"]+)"', html)
+        if m:
+            return m.group(1).strip()
+        return _strip_html(html)
+
+    # status: "Active", "Inactive", "Suspended", etc.
+    status_text = _badge("status")
+    status_raw = str(raw.get("status") or "")
+    if not status_text:
+        if "bg-active" in status_raw:
+            status_text = "Active"
+        elif "bg-inactive" in status_raw:
+            status_text = "Inactive"
+        elif "suspend" in status_raw.lower():
+            status_text = "Suspended"
+    low = status_text.lower()
+    if "inactive" in low:
         status_text = "Inactive"
+    elif "active" in low:
+        status_text = "Active"
 
     # in_session badge: "Online" / "Offline"
-    session_text = plain("in_session")
+    session_text = _badge("in_session")
+    if not session_text:
+        sess_raw = str(raw.get("in_session") or "")
+        if "not-available" in sess_raw:
+            session_text = "Offline"
+        elif "available" in sess_raw:
+            session_text = "Online"
 
     # plan text (embedded in HTML div)
     plan_text = plain("plan")
 
-    # tags: comma-separated badge texts
-    tags_html = raw.get("tags") or ""
-    tag_texts = [t.strip() for t in _re.findall(r'js-badged-text[^>]*>\s*([^<]+)', str(tags_html))]
+    # tags: badge labels (tooltip attr, else the visible text of each badge)
+    tags_html = str(raw.get("tags") or "")
+    tag_texts = [t.strip() for t in _re.findall(r'data-tooltip-text="([^"]+)"', tags_html) if t.strip()]
+    if not tag_texts:
+        tag_texts = [t.strip() for t in _re.findall(r">\s*([^<>]+?)\s*<", tags_html) if t.strip()]
 
     iccid = plain("iccid") or (raw.get("nickname") or "").strip()
+
+    # --- usage ---
+    # List endpoint gives `this_month_mb`; the per-SIM detail endpoint (attached
+    # as `_usage` by enrich_droam_usage) gives authoritative used + plan limit
+    # ("Init balance"), which the list view lacks.
+    usage = raw.get("_usage") or {}
+    used_mb = usage.get("used_mb")
+    if used_mb is None:
+        used_mb = _to_float(plain("this_month_mb"))
+    available_mb = _to_float(plain("available_mb"))   # remaining; often '-' in list view
+    days_left = _to_float(plain("days_left"))          # often '-' in list view
+    daily_mb = usage.get("daily_mb") or []
+
+    # Plan limit: authoritative "Init balance" > used+remaining > parsed plan name.
+    limit_mb = usage.get("limit_mb")
+    if limit_mb is None and used_mb is not None and available_mb is not None:
+        limit_mb = used_mb + available_mb
+    if limit_mb is None:
+        limit_mb = parse_plan_limit_mb(plan_text)
+    # Remaining, if not given directly, from limit - used.
+    if available_mb is None and limit_mb is not None and used_mb is not None:
+        available_mb = round(limit_mb - used_mb, 2)
+
+    pct_used = None
+    if limit_mb and limit_mb > 0 and used_mb is not None:
+        pct_used = round(used_mb / limit_mb * 100, 1)
+
+    status_active = status_text.lower() == "active"
+    at_risk = pct_used is not None and pct_used >= 80.0
+    # Idle = active SIM with effectively no usage this period.
+    idle = status_active and used_mb is not None and used_mb < 1.0
 
     return {
         "iccid": iccid,
@@ -392,6 +707,16 @@ def normalise_droam_sim(raw: dict) -> dict:
         "contract_expiration_at": (raw.get("contract_expiration_at") or "").strip(),
         "plan_assigned_at": (raw.get("plan_assigned_at") or "").strip(),
         "last_usage_updated_at": (raw.get("last_usage_updated_at") or "").strip(),
+        "throttle": plain("throttle"),
+        # usage / signals
+        "data_used_mb": used_mb,
+        "data_available_mb": available_mb,
+        "data_limit_mb": limit_mb,
+        "data_used_pct": pct_used,
+        "data_daily_mb": daily_mb,
+        "days_left": days_left,
+        "at_risk": at_risk,
+        "idle": idle,
         "tags": tag_texts,
         "is_esim": bool(raw.get("eid") and raw.get("eid") != "-"),
         "_raw_id": raw.get("id"),
@@ -881,49 +1206,83 @@ def enrich_devices_via_ssh(devices: list[dict], nodes: dict, max_workers: int = 
 # ---------------------------------------------------------------------------
 
 def build_report(devices: list[dict], droam_sims: list[dict] | None,
-                 rms_api: dict | None = None) -> dict:
-    droam_by_iccid: dict[str, dict] = {}
+                 rms_api: dict | None = None,
+                 droam_usage_fetched_at: str | None = None,
+                 perf: dict | None = None,
+                 scoped: bool = False) -> dict:
+    # Index Droam SIMs by canonical ICCID (+ 18-digit prefix) for robust matching
+    # across RMS/UCI/Droam length & check-digit differences.
+    droam_norm: list[tuple[str, dict]] = []
+    droam_by_canon: dict[str, dict] = {}
+    droam_by_p18: dict[str, dict] = {}
     if droam_sims is not None:
         for sim in droam_sims:
             n = normalise_droam_sim(sim)
-            if n.get("iccid"):
-                droam_by_iccid[n["iccid"]] = n
+            canon = iccid_canonical(n.get("iccid"))
+            if not canon:
+                continue
+            droam_norm.append((canon, n))
+            droam_by_canon.setdefault(canon, n)
+            if len(canon) >= 18:
+                droam_by_p18.setdefault(canon[:18], n)
 
-    # Collect all ICCIDs seen in Teltonika devices
-    seen_iccids: set[str] = set()
+    def _match_droam(iccid: str) -> dict | None:
+        c = iccid_canonical(iccid)
+        if not c:
+            return None
+        m = droam_by_canon.get(c)
+        if m is None and len(c) >= 18:
+            m = droam_by_p18.get(c[:18])
+        return m
 
+    matched_canons: set[str] = set()
     device_rows = []
     for dev in devices:
         rec = extract_device_record(dev)
         for sim in rec["sims"]:
-            iccid = sim["iccid"]
-            seen_iccids.add(iccid)
             if droam_sims is not None:
-                droam_match = droam_by_iccid.get(iccid)
+                droam_match = _match_droam(sim["iccid"])
                 sim["in_droam"] = droam_match is not None
                 sim["droam_info"] = droam_match
+                if droam_match is not None:
+                    matched_canons.add(iccid_canonical(droam_match.get("iccid")))
             else:
                 sim["in_droam"] = None  # Droam not queried
                 sim["droam_info"] = None
         device_rows.append(rec)
 
+    # In scoped mode only a subset of devices is loaded, so "not in any device"
+    # can't be computed meaningfully — skip the orphan list.
     orphan_droam_sims: list[dict] = []
-    if droam_sims is not None:
-        for iccid, sim_rec in droam_by_iccid.items():
-            if iccid not in seen_iccids:
+    if droam_sims is not None and not scoped:
+        for canon, sim_rec in droam_norm:
+            if canon not in matched_canons:
                 orphan_droam_sims.append(sim_rec)
+
+    def _count_signal(flag: str) -> int | None:
+        if droam_sims is None:
+            return None
+        return sum(1 for d in device_rows for s in d["sims"]
+                   if s.get("droam_info") and s["droam_info"].get(flag))
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "droam_usage_fetched_at": droam_usage_fetched_at,
+        "perf": perf,
         "summary": {
             "total_rms_devices": len(device_rows),
             "total_rms_sims": sum(len(d["sims"]) for d in device_rows),
-            "total_droam_sims": len(droam_by_iccid) if droam_sims is not None else None,
-            "droam_sims_found_in_rms": len(seen_iccids & droam_by_iccid.keys()) if droam_sims is not None else None,
+            "total_droam_sims": len(droam_by_canon) if droam_sims is not None else None,
+            "droam_sims_found_in_rms": len(matched_canons) if droam_sims is not None else None,
             "rms_sims_not_in_droam": sum(
                 1 for d in device_rows for s in d["sims"] if s["in_droam"] is False
             ) if droam_sims is not None else None,
-            "droam_sims_not_in_any_device": len(orphan_droam_sims) if droam_sims is not None else None,
+            "droam_sims_not_in_any_device": (len(orphan_droam_sims)
+                                             if (droam_sims is not None and not scoped) else None),
+            "sims_at_risk": _count_signal("at_risk"),
+            "sims_idle": _count_signal("idle"),
+            "licenses_expired": sum(1 for d in device_rows if (d.get("license") or {}).get("expired")),
+            "licenses_expiring_soon": sum(1 for d in device_rows if (d.get("license") or {}).get("expiring_soon")),
         },
         "rms_api": rms_api,
         "devices": device_rows,
@@ -949,6 +1308,20 @@ def _fmt_rms_api(rms_api: dict | None) -> str | None:
     return parts
 
 
+def _fmt_license_md(lic: dict | None) -> str:
+    """One-line license/credit summary for Markdown."""
+    lic = lic or {}
+    pack = lic.get("pack") or "—"
+    if not lic.get("expire_date"):
+        return pack
+    status = ("EXPIRED" if lic.get("expired")
+              else "expiring soon" if lic.get("expiring_soon")
+              else "active" if lic.get("active") else "inactive")
+    days = f", {lic['days_left']}d left" if lic.get("days_left") is not None else ""
+    extend = " · auto-extend" if lic.get("auto_extend") else ""
+    return f"{pack} — {status} (expires {lic['expire_date'][:10]}{days}){extend}"
+
+
 def write_markdown(report: dict, path: Path) -> None:
     lines = []
     ts = report["generated_at"]
@@ -958,6 +1331,17 @@ def write_markdown(report: dict, path: Path) -> None:
         "# SIM Audit Report",
         "",
         f"Generated: {ts}",
+    ]
+    if report.get("droam_usage_fetched_at"):
+        lines.append(f"Droam usage details fetched: {report['droam_usage_fetched_at']}")
+    _perf = report.get("perf") or {}
+    if _perf:
+        _ac = _perf.get("api_calls", {})
+        lines.append(
+            f"Run: {_perf.get('total_seconds')}s · {_perf.get('api_calls_total')} HTTP calls "
+            f"(RMS {_ac.get('rms', 0)}, Droam {_ac.get('droam', 0)})"
+        )
+    lines += [
         "",
         "## Summary",
         "",
@@ -965,6 +1349,8 @@ def write_markdown(report: dict, path: Path) -> None:
         "|--------|-------|",
         f"| RMS devices | {s['total_rms_devices']} |",
         f"| SIM slots in RMS | {s['total_rms_sims']} |",
+        f"| RMS licenses expired | {s.get('licenses_expired', 0)} |",
+        f"| RMS licenses expiring ≤{LICENSE_EXPIRING_DAYS}d | {s.get('licenses_expiring_soon', 0)} |",
     ]
     if s["total_droam_sims"] is not None:
         lines += [
@@ -996,6 +1382,7 @@ def write_markdown(report: dict, path: Path) -> None:
             f"| WAN IP | {dev['wan_ip'] or '—'} |",
             f"| WAN type | {dev['wan_state'] or '—'} |",
             f"| Firmware | {dev['firmware'] or '—'} |",
+            f"| RMS license | {_fmt_license_md(dev.get('license'))} |",
             f"| Created | {dev['created_at']} |",
             f"| Last seen | {dev['last_connection_at'] or '—'} |",
             f"| Tags | {', '.join(dev['tags']) if dev['tags'] else '—'} |",
@@ -1025,9 +1412,21 @@ def write_markdown(report: dict, path: Path) -> None:
                 droam_info = sim.get("droam_info")
                 if droam_info:
                     tags = ", ".join(droam_info.get("tags") or []) or "—"
+                    used_txt = _fmt_mb(droam_info.get("data_used_mb"))
+                    limit_txt = _fmt_mb(droam_info.get("data_limit_mb"))
+                    pct = droam_info.get("data_used_pct")
+                    usage_txt = f"{used_txt} / {limit_txt}" + (f" ({pct:.0f}%)" if pct is not None else "")
+                    flags = []
+                    if droam_info.get("at_risk"):
+                        flags.append("AT RISK")
+                    if droam_info.get("idle"):
+                        flags.append("IDLE")
+                    if flags:
+                        usage_txt += "  [" + ", ".join(flags) + "]"
                     sim_lines += [
                         f"  - Droam status: {droam_info.get('status') or '—'} / Session: {droam_info.get('in_session') or '—'}",
                         f"  - Droam plan: {droam_info.get('plan') or '—'} ({droam_info.get('sim_card_type') or '—'})",
+                        f"  - Data usage: {usage_txt}",
                         f"  - Droam IP: {droam_info.get('ip') or '—'} / APN: {droam_info.get('apn') or '—'}",
                         f"  - Droam tags: {tags}",
                         f"  - Contract expires: {droam_info.get('contract_expiration_at') or '—'}",
@@ -1092,6 +1491,39 @@ def _device_droam_state(sims: list[dict]) -> tuple[int, str, str]:
     return 1, "bg-warning text-dark", f"▲ {matched}/{total}"
 
 
+def _fmt_mb(mb: float | None) -> str:
+    """Human-friendly data size from MB."""
+    if mb is None:
+        return "—"
+    if mb >= 1024:
+        return f"{mb / 1024:.2f} GB"
+    return f"{mb:.0f} MB"
+
+
+def _fmt_usage_html(droam: dict) -> str:
+    """Usage cell: used / limit (pct) + at-risk/idle badges + days left."""
+    used = droam.get("data_used_mb")
+    limit = droam.get("data_limit_mb")
+    pct = droam.get("data_used_pct")
+    parts = [f"{_fmt_mb(used)} used"]
+    if limit:
+        parts[0] = f"{_fmt_mb(used)} / {_fmt_mb(limit)}"
+        if pct is not None:
+            parts.append(f"({pct:.0f}%)")
+    days = droam.get("days_left")
+    if days is not None:
+        parts.append(f"· {days:.0f}d left")
+    daily = droam.get("data_daily_mb") or []
+    if daily:
+        parts.append(f"· 7d {_fmt_mb(sum(daily))}")
+    badges = ""
+    if droam.get("at_risk"):
+        badges += " <span class='badge bg-danger'>at risk</span>"
+    if droam.get("idle"):
+        badges += " <span class='badge bg-warning text-dark'>idle</span>"
+    return _e(" ".join(parts)) + badges
+
+
 def _sim_detail_html(sim: dict) -> str:
     """Build the inner detail table for a single SIM slot."""
     droam = sim.get("droam_info")
@@ -1136,6 +1568,7 @@ def _sim_detail_html(sim: dict) -> str:
         detail_rows += [
             row("── Droam status", f"{_e(droam.get('status'))} / session: {_e(droam.get('in_session'))}"),
             row("── Droam plan", f"{_e(droam.get('plan'))} ({_e(droam.get('sim_card_type'))})"),
+            row("── Data usage", _fmt_usage_html(droam)),
             row("── Droam IP / APN", f"{_e(droam.get('ip'))} / {_e(droam.get('apn'))}"),
             row("── Droam tags", _e(tags)),
             row("── Contract exp.", _e(droam.get("contract_expiration_at"))),
@@ -1152,8 +1585,16 @@ def write_html(report: dict, path: Path) -> None:
     total_devices = len(devices)
 
     # ---- summary stat cards ----
-    def card(value, label, border) -> str:
-        return (f"<div class='col'><div class='card text-center h-100 border-{border}'>"
+    # `action` (optional) makes a tile a clickable filter shortcut; the JS reads
+    # data-tile and applies the matching filter to the device list below.
+    def card(value, label, border, action=None) -> str:
+        cls = f"card text-center h-100 border-{border}"
+        attrs = ""
+        if action:
+            cls += " tile-clickable"
+            attrs = (f" role='button' tabindex='0' data-tile='{action}' "
+                     f"title='Filter list by: {_e(label)}'")
+        return (f"<div class='col'><div class='{cls}'{attrs}>"
                 f"<div class='card-body py-2 px-1'>"
                 f"<div class='h2 fw-bold text-{border} mb-0'>{value}</div>"
                 f"<div class='small text-muted'>{label}</div></div></div></div>")
@@ -1163,20 +1604,32 @@ def write_html(report: dict, path: Path) -> None:
     ts_available = ts_matched > 0
 
     cards = [
-        card(s["total_rms_devices"], "Devices", "primary"),
+        card(s["total_rms_devices"], "Devices", "primary", action="clear"),
         card(s["total_rms_sims"], "SIM slots", "primary"),
     ]
     if ts_available:
-        cards.append(card(f"{ts_matched}/{total_devices}", "Tailnet paired", "info"))
-        cards.append(card(total_devices - ts_matched, "Tailnet gaps", "secondary"))
-        cards.append(card(ts_renames, "Name mismatches", "warning"))
+        cards.append(card(f"{ts_matched}/{total_devices}", "Tailnet paired", "info", action="tailnet:match"))
+        cards.append(card(total_devices - ts_matched, "Tailnet gaps", "secondary", action="tailnet:none"))
+        cards.append(card(ts_renames, "Name mismatches", "warning", action="tailnet:mismatch"))
+
+    lic_expired = sum(1 for d in devices if (d.get("license") or {}).get("expired"))
+    lic_soon = sum(1 for d in devices if (d.get("license") or {}).get("expiring_soon"))
+    cards.append(card(lic_expired, "License expired", "danger", action="signal:licexpired"))
+    cards.append(card(lic_soon, "License expiring", "warning", action="signal:licsoon"))
+
     if droam_queried:
         cards += [
             card(s["total_droam_sims"], "Droam SIMs", "primary"),
-            card(s["droam_sims_found_in_rms"], "Matched", "success"),
-            card(s["rms_sims_not_in_droam"], "RMS gaps", "danger"),
-            card(s["droam_sims_not_in_any_device"], "Droam unassigned", "warning"),
+            card(s["droam_sims_found_in_rms"], "Matched", "success", action="droam:0"),
+            card(s["rms_sims_not_in_droam"], "RMS gaps", "danger", action="droam:2"),
         ]
+        if s.get("droam_sims_not_in_any_device") is not None:
+            cards.append(card(s["droam_sims_not_in_any_device"], "Droam unassigned",
+                              "warning", action="orphans"))
+        if s.get("sims_at_risk") is not None:
+            cards.append(card(s["sims_at_risk"], "SIMs at risk", "danger", action="signal:atrisk"))
+        if s.get("sims_idle") is not None:
+            cards.append(card(s["sims_idle"], "Idle SIMs", "warning", action="signal:idle"))
 
     # ---- device rows ----
     rows: list[str] = []
@@ -1202,8 +1655,16 @@ def write_html(report: dict, path: Path) -> None:
                 b = '<span class="badge bg-danger">✘ Not in Droam</span>'
             else:
                 b = '<span class="badge bg-secondary">—</span>'
-            sim_cell_parts.append(f"{b}&thinsp;<code class='small'>{_e(sim.get('iccid'))}</code>")
+            di = sim.get("droam_info") or {}
+            usage_badge = ""
+            if di.get("at_risk"):
+                usage_badge = " <span class='badge bg-danger' title='SIM at/near plan limit'>at risk</span>"
+            elif di.get("idle"):
+                usage_badge = " <span class='badge bg-warning text-dark' title='active SIM with ~no usage this period'>idle</span>"
+            sim_cell_parts.append(f"{b}&thinsp;<code class='small'>{_e(sim.get('iccid'))}</code>{usage_badge}")
         sim_cell = " ".join(sim_cell_parts) if sim_cell_parts else "—"
+        dev_atrisk = any((sim.get("droam_info") or {}).get("at_risk") for sim in sims)
+        dev_idle = any((sim.get("droam_info") or {}).get("idle") for sim in sims)
 
         # Tailscale pairing cell / gap indicator
         ts = dev.get("tailscale") or {}
@@ -1228,6 +1689,25 @@ def write_html(report: dict, path: Path) -> None:
             ts_cell = '<span class="badge bg-danger">✘ no tailnet</span>'
             ts_sort = "zzz"
 
+        # License / RMS management credit cell + state
+        lic = dev.get("license") or {}
+        lic_exp = lic.get("expire_date") or ""
+        if not lic.get("pack") and not lic_exp:
+            lic_state, lic_badge = "none", "<span class='badge bg-secondary'>—</span>"
+        elif lic.get("expired"):
+            lic_state, lic_badge = "expired", "<span class='badge bg-danger'>expired</span>"
+        elif lic.get("expiring_soon"):
+            lic_state, lic_badge = "soon", "<span class='badge bg-warning text-dark'>expiring</span>"
+        elif lic.get("active"):
+            lic_state, lic_badge = "active", "<span class='badge bg-success'>active</span>"
+        else:
+            lic_state, lic_badge = "inactive", "<span class='badge bg-secondary'>inactive</span>"
+        lic_days = (f" <span class='small text-muted'>({lic['days_left']}d)</span>"
+                    if lic.get("days_left") is not None else "")
+        lic_cell = (f"<div class='small'>{_e(lic.get('pack') or '—')}</div>"
+                    f"{lic_badge} <span class='small text-muted'>{_e(lic_exp[:10])}</span>{lic_days}")
+        lic_sort = lic_exp or "zzzz"
+
         device_facts = [
             ("Model", _e(dev["model"])), ("Serial", _e(dev["serial"])),
             ("MAC", _e(dev["mac"])), ("IMEI", _e(dev["imei"])),
@@ -1239,6 +1719,15 @@ def write_html(report: dict, path: Path) -> None:
                            if ts_name else "— no matching tailnet node")),
             ("Tailscale IP", _e(ts.get("ip"))),
             ("Tailscale IP (device-reported)", _e(ts.get("reported_ip"))),
+            ("License pack", _e(lic.get("pack") or "—")),
+            ("License status", (("active" if lic.get("active") else "inactive")
+                                + (" · EXPIRED" if lic.get("expired") else
+                                   " · expiring soon" if lic.get("expiring_soon") else ""))),
+            ("License expires", (_e(lic_exp) + (f" ({lic['days_left']}d left)"
+                                                if lic.get("days_left") is not None else ""))
+                                 if lic_exp else "—"),
+            ("Auto-extend credit", "Yes" if lic.get("auto_extend") else "No"),
+            ("Data/Connect pack", _e(lic.get("data_pack") or "—")),
         ]
         device_table = "".join(
             f"<tr><th class='text-nowrap pe-3 fw-normal text-muted small'>{k}</th><td>{v}</td></tr>"
@@ -1249,20 +1738,24 @@ def write_html(report: dict, path: Path) -> None:
 
         rows.append(
             f"<tr class='device-row' data-name='{_e(dev['name']).lower()}' data-status='{status}' "
+            f"data-model='{_e((dev.get('model') or '').lower())}' "
             f"data-ts='{ts_state}' data-tsname='{_e((ts_name or '')).lower()}' "
             f"data-mismatch='{1 if ts_mismatch else 0}' "
+            f"data-atrisk='{1 if dev_atrisk else 0}' data-idle='{1 if dev_idle else 0}' "
+            f"data-license='{lic_state}' "
             f"data-iccids='{_e(iccids)}' data-detail='{detail_id}'>"
             f"<td data-sort='{status_sort}'>{status_badge}</td>"
             f"<td><a class=\"dev-toggle text-decoration-none\" href=\"#\" data-target=\"{detail_id}\" "
             f"onclick=\"toggleDetail(this);return false;\"><span class=\"toggle-arrow me-1\">▶</span>"
             f"{_e(dev['name'])}</a></td>"
             f"<td class='small text-muted'>{_e(dev['model'])}</td>"
+            f"<td data-sort='{_e(lic_sort)}'>{lic_cell}</td>"
             f"<td data-sort='{_e(ts_sort)}'>{ts_cell}</td>"
             f"<td data-sort='{d_sort}'><span class=\"badge {d_badge}\">{d_label}</span></td>"
             f"<td class='small'>{sim_cell}</td>"
             f"<td class='small text-muted'>{_e(dev['wan_ip'])}</td>"
             f"<td class='small'>{tags_html}</td></tr>"
-            f"<tr class='detail-row' id='{detail_id}'><td colspan='8' class='bg-light p-0'>"
+            f"<tr class='detail-row' id='{detail_id}'><td colspan='9' class='bg-light p-0'>"
             f"<div class='row g-0 p-3'>"
             f"<div class='col-md-5 pe-md-3'><p class='fw-semibold mb-1 small text-uppercase text-muted'>Device</p>"
             f"<table class='table table-sm mb-0'>{device_table}</table></div>"
@@ -1272,7 +1765,7 @@ def write_html(report: dict, path: Path) -> None:
 
     # ---- orphan Droam SIMs ----
     orphan_section = ""
-    if droam_queried:
+    if droam_queried and s.get("droam_sims_not_in_any_device") is not None:
         orphans = report.get("droam_sims_not_in_any_teltonika", [])
         orphan_rows = "".join(
             f"<tr><td><code class='small'>{_e(o.get('iccid'))}</code></td>"
@@ -1280,18 +1773,19 @@ def write_html(report: dict, path: Path) -> None:
             f"<td class='small'>{_e(o.get('operator'))}</td>"
             f"<td><span class=\"badge bg-secondary\">{_e(o.get('status'))}</span></td>"
             f"<td class='small'>{_e(o.get('plan'))}</td>"
+            f"<td class='small'>{_fmt_usage_html(o)}</td>"
             f"<td class='small'>{_e(', '.join(o.get('tags') or []) or '')}</td>"
             f"<td class='small'>{'Yes' if o.get('is_esim') else 'No'}</td></tr>"
             for o in orphans
         )
         orphan_section = (
-            f"<div class='card mt-4'><div class='card-header fw-semibold'>"
+            f"<div class='card mt-4' id='orphanSection'><div class='card-header fw-semibold'>"
             f"Droam SIMs not installed in any Teltonika device "
             f"<span class='badge bg-warning text-dark ms-1'>{len(orphans)}</span></div>"
             f"<div class='card-body p-0'><div class='table-responsive'>"
             f"<table class='table table-sm table-hover mb-0'><thead class='table-light'><tr>"
             f"<th>ICCID</th><th>MSISDN</th><th>Operator</th><th>Status</th>"
-            f"<th>Plan</th><th>Tags</th><th>eSIM</th></tr></thead>"
+            f"<th>Plan</th><th>Data usage</th><th>Tags</th><th>eSIM</th></tr></thead>"
             f"<tbody>{orphan_rows}</tbody></table></div></div></div>"
         )
 
@@ -1312,8 +1806,25 @@ def write_html(report: dict, path: Path) -> None:
         </select>
 """ if ts_available else "")
 
+    models = sorted({(dev.get("model") or "").strip() for dev in devices if (dev.get("model") or "").strip()})
+    model_options = "".join(
+        f'          <option value="{_e(m.lower())}">{_e(m)}</option>\n' for m in models
+    )
+    model_filter = (f"""        <select id="modelFilter" class="form-select form-select-sm" style="width:150px" onchange="applyFilters()">
+          <option value="">All models</option>
+{model_options}        </select>
+""" if models else "")
+
     generated = report["generated_at"]
     subtitle = f"generated {generated}"
+    if report.get("droam_usage_fetched_at"):
+        subtitle += f" · Droam usage as of {report['droam_usage_fetched_at']}"
+    _perf = report.get("perf") or {}
+    if _perf:
+        _ac = _perf.get("api_calls", {})
+        subtitle += (f" · run {_perf.get('total_seconds')}s, "
+                     f"{_perf.get('api_calls_total')} HTTP calls "
+                     f"(RMS {_ac.get('rms', 0)}, Droam {_ac.get('droam', 0)})")
 
     # RMS API quota widget (top-right of header).
     rms_api = report.get("rms_api") or {}
@@ -1357,6 +1868,9 @@ def write_html(report: dict, path: Path) -> None:
     .sortable::after {{ content: " ↕"; color: #bbb; font-size: .7em; }}
     .sortable.asc::after {{ content: " ↑"; color: #333; font-size: .8em; }}
     .sortable.desc::after {{ content: " ↓"; color: #333; font-size: .8em; }}
+    .tile-clickable {{ cursor: pointer; transition: transform .1s, box-shadow .1s; }}
+    .tile-clickable:hover {{ transform: translateY(-2px); box-shadow: 0 .25rem .6rem rgba(0,0,0,.12); }}
+    .tile-clickable.tile-active {{ box-shadow: 0 0 0 .18rem rgba(13,110,253,.35); }}
     .toggle-arrow {{ font-size: .7em; transition: transform .15s; display: inline-block; }}
     .open-arrow .toggle-arrow {{ transform: rotate(90deg); }}
     code {{ font-size: .82em; word-break: break-all; }}
@@ -1390,7 +1904,7 @@ def write_html(report: dict, path: Path) -> None:
           <option value="online">Online only</option>
           <option value="offline">Offline only</option>
         </select>
-{tailnet_filter}{droam_filter}        <button class="btn btn-sm btn-outline-secondary" onclick="clearFilters()">Clear</button>
+{model_filter}{tailnet_filter}{droam_filter}        <button class="btn btn-sm btn-outline-secondary" onclick="clearFilters()">Clear</button>
         <span id="visCount" class="text-muted small"></span>
       </div>
     </div>
@@ -1402,10 +1916,11 @@ def write_html(report: dict, path: Path) -> None:
               <th class="sortable" data-col="0">Status</th>
               <th class="sortable" data-col="1">Name</th>
               <th class="sortable" data-col="2">Model</th>
-              <th class="sortable" data-col="3">Tailscale</th>
-              <th class="sortable" data-col="4">Droam</th>
+              <th class="sortable" data-col="3">License</th>
+              <th class="sortable" data-col="4">Tailscale</th>
+              <th class="sortable" data-col="5">Droam</th>
               <th>SIMs</th>
-              <th class="sortable" data-col="6">WAN IP</th>
+              <th class="sortable" data-col="7">WAN IP</th>
               <th>Tags</th>
             </tr>
           </thead>
@@ -1455,27 +1970,37 @@ def write_html(report: dict, path: Path) -> None:
     }});
   }});
 
+  let signalFilter = '';  // '', 'atrisk', 'idle' — driven by the summary tiles
+
   function applyFilters() {{
     const q = document.getElementById('searchBox').value.trim().toLowerCase();
     const st = document.getElementById('statusFilter').value;
+    const mdEl = document.getElementById('modelFilter');
+    const md = mdEl ? mdEl.value : '';
     const dmEl = document.getElementById('droamFilter');
     const dm = dmEl ? dmEl.value : '';
     const tnEl = document.getElementById('tailnetFilter');
     const tn = tnEl ? tnEl.value : '';
+    const sig = signalFilter;
     let vis = 0;
     document.querySelectorAll('#deviceBody tr.device-row').forEach(row => {{
       const nameMatch = !q || row.dataset.name.includes(q) ||
                         (row.dataset.tsname || '').includes(q) ||
                         row.dataset.iccids.toLowerCase().includes(q);
       const statusMatch = !st || row.dataset.status === st;
-      const droamMatch = !dm || (row.cells[4]?.dataset.sort ?? '') === dm;
+      const modelMatch = !md || (row.dataset.model || '') === md;
+      const droamMatch = !dm || (row.cells[5]?.dataset.sort ?? '') === dm;
       const ts = row.dataset.ts || 'none';
       const mismatch = row.dataset.mismatch === '1';
       const tnMatch = !tn || (tn === 'match' ? (ts === 'online' || ts === 'offline')
                               : tn === 'none' ? (ts === 'none')
                               : tn === 'offline' ? (ts === 'offline')
                               : tn === 'mismatch' ? mismatch : true);
-      const show = nameMatch && statusMatch && droamMatch && tnMatch;
+      const signalMatch = !sig || (sig === 'atrisk' ? row.dataset.atrisk === '1'
+                                   : sig === 'idle' ? row.dataset.idle === '1'
+                                   : sig === 'licexpired' ? row.dataset.license === 'expired'
+                                   : sig === 'licsoon' ? row.dataset.license === 'soon' : true);
+      const show = nameMatch && statusMatch && modelMatch && droamMatch && tnMatch && signalMatch;
       row.style.display = show ? '' : 'none';
       const detailRow = document.getElementById(row.dataset.detail);
       if (detailRow) {{
@@ -1489,15 +2014,52 @@ def write_html(report: dict, path: Path) -> None:
     document.getElementById('emptyMsg').style.display = vis === 0 ? '' : 'none';
   }}
 
-  function clearFilters() {{
+  function resetControls() {{
     document.getElementById('searchBox').value = '';
     document.getElementById('statusFilter').value = '';
+    const mdEl = document.getElementById('modelFilter');
+    if (mdEl) mdEl.value = '';
     const dmEl = document.getElementById('droamFilter');
     if (dmEl) dmEl.value = '';
     const tnEl = document.getElementById('tailnetFilter');
     if (tnEl) tnEl.value = '';
+    signalFilter = '';
+  }}
+
+  function clearFilters() {{
+    resetControls();
+    document.querySelectorAll('[data-tile]').forEach(t => t.classList.remove('tile-active'));
     applyFilters();
   }}
+
+  // Summary tiles → filter shortcuts.
+  function applyTile(el) {{
+    const t = el.dataset.tile;
+    document.querySelectorAll('[data-tile]').forEach(x => x.classList.remove('tile-active'));
+    if (t === 'orphans') {{
+      document.getElementById('orphanSection')?.scrollIntoView({{behavior: 'smooth', block: 'start'}});
+      return;
+    }}
+    resetControls();
+    if (t !== 'clear') {{
+      const [k, v] = t.split(':');
+      if (k === 'status') document.getElementById('statusFilter').value = v;
+      else if (k === 'model') {{ const e = document.getElementById('modelFilter'); if (e) e.value = v; }}
+      else if (k === 'tailnet') {{ const e = document.getElementById('tailnetFilter'); if (e) e.value = v; }}
+      else if (k === 'droam') {{ const e = document.getElementById('droamFilter'); if (e) e.value = v; }}
+      else if (k === 'signal') signalFilter = v;
+      el.classList.add('tile-active');
+    }}
+    applyFilters();
+    document.getElementById('deviceTable').scrollIntoView({{behavior: 'smooth', block: 'start'}});
+  }}
+
+  document.querySelectorAll('[data-tile]').forEach(el => {{
+    el.addEventListener('click', () => applyTile(el));
+    el.addEventListener('keydown', e => {{
+      if (e.key === 'Enter' || e.key === ' ') {{ e.preventDefault(); applyTile(el); }}
+    }});
+  }});
 
   applyFilters();
 </script>
@@ -1511,6 +2073,48 @@ def write_html(report: dict, path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+class ApiCallCounter:
+    """
+    Count outbound HTTP calls by destination for performance reporting.
+
+    Patches requests.Session.request — every requests.* helper (get/post and any
+    Session) routes through it — so both the RMS calls (module-level requests.*)
+    and the Droam calls (session-based) are captured. Tailscale runs via the CLI
+    (subprocess), so it isn't counted here.
+    """
+
+    def __init__(self) -> None:
+        self.counts = {"rms": 0, "droam": 0, "other": 0}
+
+    @staticmethod
+    def _classify(url: str) -> str:
+        u = url or ""
+        if "droam" in u:
+            return "droam"
+        if "teltonika" in u:
+            return "rms"
+        return "other"
+
+    def __enter__(self):
+        import requests.sessions as _rs
+        self._orig = _rs.Session.request
+        counts = self.counts
+        classify = self._classify
+        orig = self._orig
+
+        def _patched(inner_self, method, url, *args, **kwargs):
+            counts[classify(url)] += 1
+            return orig(inner_self, method, url, *args, **kwargs)
+
+        _rs.Session.request = _patched
+        return self
+
+    def __exit__(self, *exc):
+        import requests.sessions as _rs
+        _rs.Session.request = self._orig
+        return False
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Audit SIMs across RMS and Droam")
@@ -1538,9 +2142,27 @@ def main() -> None:
              "(usually not routable; slow due to timeouts)",
     )
     parser.add_argument(
+        "--no-droam-usage",
+        action="store_true",
+        help="Skip the per-SIM Droam usage detail fetch (one request per SIM; "
+             "plan limit / %-used come only from the plan name without it)",
+    )
+    parser.add_argument(
         "--no-html",
         action="store_true",
         help="Skip writing the interactive report.html",
+    )
+    parser.add_argument(
+        "--devices",
+        default="",
+        help="Scope the run to specific devices (comma-separated, case-insensitive "
+             "substring match on device name). Enrichment + per-SIM Droam usage are "
+             "limited to these devices, saving calls for on-demand checks.",
+    )
+    parser.add_argument(
+        "--iccids",
+        default="",
+        help="Scope the run to devices holding these ICCIDs (comma-separated).",
     )
     parser.add_argument(
         "--output-dir",
@@ -1556,55 +2178,119 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- RMS ---
-    rms_devices = fetch_rms_devices()
+    import time
+    timings: dict[str, float] = {}
 
-    # --- Tailscale pairing (always, so the report shows the tailnet column + gaps) ---
-    ts_nodes = _tailscale_nodes()
-    if ts_nodes:
-        m = match_devices_to_tailnet(rms_devices, ts_nodes)
-        print(
-            f"Tailscale pairing: {m['exact'] + m['normalized']}/{len(rms_devices)} devices matched "
-            f"({m['exact']} exact, {m['normalized']} normalized), {m['none']} gaps "
-            f"(of {len(ts_nodes)} tailnet nodes)\n",
-            flush=True,
-        )
-    else:
-        print("tailscale CLI unavailable — skipping tailnet pairing/enrichment.\n", file=sys.stderr)
+    def _timed(name: str):
+        class _T:
+            def __enter__(self_):
+                self_.t0 = time.perf_counter()
+                return self_
+            def __exit__(self_, *exc):
+                timings[name] = round(time.perf_counter() - self_.t0, 1)
+                return False
+        return _T()
 
-    # --- Enrichment: standby SIM slots + authoritative tailnet pairing ---
-    # RMS command channel is the primary, identity-anchored path. SSH then runs
-    # as a fallback only for devices RMS could not verify (offline in RMS, or
-    # command relay failed) — so we don't probe the same device twice.
-    rms_cmd_ran = False
-    if not args.no_rms_cmd:
-        enrich_devices_via_rms(rms_devices, ts_nodes)
-        rms_cmd_ran = True
+    droam_usage_fetched_at: str | None = None
+    run_start = time.perf_counter()
 
-    if not args.no_ssh:
-        enrich_devices_via_ssh(
-            rms_devices, ts_nodes,
-            wanip_fallback=args.ssh_wanip_fallback,
-            skip_verified=rms_cmd_ran,
-        )
+    scoped = bool(args.devices.strip() or args.iccids.strip())
 
-    # --- Droam ---
-    droam_sims: list[dict] | None = None
-    if not args.rms_only:
-        if not DROAM_URL:
-            print(
-                "DROAM_URL is not set — running in RMS-only mode.\n"
-                "Set DROAM_URL, DROAM_USERNAME, DROAM_PASSWORD in .env to enable Droam cross-reference.\n",
-                file=sys.stderr,
-            )
-        else:
-            droam_sims = fetch_droam_sims()
+    with ApiCallCounter() as counter:
+        # --- RMS ---
+        with _timed("rms_fetch"):
+            rms_devices = fetch_rms_devices()
 
-    # --- RMS API quota snapshot (after all RMS work, so it's current) ---
-    rms_api = fetch_rms_rate_limit()
+        if scoped:
+            before = len(rms_devices)
+            rms_devices = filter_scope_devices(rms_devices, args.devices, args.iccids)
+            print(f"Scoped run: {len(rms_devices)} of {before} devices match "
+                  f"--devices/--iccids "
+                  f"({', '.join(d.get('name', '?') for d in rms_devices) or 'none'})\n",
+                  flush=True)
+            if not rms_devices:
+                print("No devices matched the scope filter — nothing to do.", file=sys.stderr)
+                sys.exit(1)
+
+        # --- Tailscale pairing (always, so the report shows the tailnet column + gaps) ---
+        with _timed("tailscale"):
+            ts_nodes = _tailscale_nodes()
+            if ts_nodes:
+                m = match_devices_to_tailnet(rms_devices, ts_nodes)
+                print(
+                    f"Tailscale pairing: {m['exact'] + m['normalized']}/{len(rms_devices)} devices matched "
+                    f"({m['exact']} exact, {m['normalized']} normalized), {m['none']} gaps "
+                    f"(of {len(ts_nodes)} tailnet nodes)\n",
+                    flush=True,
+                )
+            else:
+                print("tailscale CLI unavailable — skipping tailnet pairing/enrichment.\n", file=sys.stderr)
+
+        # --- Enrichment: standby SIM slots + authoritative tailnet pairing ---
+        # RMS command channel is the primary, identity-anchored path. SSH then runs
+        # as a fallback only for devices RMS could not verify (offline in RMS, or
+        # command relay failed) — so we don't probe the same device twice.
+        rms_cmd_ran = False
+        if not args.no_rms_cmd:
+            with _timed("rms_cmd_enrich"):
+                enrich_devices_via_rms(rms_devices, ts_nodes)
+            rms_cmd_ran = True
+
+        if not args.no_ssh:
+            with _timed("ssh_enrich"):
+                enrich_devices_via_ssh(
+                    rms_devices, ts_nodes,
+                    wanip_fallback=args.ssh_wanip_fallback,
+                    skip_verified=rms_cmd_ran,
+                )
+
+        # --- Droam ---
+        droam_sims: list[dict] | None = None
+        if not args.rms_only:
+            if not DROAM_URL:
+                print(
+                    "DROAM_URL is not set — running in RMS-only mode.\n"
+                    "Set DROAM_URL, DROAM_USERNAME, DROAM_PASSWORD in .env to enable Droam cross-reference.\n",
+                    file=sys.stderr,
+                )
+            else:
+                # In scoped mode, only fetch per-SIM usage for the in-scope devices'
+                # ICCIDs (active slots + any UCI-discovered standby slots).
+                usage_iccids: set[str] | None = None
+                if scoped:
+                    usage_iccids = set()
+                    for d in rms_devices:
+                        usage_iccids |= _iccid_keys(d.get("iccid"), d.get("iccid_2"))
+                        for extra in (d.get("_uci_sims") or []):
+                            usage_iccids |= _iccid_keys(extra.get("iccid"))
+                with _timed("droam_fetch"):
+                    droam_sims = fetch_droam_sims(with_usage=not args.no_droam_usage,
+                                                  usage_iccids=usage_iccids)
+                if not args.no_droam_usage:
+                    droam_usage_fetched_at = datetime.now(timezone.utc).isoformat()
+
+        # --- RMS API quota snapshot (after all RMS work, so it's current) ---
+        rms_api = fetch_rms_rate_limit()
+
+    total_seconds = round(time.perf_counter() - run_start, 1)
+    perf = {
+        "total_seconds": total_seconds,
+        "api_calls": dict(counter.counts),
+        "api_calls_total": sum(counter.counts.values()),
+        "phase_seconds": timings,
+    }
+
+    print(f"\nPerformance: {total_seconds}s total · "
+          f"{perf['api_calls_total']} HTTP calls "
+          f"(RMS {counter.counts['rms']}, Droam {counter.counts['droam']}, "
+          f"other {counter.counts['other']})", flush=True)
+    for name, secs in timings.items():
+        print(f"  {name:<16} {secs:>6.1f}s", flush=True)
 
     # --- Report ---
-    report = build_report(rms_devices, droam_sims, rms_api=rms_api)
+    report = build_report(rms_devices, droam_sims, rms_api=rms_api,
+                          droam_usage_fetched_at=droam_usage_fetched_at, perf=perf,
+                          scoped=scoped)
 
     json_path = output_dir / "report.json"
     json_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
