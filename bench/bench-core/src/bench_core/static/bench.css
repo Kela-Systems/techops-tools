@@ -113,6 +113,15 @@ input:focus, select:focus { border-color: var(--accent); }
 .conn.up { color: var(--green); }
 .conn.down { color: var(--yellow); }
 
+/* Station operator box (header, injected by bench.js). Amber outline until a
+   name is set — the one thing to do at day start. */
+.operator-box { display: flex; align-items: center; gap: 8px; }
+.operator-box label { font-size: .75rem; color: var(--text-dim); margin: 0; }
+.operator-box input { width: 180px; padding: 5px 9px; font-size: .8rem; }
+.operator-box button { padding: 5px 10px; font-size: .75rem; }
+.operator-box.missing input { border-color: var(--yellow); }
+.operator-box.missing label { color: var(--yellow); }
+
 /* Utilities */
 .hidden { display: none !important; }
 .muted { color: var(--text-dim); font-size: .85rem; }

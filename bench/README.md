@@ -97,6 +97,13 @@ the one launcher.
 - **Config** lives per tool under `<tool>/config/` (e.g.
   `otd-config-ui/config/site.config.json`, `raythink-config-ui/config/profiles/`).
   Copy the committed `*.example.*` template alongside it and fill in real values.
+- **Run provenance:** every per-run JSON (and history entry) is stamped with
+  `operator`, `station_id` and `bench_version`. The operator name is entered in
+  the header of any tool page (badge scan or typed, once at day start) and is
+  shared station-wide via `bench/.bench-operator.json` (gitignored). The
+  station ID defaults to the machine hostname; set `BENCH_STATION_ID` before
+  launching to override it. `bench_version` is the short git revision exported
+  by the launcher as `BENCH_VERSION`.
 - **Tests** live per tool under `<tool>/tests/` and run with no hardware. From
   the `bench/` root: `.venv/bin/python -m pytest` runs every tool's suite.
 - Secrets stay local: real `*.config.json`, exported `profiles/`, and `firmware/`

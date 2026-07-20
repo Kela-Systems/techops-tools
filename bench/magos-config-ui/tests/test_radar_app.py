@@ -222,3 +222,23 @@ def test_device_presence_resets_idle_timer(clock, device):
 def test_configure_route_rejects_when_not_detected():
     result = asyncio.run(radar.configure_request("0", None))
     assert "error" in result
+
+
+# ── run provenance (operator / station_id / bench_version, TEC-345) ──────────
+
+def test_run_records_carry_provenance(device, monkeypatch, tmp_path):
+    from bench_core.bench_ui import OperatorStore
+    monkeypatch.setattr(radar, "operator_store", OperatorStore(tmp_path / "op.json"))
+    radar.operator_store.set("Dana K")
+    asyncio.run(radar.run_configuration({"channel": "0", "ip": "192.168.88.50"}, HOST))
+    entry = radar.state["history"][0]
+    assert entry["operator"] == "Dana K"
+    assert entry["station_id"] == radar.station_id
+    assert entry["bench_version"] == radar.bench_version
+
+
+def test_unset_operator_stamps_unknown(device, monkeypatch, tmp_path):
+    from bench_core.bench_ui import OperatorStore
+    monkeypatch.setattr(radar, "operator_store", OperatorStore(tmp_path / "op.json"))
+    asyncio.run(radar.run_configuration({"channel": "0", "ip": "192.168.88.50"}, HOST))
+    assert radar.state["history"][0]["operator"] == "unknown"

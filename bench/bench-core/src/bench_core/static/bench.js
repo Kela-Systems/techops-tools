@@ -48,6 +48,57 @@ async function postJSON(url, body, opts) {
   }
 }
 
+// Station-level operator box (TEC-345). Injected next to the #conn indicator
+// so every tool gets it without per-page markup. The name is entered once at
+// day start (typed, or a badge scanner acting as a keyboard) and is stamped
+// into every run record by the server; setting it in any tool covers all of
+// them (one shared station file). Returns {update(state)}.
+function mountOperatorBox() {
+  const conn = $('conn');
+  if (!conn || $('operatorInput')) return { update() {} };
+
+  // Group the box with the connection indicator on the header's right side.
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;align-items:center;gap:14px;';
+  conn.parentNode.insertBefore(wrap, conn);
+
+  const box = document.createElement('div');
+  box.className = 'operator-box';
+  box.innerHTML = '<label for="operatorInput">Operator</label>' +
+    '<input id="operatorInput" type="text" autocomplete="off" maxlength="64"' +
+    ' placeholder="scan badge or type name">' +
+    '<button id="operatorSet" class="btn-outline" type="button">Set</button>';
+  wrap.appendChild(box);
+  wrap.appendChild(conn);
+
+  const input = box.querySelector('#operatorInput');
+  const btn = box.querySelector('#operatorSet');
+  let dirty = false, current = '';
+
+  async function save() {
+    btn.disabled = true;
+    const r = await postJSON('/api/operator', { operator: input.value }, { buttons: [btn] });
+    if (!r.error) { dirty = false; input.blur(); }
+  }
+  input.addEventListener('input', () => { dirty = true; });
+  // A badge scanner "types" the ID and sends Enter — same path as a human.
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+  btn.addEventListener('click', save);
+
+  return {
+    update(s) {
+      current = s.operator || '';
+      if (s.station_id) box.title = 'Station ' + s.station_id +
+        ' — the operator name is recorded into every run from all bench tools.';
+      // Don't clobber a name mid-typing; otherwise mirror the station value
+      // (it can change from another tool's page).
+      if (document.activeElement !== input && !dirty) input.value = current;
+      if (input.value === current) dirty = false;
+      box.classList.toggle('missing', !current);
+    },
+  };
+}
+
 // Resilient WebSocket state feed.
 //
 // Calls `onState(state)` for every frame. Also bootstraps once via GET
@@ -59,6 +110,8 @@ async function postJSON(url, body, opts) {
 function connectBenchWS(onState, opts) {
   opts = opts || {};
   const connEl = $('conn');
+  const operatorBox = mountOperatorBox();
+  const handleState = (s) => { operatorBox.update(s); onState(s); };
   let ws = null, retry = 0, closed = false, bootstrapping = false;
 
   function setConn(text, up) {
@@ -73,7 +126,7 @@ function connectBenchWS(onState, opts) {
     bootstrapping = true;
     try {
       const r = await fetch('/api/state');
-      if (r.ok) onState(await r.json());
+      if (r.ok) handleState(await r.json());
     } catch (_e) { /* the socket frames will catch up shortly */ }
     finally { bootstrapping = false; }
   }
@@ -86,7 +139,7 @@ function connectBenchWS(onState, opts) {
     ws.onmessage = (e) => {
       let s;
       try { s = JSON.parse(e.data); } catch (_err) { return; }
-      try { onState(s); } catch (err) { console.error('render error', err); }
+      try { handleState(s); } catch (err) { console.error('render error', err); }
     };
     ws.onerror = () => { try { ws.close(); } catch (_e) { /* onclose handles retry */ } };
     ws.onclose = () => {

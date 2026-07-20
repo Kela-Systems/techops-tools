@@ -35,7 +35,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 # Generic bench-UI helpers shared with the Teltonika tools.
-from bench_core.bench_ui import bench_version, prune_json_logs, slug
+from bench_core.bench_ui import (
+    OPERATOR_FILENAME,
+    OperatorBody,
+    OperatorStore,
+    bench_version,
+    prune_json_logs,
+    run_stamp,
+    slug,
+    station_id,
+)
 
 # The Magos device clients log through the "magos" logger; reuse its line format
 # so step lines render the same in every tool.
@@ -80,7 +89,10 @@ class MagosBench:
         self.log = self._setup_logging()
         prune_json_logs(self.log_dir)  # trim any backlog left by earlier sessions
         self.bench_version = bench_version(base_dir)
-        self.log.info("%s starting — bench version %s", self.title, self.bench_version)
+        self.station_id = station_id()
+        self.operator_store = OperatorStore(base_dir.parent / OPERATOR_FILENAME)
+        self.log.info("%s starting — bench version %s, station %s",
+                      self.title, self.bench_version, self.station_id)
         self.cfg: dict = dict(default_cfg)
         self._misses = 0
         # Monotonic clock + last-activity stamp drive the hands-free idle
@@ -228,10 +240,18 @@ class MagosBench:
 
     # ── public state ──────────────────────────────────────────────────────────
 
+    def run_stamp(self) -> dict:
+        """Provenance fields (operator / station_id / bench_version) added to
+        every history entry and per-unit JSON."""
+        return run_stamp(self.operator_store.get(), self.station_id,
+                         self.bench_version)
+
     def public_state(self) -> dict:
         return {
             **self.state,
             "bench_version": self.bench_version,
+            "station_id": self.station_id,
+            "operator": self.operator_store.get(),
             "config": {k: v for k, v in self.cfg.items() if k != "password"},
             "password_set": bool(self.cfg.get("password")),
             "channel_ips": self.channel_ips,
@@ -263,6 +283,7 @@ class MagosBench:
             return None
 
         entry = self.build_entry(target, host, result)
+        entry.update(self.run_stamp())  # who / where / which code (TEC-345)
         entry["log_file"] = self._save_log(entry, result["raw"])
 
         self.state["history"].insert(0, entry)
@@ -503,6 +524,12 @@ class MagosBench:
         async def dismiss():
             return self.dismiss()
 
+        @app.post("/api/operator")
+        async def set_operator(body: OperatorBody):
+            name = self.operator_store.set(body.operator)
+            self.log.info("Operator set to '%s'.", name or "(cleared)")
+            return self.public_state()
+
         @app.websocket("/ws/state")
         async def ws_state(websocket: WebSocket):
             await websocket.accept()
@@ -527,6 +554,8 @@ class MagosBench:
         url = f"http://127.0.0.1:{self.port}"
         print(f"Starting {self.title} at {url}")
         print(f"  version      : {self.bench_version}")
+        print(f"  station      : {self.station_id}")
+        print(f"  operator     : {self.operator_store.get() or '(not set — enter it on the page)'}")
         print("  (open it as http://, NOT https:// — this is a plain-HTTP local server)")
         self.print_banner()
         app = self.build_app()
