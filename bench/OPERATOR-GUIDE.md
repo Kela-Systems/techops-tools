@@ -14,6 +14,9 @@ How to provision devices at the bench. Keep this open on the side screen.
 2. A black window opens and stays open — **leave it open all day.** Closing it stops every tool.
 3. After a few seconds the **dashboard** opens in the browser with six tool cards.
 4. Click the card for whatever you're about to plug in. A **green dot** means that tool is ready.
+5. **Enter your name** in the **Operator** box at the top of the tool page (scan your badge or
+   type it, then press Enter). Do this once at the start of the day — it's shared by all the
+   tools and is recorded with every device you configure. The box glows amber until it's set.
 
 > **First start of the day / after an update** can take a minute while it updates and
 > installs — the dots stay grey until each tool is up. This is normal; just wait.

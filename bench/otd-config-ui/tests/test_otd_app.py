@@ -8,6 +8,8 @@ import asyncio
 
 import pytest
 
+from bench_core.bench_ui import OperatorStore
+
 import otd_app as mod
 
 cfg = mod.configurator
@@ -103,3 +105,43 @@ def test_detected_stays_until_unplug(monkeypatch):
 
 def test_hostname_uses_prefix():
     assert cfg.hostname_for({"site_name": "Haifa Port"}) == "otd-haifa-port"
+
+
+# ── run provenance (operator / station_id / bench_version, TEC-345) ──────────
+
+def test_run_records_carry_provenance(monkeypatch, tmp_path):
+    monkeypatch.setattr(cfg, "operator_store", OperatorStore(tmp_path / "op.json"))
+    cfg.operator_store.set("Dana K")
+    monkeypatch.setattr(cfg, "_do_configure", lambda inputs: fake_result())
+    configure({"site_name": "haifa", "label_password": "", "mac": None})
+    entry = cfg.state["history"][0]
+    assert entry["operator"] == "Dana K"
+    assert entry["station_id"] == cfg.station_id
+    assert entry["bench_version"] == cfg.bench_version
+
+
+def test_unset_operator_stamps_unknown(monkeypatch, tmp_path):
+    monkeypatch.setattr(cfg, "operator_store", OperatorStore(tmp_path / "op.json"))
+    monkeypatch.setattr(cfg, "_do_configure", lambda inputs: fake_result())
+    configure({"site_name": "haifa", "label_password": "", "mac": None})
+    assert cfg.state["history"][0]["operator"] == "unknown"
+
+
+def test_operator_store_roundtrip(tmp_path):
+    store = OperatorStore(tmp_path / "op.json")
+    assert store.get() == ""
+    store.set("  Dana K  ")
+    assert store.get() == "Dana K"
+    # Another tool's store on the same station file sees the change.
+    assert OperatorStore(tmp_path / "op.json").get() == "Dana K"
+    store.set("")
+    assert store.get() == ""
+
+
+def test_public_state_exposes_station_fields(monkeypatch, tmp_path):
+    monkeypatch.setattr(cfg, "operator_store", OperatorStore(tmp_path / "op.json"))
+    cfg.operator_store.set("Dana K")
+    s = cfg.public_state()
+    assert s["operator"] == "Dana K"
+    assert s["station_id"] == cfg.station_id
+    assert s["bench_version"] == cfg.bench_version

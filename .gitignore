@@ -69,6 +69,10 @@ bench/speaker-config-ui/config/speaker.config.json
 bench/speaker-config-ui/config/media/*
 !bench/speaker-config-ui/config/media/.gitkeep
 
+# Bench station state — the operator name entered at day start (TEC-345)
+bench/.bench-operator.json
+bench/.bench-operator.tmp
+
 # Logs
 *.log
 bench/magos-config-ui/logs/

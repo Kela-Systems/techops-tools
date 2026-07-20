@@ -34,6 +34,7 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from bench_core import LOG_LINE_FORMAT, normalize_mac
 
@@ -125,6 +126,81 @@ def bench_version(base_dir: Path) -> str:
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
     return "unknown"
+
+
+# ── Run provenance (who / where / which code) ────────────────────────────────
+#
+# Every run record must say who ran it, on which station, and with which bench
+# code (TEC-345) — without this, "works on my bench" debugging and QA tracing
+# across 5+ stations is guesswork.
+
+# Station-level, not per-tool: the six tools run side by side on one bench PC,
+# so the operator name lives in ONE file at the bench root (the tool folders
+# are siblings under bench/) and setting it in any tool covers all of them.
+OPERATOR_FILENAME = ".bench-operator.json"
+
+
+def station_id() -> str:
+    """Stable identifier of this bench machine: BENCH_STATION_ID if the station
+    was given an explicit ID, else the machine's hostname."""
+    return os.environ.get("BENCH_STATION_ID") or socket.gethostname() or "unknown"
+
+
+class OperatorStore:
+    """The station-level operator name (entered at day start, badge scan or
+    typed) shared by every tool on this bench.
+
+    Backed by one small JSON file so it survives restarts and a name set in one
+    tool's page shows up in the other five without restarting them. Reads are
+    mtime-cached (the state feed polls once a second per client); writes go
+    through an atomic replace so a concurrent reader never sees a torn file."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._cached = ""
+        self._mtime: Optional[float] = None
+
+    def get(self) -> str:
+        """The current operator name, or '' when none is set."""
+        try:
+            mtime = self.path.stat().st_mtime
+        except OSError:
+            self._cached, self._mtime = "", None
+            return ""
+        if mtime != self._mtime:
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                self._cached = str(data.get("operator", "")).strip()
+            except (OSError, ValueError):
+                self._cached = ""
+            self._mtime = mtime
+        return self._cached
+
+    def set(self, name: str) -> str:
+        """Persist the operator name (stripped, length-capped). An empty name
+        clears it. Returns the stored value."""
+        name = (name or "").strip()[:64]
+        payload = {"operator": name,
+                   "updated": datetime.now(timezone.utc).isoformat()}
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False),
+                       encoding="utf-8")
+        os.replace(tmp, self.path)
+        self._cached, self._mtime = name, None  # next get() re-reads/re-caches
+        return name
+
+
+def run_stamp(operator: str, station: str, version: str) -> dict:
+    """The provenance fields stamped into every run record by both bench bases
+    (BenchConfigurator and MagosBench)."""
+    return {"operator": operator or "unknown",
+            "station_id": station,
+            "bench_version": version}
+
+
+class OperatorBody(BaseModel):
+    """Request body of the shared POST /api/operator route."""
+    operator: str = ""
 
 
 # ── MAC reading (ARP) ───────────────────────────────────────────────────────
@@ -243,7 +319,10 @@ class BenchConfigurator:
         self.logger = setup_device_logging(self.log_dir, self.log_filename, self.logger_name)
         self._prune_logs()  # trim any backlog left by earlier sessions
         self.bench_version = bench_version(base_dir)
-        self.logger.info("%s starting — bench version %s", self.title, self.bench_version)
+        self.station_id = station_id()
+        self.operator_store = OperatorStore(base_dir.parent / OPERATOR_FILENAME)
+        self.logger.info("%s starting — bench version %s, station %s",
+                         self.title, self.bench_version, self.station_id)
         self.cfg: dict = self.load_config()
         self.state: dict = self.initial_state()
         self.state["config_loaded"] = bool(self.cfg)
@@ -281,6 +360,8 @@ class BenchConfigurator:
         busy = self.state["busy"]
         return {**self.state, "counts": self.counts(),
                 "bench_version": self.bench_version,
+                "station_id": self.station_id,
+                "operator": self.operator_store.get(),
                 "config": redact_config(self.cfg),
                 "live_steps": list(self._live_collector.steps)[-200:]
                               if busy and self._live_collector else [],
@@ -362,6 +443,12 @@ class BenchConfigurator:
     def _prune_logs(self, keep: int = JSON_LOG_RETENTION) -> None:
         prune_json_logs(self.log_dir, keep)
 
+    def run_stamp(self) -> dict:
+        """Provenance fields (operator / station_id / bench_version) added to
+        every history entry and per-run JSON."""
+        return run_stamp(self.operator_store.get(), self.station_id,
+                         self.bench_version)
+
     def _save_log(self, entry: dict) -> Optional[str]:
         ts = datetime.now(timezone.utc)
         name = (f"{ts.strftime('%Y%m%d-%H%M%S')}_{slug(entry.get('hostname'))}_"
@@ -390,6 +477,7 @@ class BenchConfigurator:
             duration = int(time.monotonic() - self._run_t0)
             took = f"{duration // 60}m{duration % 60:02d}s"
             entry = self.build_entry(result, inputs, duration)
+            entry.update(self.run_stamp())  # who / where / which code (TEC-345)
             entry["log_file"] = self._save_log(entry)
             self.state["history"].insert(0, entry)
             del self.state["history"][self.history_limit:]
@@ -499,6 +587,12 @@ class BenchConfigurator:
             self.state["message"] = self.dismiss_message()
             return self.public_state()
 
+        @app.post("/api/operator")
+        async def set_operator(body: OperatorBody):
+            name = self.operator_store.set(body.operator)
+            self.logger.info("Operator set to '%s'.", name or "(cleared)")
+            return self.public_state()
+
         @app.websocket("/ws/state")
         async def ws_state(websocket: WebSocket):
             await websocket.accept()
@@ -535,6 +629,8 @@ class BenchConfigurator:
         url = f"http://127.0.0.1:{self.port}"
         print(f"Starting {self.title} at {url}")
         print(f"  version      : {self.bench_version}")
+        print(f"  station      : {self.station_id}")
+        print(f"  operator     : {self.operator_store.get() or '(not set — enter it on the page)'}")
         self.print_banner()
         app = self.build_app()
         # Tools are launched by the bench dashboard, which opens the one browser
