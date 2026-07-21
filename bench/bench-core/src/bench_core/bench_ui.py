@@ -384,6 +384,8 @@ class BenchConfigurator:
         raise NotImplementedError
 
     def build_entry(self, result: dict, inputs: dict, duration: int) -> dict:  # override
+        """Build the run-record entry via bench_core.run_record.build_run_entry
+        (the canonical schema, TEC-346) — per-family fields go in `device`."""
         raise NotImplementedError
 
     def on_run_recorded(self, result: dict, inputs: dict, entry: dict) -> None:
@@ -451,7 +453,8 @@ class BenchConfigurator:
 
     def _save_log(self, entry: dict) -> Optional[str]:
         ts = datetime.now(timezone.utc)
-        name = (f"{ts.strftime('%Y%m%d-%H%M%S')}_{slug(entry.get('hostname'))}_"
+        hostname = entry.get("device", {}).get("hostname")
+        name = (f"{ts.strftime('%Y%m%d-%H%M%S')}_{slug(hostname)}_"
                 f"{entry.get('status')}.json")
         path = self.log_dir / name
         with contextlib.suppress(OSError):

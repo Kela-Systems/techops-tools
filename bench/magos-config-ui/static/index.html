@@ -310,7 +310,7 @@ function render(s) {
   // mode, where the server drives the target)
   if (!auto.enabled && !cycle.enabled && s.phase === 'configured' && lastPhase === 'configuring'
       && s.last_result && s.last_result.status === 'ok') {
-    const nxt = nextChannel(s.last_result.channel);
+    const nxt = nextChannel((s.last_result.device||{}).channel);
     if (nxt !== null) selectChannel(nxt);
   }
   lastPhase = s.phase;
@@ -365,8 +365,8 @@ function render(s) {
         <td>${esc(h.model || '—')}</td>
         <td class="mono">${esc(h.serial || '—')}</td>
         <td class="mono">${esc(h.mac || '—')}</td>
-        <td>${esc(h.channel)}</td>
-        <td>${esc(h.ip)}</td>
+        <td>${esc((h.device||{}).channel)}</td>
+        <td>${esc((h.device||{}).ip)}</td>
         <td>${statusBadge(h)}</td>
       </tr>`).join('');
   }

@@ -117,8 +117,8 @@ function updatePreview(){
   const sl = slug($('siteName').value);
   $('namePreview').innerHTML = sl
     ? `Will be named <b>${prefix}${sl}</b> (hostname, RMS, Tailscale).` : '';
-  const dup = (s.history||[]).some(h => h.status==='ok' && h.site_name &&
-    slug(h.site_name) === sl && sl);
+  const dup = (s.history||[]).some(h => h.status==='ok' && (h.device||{}).site_name &&
+    slug(h.device.site_name) === sl && sl);
   $('dupHint').innerHTML = dup ? '&#9888; this site name was already used this session' : '&nbsp;';
   $('dupHint').style.color = dup ? 'var(--yellow)' : '';
 }
@@ -174,7 +174,7 @@ function render(s){
     const badge = (st)=> st==='ok' ? '<span class="badge badge-ok">DONE</span>'
       : '<span class="badge badge-err">FAILED</span>';
     body.innerHTML = rows.map(r=>`<tr>
-      <td>${badge(r.status)}</td><td>${esc(r.hostname||'')}</td>
+      <td>${badge(r.status)}</td><td>${esc((r.device||{}).hostname||'')}</td>
       <td class="mono">${esc(r.mac||'')}</td>
       <td class="mono">${esc(r.serial||'—')}</td><td>${esc(r.firmware||'—')}</td>
       <td>${r.duration_s!=null?fmtDur(r.duration_s):'—'}</td>
@@ -186,11 +186,11 @@ function render(s){
   if (lr){
     $('resultCard').style.display = '';
     $('identity').innerHTML = `
-      <span>name <b>${esc(lr.hostname||'—')}</b></span>
+      <span>name <b>${esc((lr.device||{}).hostname||'—')}</b></span>
       <span>model <b>${esc(lr.model||'—')}</b></span>
       <span>serial <b class="mono">${esc(lr.serial||'—')}</b></span>
       <span>fw <b class="mono">${esc(lr.firmware||'—')}</b></span>
-      <span>imei <b class="mono">${esc(lr.imei||'—')}</b></span>` +
+      <span>imei <b class="mono">${esc((lr.device||{}).imei||'—')}</b></span>` +
       (lr.duration_s != null ? `<span>took <b>${fmtDur(lr.duration_s)}</b></span>` : '');
     const wb = $('warnBox');
     if (lr.warnings && lr.warnings.length){ wb.textContent = '⚠ ' + lr.warnings.join('  •  '); wb.classList.remove('hidden'); }

@@ -97,6 +97,14 @@ the one launcher.
 - **Config** lives per tool under `<tool>/config/` (e.g.
   `otd-config-ui/config/site.config.json`, `raythink-config-ui/config/profiles/`).
   Copy the committed `*.example.*` template alongside it and fill in real values.
+- **Run records:** every tool's history entry / per-run JSON follows ONE
+  canonical schema, `bench-run-record/1`, defined and documented in
+  `bench-core/src/bench_core/run_record.py`. The common core (identity,
+  status, verification, steps, timing) is identical across tools; per-family
+  fields (site name, channel, profile, radar IP, ...) live under the entry's
+  `device` block. All `build_entry` hooks emit it via `build_run_entry()`, and
+  consumers (central reporting, label printing) read any record — including
+  pre-schema JSONs from old benches — through `parse_run_record()`.
 - **Run provenance:** every per-run JSON (and history entry) is stamped with
   `operator`, `station_id` and `bench_version`. The operator name is entered in
   the header of any tool page (badge scan or typed, once at day start) and is

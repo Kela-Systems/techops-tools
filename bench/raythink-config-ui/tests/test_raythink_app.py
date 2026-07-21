@@ -8,6 +8,8 @@ import asyncio
 
 import pytest
 
+from bench_core.run_record import RUN_RECORD_SCHEMA
+
 import raythink_app as mod
 
 cfg = mod.configurator
@@ -83,9 +85,11 @@ def test_configure_records_history(monkeypatch):
     run_inputs(octet=35, monkeypatch=monkeypatch)
     assert cfg.state["phase"] == "configured"
     entry = cfg.state["history"][0]
+    assert entry["schema"] == RUN_RECORD_SCHEMA
+    assert entry["tool"] == "raythink"
     assert entry["status"] == "ok"
-    assert entry["ip"] == "192.168.88.35"
-    assert entry["profile"] == "lan"
+    assert entry["device"]["ip"] == "192.168.88.35"
+    assert entry["device"]["profile"] == "lan"
 
 
 def test_cycle_advances_only_on_success(monkeypatch):

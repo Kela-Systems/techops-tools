@@ -174,8 +174,11 @@ class MagosBench:
         raw, steps, log, error, verified, verify_detail."""
         raise NotImplementedError
 
-    def build_entry(self, target: dict, host: str, result: dict) -> dict:
-        """Build the per-unit history entry from a configure result."""
+    def build_entry(self, target: dict, host: str, result: dict,
+                    duration: int) -> dict:
+        """Build the per-unit history entry from a configure result, via
+        bench_core.run_record.build_run_entry (the canonical schema, TEC-346)
+        — per-family fields go in `device`."""
         raise NotImplementedError
 
     def success_message(self, ident: dict, result: dict, target: dict) -> str:
@@ -271,7 +274,9 @@ class MagosBench:
         avoid = self.state["last_ok_serial"] if guard_repeat else None
 
         loop = asyncio.get_event_loop()
+        run_t0 = time.monotonic()
         result = await loop.run_in_executor(None, self.do_configure, target, host, avoid)
+        duration = int(time.monotonic() - run_t0)
         ident = result["identity"]
 
         if result["skipped"]:
@@ -282,7 +287,7 @@ class MagosBench:
                 f"and is still answering on {host} — unplug it and plug in the next one.")
             return None
 
-        entry = self.build_entry(target, host, result)
+        entry = self.build_entry(target, host, result, duration)
         entry.update(self.run_stamp())  # who / where / which code (TEC-345)
         entry["log_file"] = self._save_log(entry, result["raw"])
 

@@ -7,6 +7,8 @@ import asyncio
 
 import pytest
 
+from bench_core.run_record import RUN_RECORD_SCHEMA
+
 import rutm_app as mod
 
 cfg = mod.configurator
@@ -87,9 +89,11 @@ def test_configure_records_history(monkeypatch):
                "host": FACTORY, "mac": "aa:bb:cc:dd:ee:02"})
     assert cfg.state["phase"] == "configured"
     entry = cfg.state["history"][0]
+    assert entry["schema"] == RUN_RECORD_SCHEMA
+    assert entry["tool"] == "rutm"
     assert entry["status"] == "ok"
     assert entry["serial"] == "SN-RUT-1"
-    assert entry["site_name"] == "haifa"
+    assert entry["device"]["site_name"] == "haifa"
 
 
 def test_failed_run_sets_error(monkeypatch):

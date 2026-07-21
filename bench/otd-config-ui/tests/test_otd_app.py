@@ -9,6 +9,7 @@ import asyncio
 import pytest
 
 from bench_core.bench_ui import OperatorStore
+from bench_core.run_record import RUN_RECORD_SCHEMA
 
 import otd_app as mod
 
@@ -80,9 +81,12 @@ def test_configure_records_history(monkeypatch):
     configure({"site_name": "haifa", "label_password": "x", "mac": "aa:bb:cc:dd:ee:01"})
     assert cfg.state["phase"] == "configured"
     entry = cfg.state["history"][0]
+    assert entry["schema"] == RUN_RECORD_SCHEMA
+    assert entry["tool"] == "otd"
     assert entry["status"] == "ok"
     assert entry["serial"] == "SN-OTD-1"
-    assert entry["site_name"] == "haifa"
+    assert entry["device"]["site_name"] == "haifa"
+    assert entry["device"]["hostname"] == "otd-haifa"
     assert cfg.state["busy"] is False
 
 

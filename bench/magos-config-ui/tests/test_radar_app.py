@@ -8,6 +8,8 @@ import asyncio
 
 import pytest
 
+from bench_core.run_record import RUN_RECORD_SCHEMA
+
 import app as radar_mod
 from magos_bench import AUTO_IDLE_TIMEOUT_SEC, MISS_THRESHOLD
 
@@ -90,8 +92,12 @@ def test_manual_configure_records_history(device):
     poll(HOST)
     asyncio.run(radar.run_configuration({"channel": "0", "ip": "192.168.88.50"}, HOST))
     assert radar.state["phase"] == "configured"
-    assert radar.state["history"][0]["status"] == "ok"
-    assert radar.state["history"][0]["ip"] == "192.168.88.50/24"
+    entry = radar.state["history"][0]
+    assert entry["schema"] == RUN_RECORD_SCHEMA
+    assert entry["tool"] == "magos-radar"
+    assert entry["status"] == "ok"
+    assert entry["device"]["ip"] == "192.168.88.50/24"
+    assert entry["device"]["channel"] == "0"
     assert radar.state["last_ok_serial"] == "SN-001"
 
 
