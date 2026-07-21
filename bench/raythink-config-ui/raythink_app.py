@@ -19,7 +19,6 @@ configure_camera pipeline call.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -31,6 +30,7 @@ from bench_core.bench_ui import (
     BenchConfigurator,
     read_device_mac,
 )
+from bench_core.run_record import build_run_entry
 
 from raythink_camera import DEFAULT_HOST
 from raythink_configure import (
@@ -171,22 +171,25 @@ class RaythinkConfigurator(BenchConfigurator):
 
     def build_entry(self, result: dict, inputs: dict, duration: int) -> dict:
         ident = result["identity"]
-        return {
-            "hostname": result["hostname"],
-            "profile": inputs["profile"],
-            "ip": inputs["target_ip"],
-            "mac": ident.get("mac") or inputs.get("mac") or "unknown",
-            "serial": ident.get("serial", "unknown"),
-            "model": ident.get("model", "Raythink"),
-            "firmware": ident.get("firmware", "unknown"),
-            "status": "ok" if result["ok"] else "error",
-            "error": result["error"],
-            "steps": result["steps"],
-            "verification": result.get("verification", []),
-            "log": result["log"],
-            "duration_s": duration,
-            "time": datetime.now(timezone.utc).strftime("%H:%M:%S"),
-        }
+        return build_run_entry(
+            tool="raythink",
+            ok=result["ok"],
+            error=result["error"],
+            serial=ident.get("serial", "unknown"),
+            mac=ident.get("mac") or inputs.get("mac") or "unknown",
+            model=ident.get("model", "Raythink"),
+            firmware=ident.get("firmware", "unknown"),
+            duration_s=duration,
+            verification=result.get("verification", []),
+            warnings=result.get("warnings", []),
+            steps=result["steps"],
+            log=result["log"],
+            device={
+                "hostname": result["hostname"],
+                "profile": inputs["profile"],
+                "ip": inputs["target_ip"],
+            },
+        )
 
     def on_run_recorded(self, result: dict, inputs: dict, entry: dict) -> None:
         # Burn a cycle number only on a clean run, so a failed camera keeps its
@@ -195,8 +198,9 @@ class RaythinkConfigurator(BenchConfigurator):
             self._advance_cycle()
 
     def success_message(self, result: dict, entry: dict, took: str) -> str:
-        return (f"Configured camera at {entry['ip']} (SN {entry['serial']}) via "
-                f"'{entry['profile']}' in {took}. Connect the next camera.")
+        dev = entry["device"]
+        return (f"Configured camera at {dev['ip']} (SN {entry['serial']}) via "
+                f"'{dev['profile']}' in {took}. Connect the next camera.")
 
     def dismiss_message(self) -> str:
         return "Connect the next camera…"

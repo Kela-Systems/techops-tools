@@ -15,7 +15,6 @@ configure_device pipeline call.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -33,6 +32,7 @@ from bench_core.bench_ui import (
     BenchConfigurator,
     read_device_mac,
 )
+from bench_core.run_record import build_run_entry
 
 from otd_configure import configure_device
 
@@ -94,23 +94,25 @@ class OtdConfigurator(BenchConfigurator):
 
     def build_entry(self, result: dict, inputs: dict, duration: int) -> dict:
         ident = result["identity"]
-        return {
-            "hostname": result["hostname"],
-            "site_name": inputs["site_name"],
-            "mac": ident.get("mac", inputs.get("mac") or "unknown"),
-            "serial": ident.get("serial", "unknown"),
-            "model": ident.get("model", "OTD500"),
-            "firmware": ident.get("firmware", "unknown"),
-            "imei": ident.get("imei", "unknown"),
-            "warnings": result["warnings"],
-            "status": "ok" if result["ok"] else "error",
-            "error": result["error"],
-            "steps": result["steps"],
-            "verification": result.get("verification", []),
-            "log": result["log"],
-            "duration_s": duration,
-            "time": datetime.now(timezone.utc).strftime("%H:%M:%S"),
-        }
+        return build_run_entry(
+            tool="otd",
+            ok=result["ok"],
+            error=result["error"],
+            serial=ident.get("serial", "unknown"),
+            mac=ident.get("mac", inputs.get("mac") or "unknown"),
+            model=ident.get("model", "OTD500"),
+            firmware=ident.get("firmware", "unknown"),
+            duration_s=duration,
+            verification=result.get("verification", []),
+            warnings=result["warnings"],
+            steps=result["steps"],
+            log=result["log"],
+            device={
+                "hostname": result["hostname"],
+                "site_name": inputs["site_name"],
+                "imei": ident.get("imei", "unknown"),
+            },
+        )
 
     def success_message(self, result: dict, entry: dict, took: str) -> str:
         warn = f" ({len(result['warnings'])} verify warning(s))" if result["warnings"] else ""

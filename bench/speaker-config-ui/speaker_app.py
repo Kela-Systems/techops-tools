@@ -16,11 +16,11 @@ DHCP subnet scan, the fixed-target configure route, and the pipeline call.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from bench_core.bench_ui import BenchConfigurator, read_device_mac
+from bench_core.run_record import build_run_entry
 
 from speaker_client import (
     DEFAULT_GATEWAY,
@@ -129,26 +129,29 @@ class SpeakerConfigurator(BenchConfigurator):
 
     def build_entry(self, result: dict, inputs: dict, duration: int) -> dict:
         ident = result["identity"]
-        return {
-            "hostname": result["hostname"],
-            "ip": self._target_ip(),
-            "from_host": inputs.get("host", ""),
-            "mac": ident.get("mac") or inputs.get("mac") or "unknown",
-            "serial": ident.get("serial", "unknown"),
-            "model": ident.get("model", "Provision-ISR speaker"),
-            "firmware": ident.get("firmware", "unknown"),
-            "status": "ok" if result["ok"] else "error",
-            "error": result["error"],
-            "steps": result["steps"],
-            "verification": result.get("verification", []),
-            "log": result["log"],
-            "duration_s": duration,
-            "time": datetime.now(timezone.utc).strftime("%H:%M:%S"),
-        }
+        return build_run_entry(
+            tool="speaker",
+            ok=result["ok"],
+            error=result["error"],
+            serial=ident.get("serial", "unknown"),
+            mac=ident.get("mac") or inputs.get("mac") or "unknown",
+            model=ident.get("model", "Provision-ISR speaker"),
+            firmware=ident.get("firmware", "unknown"),
+            duration_s=duration,
+            verification=result.get("verification", []),
+            warnings=result.get("warnings", []),
+            steps=result["steps"],
+            log=result["log"],
+            device={
+                "hostname": result["hostname"],
+                "ip": self._target_ip(),
+                "from_host": inputs.get("host", ""),
+            },
+        )
 
     def success_message(self, result: dict, entry: dict, took: str) -> str:
-        return (f"Configured speaker at {entry['ip']} (SN {entry['serial']}) in {took}. "
-                "Unplug it and connect the next one.")
+        return (f"Configured speaker at {entry['device']['ip']} (SN {entry['serial']}) "
+                f"in {took}. Unplug it and connect the next one.")
 
     def dismiss_message(self) -> str:
         return "Connect the next speaker…"

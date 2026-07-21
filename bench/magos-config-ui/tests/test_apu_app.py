@@ -7,6 +7,8 @@ import asyncio
 
 import pytest
 
+from bench_core.run_record import RUN_RECORD_SCHEMA
+
 import apu_app as apu_mod
 from magos_bench import AUTO_IDLE_TIMEOUT_SEC, MISS_THRESHOLD
 
@@ -112,6 +114,17 @@ def test_cycle_failure_does_not_advance_channel(device):
     poll(HOST)
     assert apu.state["phase"] == "error"
     assert apu.state["cycle"] == {"enabled": True, "index": 0, "count": 0}
+
+
+def test_configure_records_canonical_entry(device):
+    asyncio.run(apu.run_configuration(
+        {"channel": "0", "ip": "192.168.88.60", "radar_ip": "192.168.88.50"}, HOST))
+    entry = apu.state["history"][0]
+    assert entry["schema"] == RUN_RECORD_SCHEMA
+    assert entry["tool"] == "magos-apu"
+    assert entry["status"] == "ok"
+    assert entry["device"]["ip"] == "192.168.88.60"
+    assert entry["device"]["radar_ip"] == "192.168.88.50"
 
 
 def test_auto_mode_uses_fixed_target(device):

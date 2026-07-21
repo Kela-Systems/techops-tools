@@ -8,6 +8,8 @@ import asyncio
 
 import pytest
 
+from bench_core.run_record import RUN_RECORD_SCHEMA
+
 import speaker_app as mod
 
 cfg = mod.configurator
@@ -88,10 +90,12 @@ def test_configure_records_history(monkeypatch):
     run_configure(ok=True, monkeypatch=monkeypatch)
     assert cfg.state["phase"] == "configured"
     entry = cfg.state["history"][0]
+    assert entry["schema"] == RUN_RECORD_SCHEMA
+    assert entry["tool"] == "speaker"
     assert entry["status"] == "ok"
     assert entry["serial"] == "TM-CS20-000001-XX"
-    assert entry["ip"] == cfg._target_ip()
-    assert entry["from_host"] == HOST
+    assert entry["device"]["ip"] == cfg._target_ip()
+    assert entry["device"]["from_host"] == HOST
 
 
 def test_failed_configure_sets_error(monkeypatch):

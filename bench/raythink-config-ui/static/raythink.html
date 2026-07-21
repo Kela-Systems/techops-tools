@@ -213,9 +213,9 @@ function render(s){
     const badge = (st)=> st==='ok' ? '<span class="badge badge-ok">DONE</span>'
       : '<span class="badge badge-err">FAILED</span>';
     body.innerHTML = rows.map(r=>`<tr>
-      <td>${badge(r.status)}</td><td>${esc(r.hostname||'')}</td>
-      <td>${esc(r.profile||'—')}</td>
-      <td class="mono">${esc(r.ip||'—')}</td>
+      <td>${badge(r.status)}</td><td>${esc((r.device||{}).hostname||'')}</td>
+      <td>${esc((r.device||{}).profile||'—')}</td>
+      <td class="mono">${esc((r.device||{}).ip||'—')}</td>
       <td class="mono">${esc(r.serial||'—')}</td><td>${esc(r.firmware||'—')}</td>
       <td>${r.duration_s!=null?fmtDur(r.duration_s):'—'}</td>
       <td class="muted">${esc(r.time||'')}</td></tr>`).join('');
@@ -226,9 +226,9 @@ function render(s){
   if (lr){
     $('resultCard').style.display = '';
     $('identity').innerHTML = `
-      <span>camera <b>${esc(lr.hostname||'—')}</b></span>
-      <span>profile <b>${esc(lr.profile||'—')}</b></span>
-      <span>IP <b class="mono">${esc(lr.ip||'—')}</b></span>
+      <span>camera <b>${esc((lr.device||{}).hostname||'—')}</b></span>
+      <span>profile <b>${esc((lr.device||{}).profile||'—')}</b></span>
+      <span>IP <b class="mono">${esc((lr.device||{}).ip||'—')}</b></span>
       <span>serial <b class="mono">${esc(lr.serial||'—')}</b></span>
       <span>fw <b class="mono">${esc(lr.firmware||'—')}</b></span>` +
       (lr.duration_s != null ? `<span>took <b>${fmtDur(lr.duration_s)}</b></span>` : '');

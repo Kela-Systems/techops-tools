@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import re
 import socket
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +29,7 @@ from bench_core.bench_ui import (
     BenchConfigurator,
     read_device_mac,
 )
+from bench_core.run_record import build_run_entry
 
 from rutm_configure import DEFAULT_RUTM_LAN_IP, DEFAULT_RUTM_PREFIX, RutmClient, configure_rutm
 
@@ -90,21 +90,24 @@ class RutmConfigurator(BenchConfigurator):
 
     def build_entry(self, result: dict, inputs: dict, duration: int) -> dict:
         ident = result["identity"]
-        return {
-            "hostname": result["hostname"],
-            "site_name": inputs["site_name"],
-            "mac": ident.get("mac", inputs.get("mac") or "unknown"),
-            "serial": ident.get("serial", "unknown"),
-            "model": ident.get("model", "RUTM08"),
-            "firmware": ident.get("firmware", "unknown"),
-            "status": "ok" if result["ok"] else "error",
-            "error": result["error"],
-            "steps": result["steps"],
-            "verification": result.get("verification", []),
-            "log": result["log"],
-            "duration_s": duration,
-            "time": datetime.now(timezone.utc).strftime("%H:%M:%S"),
-        }
+        return build_run_entry(
+            tool="rutm",
+            ok=result["ok"],
+            error=result["error"],
+            serial=ident.get("serial", "unknown"),
+            mac=ident.get("mac", inputs.get("mac") or "unknown"),
+            model=ident.get("model", "RUTM08"),
+            firmware=ident.get("firmware", "unknown"),
+            duration_s=duration,
+            verification=result.get("verification", []),
+            warnings=result.get("warnings", []),
+            steps=result["steps"],
+            log=result["log"],
+            device={
+                "hostname": result["hostname"],
+                "site_name": inputs["site_name"],
+            },
+        )
 
     def dismiss_message(self) -> str:
         return "Plug in the next RUTM08…"

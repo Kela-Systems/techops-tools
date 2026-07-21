@@ -372,9 +372,9 @@ function render(s) {
         <td>${esc(h.model || '—')}</td>
         <td class="mono">${esc(h.serial || '—')}</td>
         <td class="mono">${esc(h.mac || '—')}</td>
-        <td>${esc(h.channel)}</td>
-        <td>${esc(h.ip)}</td>
-        <td class="muted">${esc(h.radar_ip || '—')}</td>
+        <td>${esc((h.device||{}).channel)}</td>
+        <td>${esc((h.device||{}).ip)}</td>
+        <td class="muted">${esc((h.device||{}).radar_ip || '—')}</td>
         <td>${statusBadge(h)}</td>
       </tr>`).join('');
   }

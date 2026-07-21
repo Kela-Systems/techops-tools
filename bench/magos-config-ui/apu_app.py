@@ -11,7 +11,6 @@ the APU specifics. Device talking is delegated to APUClient in apu_configure.py.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +18,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from bench_core.bench_ui import StepCollector
+from bench_core.run_record import build_run_entry
 
 from apu_configure import (
     APUClient,
@@ -168,26 +168,30 @@ class ApuBench(MagosBench):
             "verified": verified, "verify_detail": verify_detail,
         }
 
-    def build_entry(self, target: dict, host: str, result: dict) -> dict:
+    def build_entry(self, target: dict, host: str, result: dict,
+                    duration: int) -> dict:
         ident = result["identity"]
-        return {
-            "channel": target["channel"],
-            "ip": result["ip"],
-            "radar_ip": target.get("radar_ip") or "—",
-            "from_host": host,
-            "ntp": self.cfg["ntp"],
-            "timezone": self.cfg["timezone"],
-            "serial": ident["serial"],
-            "mac": ident["mac"],
-            "model": ident["model"],
-            "status": "ok" if result["ok"] else "error",
-            "error": result["error"],
-            "verified": result["verified"],
-            "verify_detail": result["verify_detail"],
-            "steps": result["steps"],
-            "log": result["log"],
-            "time": datetime.now(timezone.utc).strftime("%H:%M:%S"),
-        }
+        return build_run_entry(
+            tool="magos-apu",
+            ok=result["ok"],
+            error=result["error"],
+            serial=ident["serial"],
+            mac=ident["mac"],
+            model=ident["model"],
+            duration_s=duration,
+            verified=result["verified"],
+            verify_detail=result["verify_detail"],
+            steps=result["steps"],
+            log=result["log"],
+            device={
+                "channel": target["channel"],
+                "ip": result["ip"],
+                "radar_ip": target.get("radar_ip") or "—",
+                "from_host": host,
+                "ntp": self.cfg["ntp"],
+                "timezone": self.cfg["timezone"],
+            },
+        )
 
     def success_message(self, ident: dict, result: dict, target: dict) -> str:
         radar_ip = target.get("radar_ip")
