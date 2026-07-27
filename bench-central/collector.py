@@ -15,13 +15,19 @@ Ingest contract (the uploader's side is documented in bench_core/central.py):
         409  duplicate run_id (idempotent retries are free)
         400  not a usable record (no run_id) — the uploader quarantines it
 
-Read endpoints for engineers (browse/verify; no UI yet):
+Read side:
 
+    GET /                      the read-only dashboard (static/index.html,
+                               TEC-575) — list/search runs, click into one
     GET /api/v1/health         liveness + row count + db size
     GET /api/v1/runs           summaries, newest first; filters:
-                               station_id, tool, status, serial, operator,
-                               since/until (ISO), limit (default 100, max 1000)
+                               station_id, tool, status, serial, site,
+                               operator, q (substring across serial/mac/
+                               hostname/site/operator/model), since/until
+                               (ISO), limit (default 100, max 1000), offset
     GET /api/v1/runs/{run_id}  the full stored record
+    GET /api/v1/filters        distinct stations/tools/sites/operators for
+                               the dashboard's dropdowns
 
 Durability: WAL journal + synchronous=FULL — a row acknowledged with 201 is
 on disk before the uploader deletes its outbox copy, so an instance restart
@@ -48,6 +54,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from bench_core.run_record import parse_run_record
 
@@ -73,6 +80,8 @@ CREATE TABLE IF NOT EXISTS runs (
     operator      TEXT,
     station_id    TEXT,
     bench_version TEXT,
+    site          TEXT,
+    hostname      TEXT,
     record        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_time    ON runs(timestamp);
@@ -83,7 +92,12 @@ CREATE INDEX IF NOT EXISTS idx_runs_serial  ON runs(serial);
 _SUMMARY_COLS = ("run_id", "received_at", "timestamp", "tool", "status",
                  "serial", "mac", "model", "firmware", "duration_s",
                  "verified", "error", "operator", "station_id",
-                 "bench_version")
+                 "bench_version", "site", "hostname")
+
+# Substring search (?q=) matches any of these columns.
+_SEARCH_COLS = ("serial", "mac", "hostname", "site", "operator", "model")
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -100,11 +114,27 @@ def init_db(db_path: Path) -> None:
     with closing(_connect(db_path)) as conn:
         conn.execute("PRAGMA journal_mode=WAL")  # persistent once set
         conn.executescript(_SCHEMA)
+        # TEC-575 migration: databases created before the dashboard lack the
+        # site/hostname columns (they lived only inside the record JSON).
+        # Add them and backfill from the stored records, once.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+        if "site" not in cols:
+            with conn:
+                conn.execute("ALTER TABLE runs ADD COLUMN site TEXT")
+                conn.execute("ALTER TABLE runs ADD COLUMN hostname TEXT")
+                conn.execute("""
+                    UPDATE runs SET
+                        site     = json_extract(record, '$.device.site_name'),
+                        hostname = json_extract(record, '$.device.hostname')
+                """)
 
 
 def _row_from(entry: dict, received_at: str) -> dict:
     verified = entry.get("verified")
+    device = entry.get("device") or {}
     return {
+        "site": device.get("site_name"),
+        "hostname": device.get("hostname"),
         "run_id": entry["run_id"],
         "received_at": received_at,
         "timestamp": entry.get("timestamp"),
@@ -152,16 +182,23 @@ def create_app(db_path: Optional[Path] = None) -> FastAPI:
     @app.get("/api/v1/runs")
     def list_runs(station_id: Optional[str] = None, tool: Optional[str] = None,
                   status: Optional[str] = None, serial: Optional[str] = None,
-                  operator: Optional[str] = None,
+                  site: Optional[str] = None, operator: Optional[str] = None,
+                  q: Optional[str] = None,
                   since: Optional[str] = None, until: Optional[str] = None,
-                  limit: int = Query(default=100, ge=1, le=1000)):
+                  limit: int = Query(default=100, ge=1, le=1000),
+                  offset: int = Query(default=0, ge=0)):
         clauses, params = [], []
         for col, value in (("station_id", station_id), ("tool", tool),
                            ("status", status), ("serial", serial),
-                           ("operator", operator)):
+                           ("site", site), ("operator", operator)):
             if value is not None:
                 clauses.append(f"{col} = ?")
                 params.append(value)
+        if q:
+            needle = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append("(" + " OR ".join(
+                f"{col} LIKE ? ESCAPE '\\'" for col in _SEARCH_COLS) + ")")
+            params.extend([f"%{needle}%"] * len(_SEARCH_COLS))
         # Records missing their own timestamp still sort/filter by arrival.
         when = "COALESCE(timestamp, received_at)"
         if since is not None:
@@ -171,14 +208,31 @@ def create_app(db_path: Optional[Path] = None) -> FastAPI:
             clauses.append(f"{when} <= ?")
             params.append(until)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = (f"SELECT {', '.join(_SUMMARY_COLS)} FROM runs {where} "
-               f"ORDER BY {when} DESC LIMIT ?")
         with closing(_connect(db)) as conn:
-            rows = conn.execute(sql, (*params, limit)).fetchall()
+            total = conn.execute(f"SELECT COUNT(*) FROM runs {where}",
+                                 params).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT {', '.join(_SUMMARY_COLS)} FROM runs {where} "
+                f"ORDER BY {when} DESC LIMIT ? OFFSET ?",
+                (*params, limit, offset)).fetchall()
         runs = [dict(r) for r in rows]
         for r in runs:
             r["verified"] = None if r["verified"] is None else bool(r["verified"])
-        return {"count": len(runs), "runs": runs}
+        return {"count": len(runs), "total": total, "offset": offset,
+                "runs": runs}
+
+    @app.get("/api/v1/filters")
+    def filters():
+        """Distinct values for the dashboard's dropdowns."""
+        out = {}
+        with closing(_connect(db)) as conn:
+            for key, col in (("stations", "station_id"), ("tools", "tool"),
+                             ("sites", "site"), ("operators", "operator")):
+                rows = conn.execute(
+                    f"SELECT DISTINCT {col} FROM runs "
+                    f"WHERE {col} IS NOT NULL AND {col} != '' ORDER BY {col}")
+                out[key] = [r[0] for r in rows]
+        return out
 
     @app.get("/api/v1/runs/{run_id}")
     def get_run(run_id: str):
@@ -195,6 +249,10 @@ def create_app(db_path: Optional[Path] = None) -> FastAPI:
             count = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
         return {"ok": True, "runs": count,
                 "db": str(db), "db_bytes": db.stat().st_size}
+
+    @app.get("/", include_in_schema=False)
+    def dashboard():
+        return FileResponse(STATIC_DIR / "index.html")
 
     return app
 

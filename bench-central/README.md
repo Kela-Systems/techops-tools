@@ -69,10 +69,19 @@ To update the collector: `git -C ~/techops-tools pull`,
 sudo sqlite3 /var/lib/bench-central/runs.db ".backup /var/lib/bench-central/runs.backup.db"
 ```
 
-## Browsing without a UI (for now)
+## Browsing
+
+**Dashboard (TEC-575):** open `http://techops-automations-host:8100/` in a
+browser (any tailnet device). Read-only: search by serial/MAC/hostname/site/
+operator, filter by station, device type, site, outcome and date range, and
+click any run for its full detail — verification checks, warnings, and the
+step log. No auth: reachability over the tailnet IS the access control.
+
+The same data over the API:
 
 ```bash
 curl 'http://techops-automations-host:8100/api/v1/runs?station_id=bench-1&status=error&limit=20'
+curl 'http://techops-automations-host:8100/api/v1/runs?q=6008952944'
 curl 'http://techops-automations-host:8100/api/v1/runs?since=2026-07-01&until=2026-08-01'
 curl 'http://techops-automations-host:8100/api/v1/runs/<run_id>'   # full record, steps included
 ```
