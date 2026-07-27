@@ -8,9 +8,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=bench-central
-Group=bench-central
-# /var/lib/bench-central, created and owned for us by systemd.
+# Runs as the checkout's owner: the repo lives in ec2-user's home, and a
+# dedicated service user couldn't traverse into /home/ec2-user (mode 700/750).
+# Privilege separation buys little here — one process, tailnet-only host.
+User=ec2-user
+Group=ec2-user
+# /var/lib/bench-central, created and owned for us by systemd. Deliberately
+# OUTSIDE the checkout: a git pull, re-clone, or rm -rf ~/techops-tools must
+# never touch the audit trail.
 StateDirectory=bench-central
 Environment=BENCH_CENTRAL_DB=/var/lib/bench-central/runs.db
 # 0.0.0.0 is safe here: the instance has NO inbound security-group rules, so
@@ -18,8 +23,8 @@ Environment=BENCH_CENTRAL_DB=/var/lib/bench-central/runs.db
 # instead for belt-and-braces, at the cost of a boot-order dependency.
 Environment=BENCH_CENTRAL_HOST=0.0.0.0
 Environment=BENCH_CENTRAL_PORT=8100
-WorkingDirectory=/opt/techops-tools/bench-central
-ExecStart=/opt/techops-tools/bench-central/.venv/bin/python collector.py
+WorkingDirectory=/home/ec2-user/techops-tools/bench-central
+ExecStart=/home/ec2-user/techops-tools/bench-central/.venv/bin/python collector.py
 Restart=always
 RestartSec=5
 
