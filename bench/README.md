@@ -115,6 +115,15 @@ the one launcher.
   station ID defaults to the machine hostname; set `BENCH_STATION_ID` before
   launching to override it. `bench_version` is the short git revision exported
   by the launcher as `BENCH_VERSION`.
+- **Central shipping (opt-in per station):** set `BENCH_CENTRAL_URL` to the
+  collector's base URL (e.g. `http://techops-automations-host:8100`, reachable
+  over Tailscale) before launching, and every completed run record is also
+  queued under `<tool>/logs/outbox/` and uploaded in the background
+  (`bench_core/src/bench_core/central.py`). Offline benches just queue —
+  records upload when connectivity returns, with backoff, and a run never
+  blocks or fails because the network is down. Raw Magos device payloads stay
+  in the local per-run JSON only; they are never shipped. When the variable is
+  unset (the default), nothing is spooled and no uploader runs.
 - **Tests** live per tool under `<tool>/tests/` and run with no hardware. From
   the `bench/` root: `.venv/bin/python -m pytest` runs every tool's suite.
 - Secrets stay local: real `*.config.json`, exported `profiles/`, and `firmware/`

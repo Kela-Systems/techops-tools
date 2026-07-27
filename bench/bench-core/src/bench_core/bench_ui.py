@@ -37,6 +37,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from bench_core import LOG_LINE_FORMAT, normalize_mac
+from bench_core.central import spool_run_record, start_central_uploader
 
 try:
     import requests
@@ -132,6 +133,10 @@ def save_run_record(log_dir: Path, entry: dict, *, name_stem: Optional[str],
     if ts is None:
         ts = datetime.now(timezone.utc)
         entry = {**entry, "timestamp": ts.isoformat()}
+    # Queue for central upload (TEC-573). The record only — `extra` (raw device
+    # payloads) stays in the local file. Independent of the local write below,
+    # and never blocks or fails the run.
+    spool_run_record(log_dir, entry)
     name = (f"{prefix}{ts.strftime('%Y%m%d-%H%M%S')}_{slug(name_stem)}_"
             f"{entry.get('status')}.json")
     path = log_dir / name
@@ -351,6 +356,9 @@ class BenchConfigurator:
         self.log_dir.mkdir(exist_ok=True)
         self.logger = setup_device_logging(self.log_dir, self.log_filename, self.logger_name)
         self._prune_logs()  # trim any backlog left by earlier sessions
+        # Ships queued run records to the collector when the station has
+        # BENCH_CENTRAL_URL set (TEC-573); None (fully off) otherwise.
+        self.central_uploader = start_central_uploader(self.log_dir, self.logger)
         self.bench_version = bench_version(base_dir)
         self.station_id = station_id()
         self.operator_store = OperatorStore(base_dir.parent / OPERATOR_FILENAME)
