@@ -12,9 +12,12 @@ bench — through `parse_run_record()`.
 Schema `bench-run-record/1` — the common core, identical for every tool:
 
     schema        "bench-run-record/1"
+    run_id        unique id of this run (uuid4 string), minted when the entry
+                  is built — the idempotency key for central upload (TEC-347)
     tool          which app produced it: "otd" | "rutm" | "raythink" |
                   "speaker" | "magos-radar" | "magos-apu"
-    time          run end, UTC "HH:MM:SS"
+    timestamp     run end, full ISO-8601 UTC datetime
+    time          run end, UTC "HH:MM:SS" (kept for the UI history column)
     status        "ok" | "error"
     error         failure summary (str) or None
     serial        device serial ("unknown" when unreadable)
@@ -33,8 +36,9 @@ Schema `bench-run-record/1` — the common core, identical for every tool:
     device        per-family extension block (see below)
 
 The bench bases stamp three provenance fields into every entry after it is
-built (`operator`, `station_id`, `bench_version` — TEC-345) plus `log_file`,
-and the per-run JSON file adds a full ISO `timestamp`.
+built (`operator`, `station_id`, `bench_version` — TEC-345) plus `log_file`.
+(Before `run_id`/`timestamp` joined the core, the full ISO timestamp was added
+only by the per-run JSON writer — `parse_run_record()` still accepts those.)
 
 `device` extension blocks (per-family fields, everything else stays core):
 
@@ -47,6 +51,7 @@ and the per-run JSON file adds a full ISO `timestamp`.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -91,10 +96,13 @@ def build_run_entry(*, tool: str, ok: bool, error: Optional[str] = None,
         raise ValueError(f"Unknown tool '{tool}' — expected one of {TOOLS}.")
     if verified is None and verification:
         verified, verify_detail = verification_outcome(verification)
+    now = datetime.now(timezone.utc)
     return {
         "schema": RUN_RECORD_SCHEMA,
+        "run_id": str(uuid.uuid4()),
         "tool": tool,
-        "time": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+        "timestamp": now.isoformat(),
+        "time": now.strftime("%H:%M:%S"),
         "status": "ok" if ok else "error",
         "error": error,
         "serial": serial,
@@ -139,11 +147,15 @@ def parse_run_record(data: dict) -> dict:
     and return it in the canonical shape. Legacy records get their family
     inferred, their per-family top-level keys lifted into `device`, and their
     verification style collapsed into the core verified/verify_detail pair.
-    Extra keys (operator, station_id, bench_version, log_file, timestamp,
-    raw_identity_payloads, ...) pass through unchanged."""
+    Extra keys (operator, station_id, bench_version, log_file,
+    raw_identity_payloads, ...) pass through unchanged. Records written before
+    run_id/timestamp joined the core get None for whichever is missing, so
+    consumers can rely on the keys being present."""
     if data.get("schema") == RUN_RECORD_SCHEMA:
         entry = dict(data)
         entry.setdefault("device", {})
+        entry.setdefault("run_id", None)
+        entry.setdefault("timestamp", None)
         return entry
 
     tool = _infer_legacy_tool(data)
@@ -151,6 +163,8 @@ def parse_run_record(data: dict) -> dict:
     entry["schema"] = RUN_RECORD_SCHEMA
     entry["tool"] = tool
     entry["device"] = {k: data[k] for k in _DEVICE_FIELDS if k in data}
+    entry.setdefault("run_id", None)
+    entry.setdefault("timestamp", None)  # per-run JSON files carry one; history entries don't
     entry.setdefault("error", None)
     entry.setdefault("firmware", None)
     entry.setdefault("duration_s", None)

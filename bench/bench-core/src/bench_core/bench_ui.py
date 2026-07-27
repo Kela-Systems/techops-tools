@@ -113,6 +113,39 @@ def prune_json_logs(log_dir: Path, keep: int = JSON_LOG_RETENTION) -> None:
                 stale.unlink()
 
 
+def save_run_record(log_dir: Path, entry: dict, *, name_stem: Optional[str],
+                    prefix: str = "", extra: Optional[dict] = None,
+                    logger: Optional[logging.Logger] = None) -> Optional[str]:
+    """Write one run record to its per-run JSON file under `log_dir` and keep
+    the folder bounded. The ONE writer shared by both bench bases
+    (BenchConfigurator and MagosBench) — every record lands on disk through
+    here, so central shipping (TEC-347) can hook a single choke point.
+
+    The filename timestamp comes from the record's own `timestamp` (stamped by
+    build_run_entry), so the name and the content always agree; a record
+    without one (not produced today) gets stamped with the write time.
+    Best-effort: a failed write is logged and the run carries on with
+    log_file=None rather than failing."""
+    ts = None
+    with contextlib.suppress(TypeError, ValueError):
+        ts = datetime.fromisoformat(entry.get("timestamp") or "")
+    if ts is None:
+        ts = datetime.now(timezone.utc)
+        entry = {**entry, "timestamp": ts.isoformat()}
+    name = (f"{prefix}{ts.strftime('%Y%m%d-%H%M%S')}_{slug(name_stem)}_"
+            f"{entry.get('status')}.json")
+    path = log_dir / name
+    try:
+        path.write_text(json.dumps({**entry, **(extra or {})},
+                                   indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        if logger:
+            logger.warning("Could not write log file %s: %s", path, e)
+        return None
+    prune_json_logs(log_dir)  # keep the folder bounded during long sessions
+    return str(path)
+
+
 def bench_version(base_dir: Path) -> str:
     """Short git revision this bench is running: the BENCH_VERSION exported by the
     launcher, else a direct git lookup, else 'unknown'. Lets an engineer tell 5+
@@ -452,17 +485,9 @@ class BenchConfigurator:
                          self.bench_version)
 
     def _save_log(self, entry: dict) -> Optional[str]:
-        ts = datetime.now(timezone.utc)
-        hostname = entry.get("device", {}).get("hostname")
-        name = (f"{ts.strftime('%Y%m%d-%H%M%S')}_{slug(hostname)}_"
-                f"{entry.get('status')}.json")
-        path = self.log_dir / name
-        with contextlib.suppress(OSError):
-            path.write_text(json.dumps({**entry, "timestamp": ts.isoformat()},
-                                       indent=2, ensure_ascii=False), encoding="utf-8")
-            self._prune_logs()  # keep the folder bounded during long-running sessions
-            return str(path)
-        return None
+        return save_run_record(self.log_dir, entry,
+                               name_stem=entry.get("device", {}).get("hostname"),
+                               logger=self.logger)
 
     async def execute_run(self, inputs: dict, label: str) -> bool:
         """Run one device's pipeline. Returns False if a run is already in

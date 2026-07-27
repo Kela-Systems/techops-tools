@@ -9,8 +9,9 @@ radar). All of that common machinery lives here in `MagosBench`; each app is a
 thin subclass that fills in the device-specific hooks.
 
 This reuses the small generic bits from the shared `bench_core` package
-(`StepCollector`, `slug`) so the Magos tools and the Teltonika tools share one
-infrastructure layer. The device talking still goes through the Magos clients
+(`OperatorStore`, `save_run_record`, ...) so the Magos tools and the Teltonika
+tools share one infrastructure layer, including the single per-run JSON writer
+(TEC-572). The device talking still goes through the Magos clients
 (magos_configure.MagosClient / apu_configure.APUClient), which both log through
 the "magos" logger.
 """
@@ -18,14 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import logging.handlers
 import os
 import sys
 import time
 import webbrowser
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -42,7 +41,7 @@ from bench_core.bench_ui import (
     bench_version,
     prune_json_logs,
     run_stamp,
-    slug,
+    save_run_record,
     station_id,
 )
 
@@ -227,19 +226,11 @@ class MagosBench:
     # ── per-unit logging ──────────────────────────────────────────────────────
 
     def _save_log(self, entry: dict, raw: dict) -> Optional[str]:
-        ts = datetime.now(timezone.utc)
-        name = (f"{self.log_prefix}{ts.strftime('%Y%m%d-%H%M%S')}_"
-                f"{slug(entry.get('serial') or 'unknown')}_{entry.get('status')}.json")
-        path = self.log_dir / name
-        payload = {**entry, "timestamp": ts.isoformat(), "raw_identity_payloads": raw}
-        try:
-            path.write_text(json.dumps(payload, indent=2, ensure_ascii=False),
-                            encoding="utf-8")
-        except OSError as e:
-            self.log.warning("Could not write log file %s: %s", path, e)
-            return None
-        prune_json_logs(self.log_dir)  # keep the folder bounded during long cycle-mode runs
-        return str(path)
+        return save_run_record(self.log_dir, entry,
+                               name_stem=entry.get("serial"),
+                               prefix=self.log_prefix,
+                               extra={"raw_identity_payloads": raw},
+                               logger=self.log)
 
     # ── public state ──────────────────────────────────────────────────────────
 
