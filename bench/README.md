@@ -102,9 +102,12 @@ the one launcher.
   `bench-core/src/bench_core/run_record.py`. The common core (identity,
   status, verification, steps, timing) is identical across tools; per-family
   fields (site name, channel, profile, radar IP, ...) live under the entry's
-  `device` block. All `build_entry` hooks emit it via `build_run_entry()`, and
-  consumers (central reporting, label printing) read any record — including
-  pre-schema JSONs from old benches — through `parse_run_record()`.
+  `device` block. All `build_entry` hooks emit it via `build_run_entry()`,
+  which also mints a unique `run_id` and a full ISO UTC `timestamp` per run,
+  and every per-run JSON is written through one shared writer,
+  `bench_core.bench_ui.save_run_record()`. Consumers (central reporting,
+  label printing) read any record — including pre-schema JSONs from old
+  benches — through `parse_run_record()`.
 - **Run provenance:** every per-run JSON (and history entry) is stamped with
   `operator`, `station_id` and `bench_version`. The operator name is entered in
   the header of any tool page (badge scan or typed, once at day start) and is

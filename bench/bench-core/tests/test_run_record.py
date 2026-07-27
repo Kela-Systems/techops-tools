@@ -4,6 +4,9 @@ The legacy fixtures below mirror the exact entry shapes each tool's
 `build_entry` emitted BEFORE the schema existed — parse_run_record must keep
 reading the per-run JSON files already sitting in logs/ on operator machines.
 """
+import uuid
+from datetime import datetime
+
 import pytest
 
 from bench_core.run_record import (
@@ -28,6 +31,16 @@ def test_build_entry_core_shape():
     assert entry["device"] == {"hostname": "otd-haifa", "site_name": "haifa"}
     # containers default to empty, never None
     assert entry["verification"] == [] and entry["warnings"] == [] and entry["steps"] == []
+
+
+def test_build_entry_mints_run_id_and_timestamp():
+    a = build_run_entry(tool="otd", ok=True)
+    b = build_run_entry(tool="otd", ok=True)
+    uuid.UUID(a["run_id"])                       # well-formed
+    assert a["run_id"] != b["run_id"]            # unique per run (upload dedup key)
+    ts = datetime.fromisoformat(a["timestamp"])
+    assert ts.tzinfo is not None                 # timezone-aware UTC
+    assert a["time"] == ts.strftime("%H:%M:%S")  # UI column agrees with the core stamp
 
 
 def test_build_entry_failure_status():
@@ -76,6 +89,16 @@ def test_parse_canonical_roundtrip():
     assert parsed == entry
 
 
+def test_parse_fills_missing_run_id_and_timestamp():
+    # A canonical record written before run_id/timestamp joined the core must
+    # still parse, with both keys present (None) so consumers can rely on them.
+    rec = build_run_entry(tool="otd", ok=True)
+    del rec["run_id"], rec["timestamp"]
+    parsed = parse_run_record(rec)
+    assert parsed["run_id"] is None
+    assert parsed["timestamp"] is None
+
+
 # ── parse_run_record: legacy (pre-schema) records, one per family ─────────────
 
 def _legacy_common(**over):
@@ -98,6 +121,7 @@ def test_parse_legacy_otd():
                                 "imei": "35000..."}
     assert parsed["verified"] is True          # derived from the check list
     assert parsed["operator"] == "Dana K"      # provenance passes through
+    assert parsed["run_id"] is None            # pre-run_id record: key present, empty
 
 
 def test_parse_legacy_rutm():
