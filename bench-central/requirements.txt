@@ -1,0 +1,5 @@
+# Runtime deps of the collector. bench-core (the run-record schema) comes
+# from this same repo checkout:
+-e ../bench/bench-core
+fastapi~=0.128
+uvicorn~=0.39
