@@ -54,6 +54,8 @@
   .pill.ok  { background: var(--ok-bg);  color: var(--ok-fg); }
   .pill.err { background: var(--err-bg); color: var(--err-fg); }
   .pill.na  { background: var(--na-bg);  color: var(--na-fg); font-weight: 400; }
+  .pill.warn { background: #fbf0d9; color: #8a6210; font-weight: 400; }
+  .ver { font: 12px ui-monospace, Menlo, Consolas, monospace; }
   .more { display: block; margin: 14px auto; }
   .empty { text-align: center; color: var(--muted); padding: 30px; }
 
@@ -111,8 +113,8 @@
   <table>
     <thead><tr>
       <th>Time (UTC)</th><th>Device</th><th>Serial</th><th>Hostname</th>
-      <th>Site</th><th>Station</th><th>Operator</th><th>Outcome</th>
-      <th>Verified</th><th>Took</th><th>Error</th>
+      <th>Site</th><th>Station</th><th>Operator</th><th>Bench ver</th>
+      <th>Outcome</th><th>Verified</th><th>Took</th><th>Error</th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
@@ -128,6 +130,9 @@ const TOOL_NAMES = {otd: "OTD500", rutm: "RUTM08", raythink: "Raythink",
                     "magos-apu": "Magos APU"};
 const PAGE = 100;
 let offset = 0, total = 0;
+// bench_version of the newest run on record (set at boot) — rows on any
+// other version get flagged, so drifting stations stand out.
+let newestVersion = null;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
@@ -147,6 +152,12 @@ function took(s) {
 function when(iso) {
   if (!iso) return "";
   return iso.replace("T", " ").replace(/([.+].*|Z)$/, "").slice(0, 19);
+}
+function versionCell(v) {
+  if (!v || v === "unknown") return pill("na", "?");
+  if (newestVersion && v !== newestVersion)
+    return `<span class="pill warn ver" title="newest seen: ${esc(newestVersion)}">${esc(v)}</span>`;
+  return `<span class="ver">${esc(v)}</span>`;
 }
 
 function query() {
@@ -177,13 +188,14 @@ async function load(append) {
       <td>${esc(r.site || "")}</td>
       <td>${esc(r.station_id || "")}</td>
       <td>${esc(r.operator || "")}</td>
+      <td>${versionCell(r.bench_version)}</td>
       <td>${outcomePill(r.status)}</td>
       <td>${verifiedPill(r.verified)}</td>
       <td>${esc(took(r.duration_s))}</td>
       <td class="err-cell" title="${esc(r.error || "")}">${esc(r.error || "")}</td>
     </tr>`).join("");
   if (append) $("rows").insertAdjacentHTML("beforeend", html);
-  else $("rows").innerHTML = html || `<tr><td colspan="11" class="empty">No runs match.</td></tr>`;
+  else $("rows").innerHTML = html || `<tr><td colspan="12" class="empty">No runs match.</td></tr>`;
   offset += data.runs.length;
   $("count").textContent = total ? `Showing ${offset} of ${total} runs` : "";
   $("more").hidden = offset >= total;
@@ -228,11 +240,15 @@ async function openDetail(runId) {
 }
 
 async function boot() {
-  const [health, filters] = await Promise.all([
+  const [health, filters, newest] = await Promise.all([
     (await fetch("api/v1/health")).json(),
     (await fetch("api/v1/filters")).json(),
+    (await fetch("api/v1/runs?limit=1")).json(),
   ]);
-  $("health").textContent = `${health.runs} runs on record`;
+  newestVersion = newest.runs[0]?.bench_version || null;
+  $("health").textContent = `${health.runs} runs on record`
+    + (newestVersion ? ` · newest bench version: ${newestVersion}` : "")
+    + ` · collector ${health.version}`;
   const fill = (id, values, labels) => {
     for (const v of values) {
       const opt = document.createElement("option");

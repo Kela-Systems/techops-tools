@@ -45,9 +45,11 @@ Config (env):
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
+import subprocess
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -154,9 +156,22 @@ def _row_from(entry: dict, received_at: str) -> dict:
     }
 
 
+def _repo_version() -> str:
+    """The short git revision of this collector's checkout, or 'unknown'.
+    Comparable with the stations' bench_version — same repo, same rev format."""
+    with contextlib.suppress(Exception):
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             cwd=str(Path(__file__).resolve().parent),
+                             capture_output=True, text=True, timeout=3)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    return "unknown"
+
+
 def create_app(db_path: Optional[Path] = None) -> FastAPI:
     db = Path(db_path or os.environ.get("BENCH_CENTRAL_DB", "bench-central.db"))
     init_db(db)
+    version = _repo_version()  # once at startup, not per health poll
     app = FastAPI(title="Bench Central Collector")
 
     @app.post("/api/v1/runs", status_code=201)
@@ -247,7 +262,7 @@ def create_app(db_path: Optional[Path] = None) -> FastAPI:
     def health():
         with closing(_connect(db)) as conn:
             count = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
-        return {"ok": True, "runs": count,
+        return {"ok": True, "runs": count, "version": version,
                 "db": str(db), "db_bytes": db.stat().st_size}
 
     @app.get("/", include_in_schema=False)
