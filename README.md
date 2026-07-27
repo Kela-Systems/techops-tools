@@ -20,6 +20,8 @@ techops-tools/
 │   ├── raythink-config-ui/        Raythink thermal camera (:8005)
 │   └── speaker-config-ui/         Provision-ISR IP speaker (:8006), DHCP auto-scan
 │
+├── bench-central/                 Run-record collector (FastAPI + SQLite) on the tailnet host — the
+│                                  durable audit trail the bench stations upload to (see its README.md)
 ├── raster_to_gpkg.py              Convert TIFFs in a folder into an InspireCRS84Quad GeoPackage
 ├── deployments_scripts/
 │   ├── add_inventory.sh           Generate + commit + PR a new on-prem Ansible inventory

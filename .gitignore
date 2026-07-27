@@ -27,6 +27,11 @@ env/
 .env.local
 .env.*.local
 
+# Bench-central: a local dev database (production lives in /var/lib/bench-central)
+bench-central/*.db
+bench-central/*.db-wal
+bench-central/*.db-shm
+
 # Real device/config files — commit only the *.example.* variants
 hub-admin/device_config.json
 hub-admin/device_config.*.json

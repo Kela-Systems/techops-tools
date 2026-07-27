@@ -1,0 +1,27 @@
+# Bench Central Collector — systemd unit for the tailnet host
+# (techops-automations-host). Install per bench-central/README.md.
+[Unit]
+Description=Bench Central Collector (run-record audit trail, TEC-574)
+# Tailscale must be up before we bind; harmless if the unit name differs.
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bench-central
+Group=bench-central
+# /var/lib/bench-central, created and owned for us by systemd.
+StateDirectory=bench-central
+Environment=BENCH_CENTRAL_DB=/var/lib/bench-central/runs.db
+# 0.0.0.0 is safe here: the instance has NO inbound security-group rules, so
+# only tailnet peers can reach the port. Set the Tailscale 100.x address
+# instead for belt-and-braces, at the cost of a boot-order dependency.
+Environment=BENCH_CENTRAL_HOST=0.0.0.0
+Environment=BENCH_CENTRAL_PORT=8100
+WorkingDirectory=/opt/techops-tools/bench-central
+ExecStart=/opt/techops-tools/bench-central/.venv/bin/python collector.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
