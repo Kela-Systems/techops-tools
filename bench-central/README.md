@@ -27,11 +27,17 @@ The checkout lives in ec2-user's home (`~/techops-tools`); the service runs as
 in `/var/lib/bench-central`, so updating or even re-cloning the repo never
 touches the data.
 
+Python 3.10+ is required (`bench-core`'s floor — same as the bench). Amazon
+Linux's stock `python3` is 3.9, and its bundled pip (21.x) predates modern
+editable installs anyway, so install 3.11 and build the venv from it:
+
 ```bash
 # as ec2-user
+sudo dnf install -y python3.11
 git clone https://github.com/Kela-Systems/techops-tools.git ~/techops-tools
 cd ~/techops-tools/bench-central
-python3 -m venv .venv
+python3.11 -m venv .venv
+.venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
 
 sudo cp deploy/bench-central.service /etc/systemd/system/
