@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<!-- Bench Central — read-only dashboard over the run-record audit trail
+     (TEC-575). One self-contained file, no build step: vanilla JS against the
+     collector's own /api/v1 endpoints. Served at / by collector.py. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bench Central — Run Records</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --line: #e2e5ea; --text: #1c2330;
+    --muted: #6b7484; --accent: #2456c4;
+    --ok-bg: #e2f4e8; --ok-fg: #176936; --err-bg: #fde8e8; --err-fg: #a02121;
+    --na-bg: #eef0f3; --na-fg: #6b7484;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 12px; padding: 14px 22px;
+           background: var(--card); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 17px; }
+  header .sub { color: var(--muted); font-size: 12.5px; }
+  main { max-width: 1280px; margin: 0 auto; padding: 16px 22px 60px; }
+
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: end;
+             background: var(--card); border: 1px solid var(--line);
+             border-radius: 8px; padding: 12px; margin-bottom: 14px; }
+  .filters label { display: flex; flex-direction: column; gap: 3px;
+                   font-size: 11.5px; color: var(--muted); }
+  .filters input, .filters select {
+    font: inherit; padding: 5px 8px; border: 1px solid var(--line);
+    border-radius: 6px; background: #fff; min-width: 110px; }
+  .filters input[type=search] { min-width: 210px; }
+  .filters button { font: inherit; padding: 6px 14px; border-radius: 6px;
+                    border: 1px solid var(--line); background: #fff; cursor: pointer; }
+  .filters button.primary { background: var(--accent); border-color: var(--accent);
+                            color: #fff; }
+  .count { color: var(--muted); font-size: 12.5px; margin: 0 0 8px 2px; }
+
+  table { width: 100%; border-collapse: collapse; background: var(--card);
+          border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  thead th { position: sticky; top: 0; background: #fafbfc; text-align: left;
+             font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em;
+             color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid var(--line);
+             white-space: nowrap; }
+  tbody td.err-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis;
+                      color: var(--err-fg); }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: #f2f6ff; }
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 99px;
+          font-size: 12px; font-weight: 600; }
+  .pill.ok  { background: var(--ok-bg);  color: var(--ok-fg); }
+  .pill.err { background: var(--err-bg); color: var(--err-fg); }
+  .pill.na  { background: var(--na-bg);  color: var(--na-fg); font-weight: 400; }
+  .more { display: block; margin: 14px auto; }
+  .empty { text-align: center; color: var(--muted); padding: 30px; }
+
+  /* detail modal */
+  #overlay { position: fixed; inset: 0; background: rgba(20,26,38,.45);
+             display: none; align-items: flex-start; justify-content: center;
+             padding: 5vh 16px; overflow: auto; }
+  #overlay.open { display: flex; }
+  #detail { background: var(--card); border-radius: 10px; max-width: 860px;
+            width: 100%; padding: 20px 24px; }
+  #detail h2 { margin: 0 0 2px; font-size: 16px; }
+  #detail .when { color: var(--muted); font-size: 12.5px; margin-bottom: 14px; }
+  #detail .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+                  gap: 8px 18px; margin-bottom: 14px; }
+  #detail .grid div b { display: block; font-size: 11px; color: var(--muted);
+                        text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+  #detail h3 { font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em;
+               color: var(--muted); margin: 16px 0 6px; }
+  #detail table td, #detail table th { white-space: normal; }
+  #detail .error-box { background: var(--err-bg); color: var(--err-fg);
+                       border-radius: 6px; padding: 8px 12px; }
+  #detail pre { background: #10141c; color: #cdd6e4; border-radius: 8px;
+                padding: 12px; max-height: 320px; overflow: auto;
+                font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+  #detail pre .warn { color: #f0c674; } #detail pre .err { color: #ff8f8f; }
+  #detail .close { float: right; border: none; background: none; font-size: 20px;
+                   cursor: pointer; color: var(--muted); }
+  .checkmark { color: var(--ok-fg); } .cross { color: var(--err-fg); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bench Central — Run Records</h1>
+  <span class="sub" id="health">…</span>
+</header>
+<main>
+  <form class="filters" id="filters" onsubmit="return false">
+    <label>Search (serial / MAC / hostname / site / operator)
+      <input type="search" id="q" placeholder="e.g. 6008952944"></label>
+    <label>Station <select id="station_id"><option value="">all</option></select></label>
+    <label>Device type <select id="tool"><option value="">all</option></select></label>
+    <label>Site <select id="site"><option value="">all</option></select></label>
+    <label>Outcome
+      <select id="status">
+        <option value="">all</option><option value="ok">ok</option>
+        <option value="error">error</option>
+      </select></label>
+    <label>From <input type="date" id="since"></label>
+    <label>To <input type="date" id="until"></label>
+    <button class="primary" id="apply">Apply</button>
+    <button id="reset">Reset</button>
+  </form>
+
+  <p class="count" id="count"></p>
+  <table>
+    <thead><tr>
+      <th>Time (UTC)</th><th>Device</th><th>Serial</th><th>Hostname</th>
+      <th>Site</th><th>Station</th><th>Operator</th><th>Outcome</th>
+      <th>Verified</th><th>Took</th><th>Error</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <button class="more" id="more" hidden>Load more</button>
+</main>
+
+<div id="overlay"><div id="detail"></div></div>
+
+<script>
+"use strict";
+const TOOL_NAMES = {otd: "OTD500", rutm: "RUTM08", raythink: "Raythink",
+                    speaker: "Speaker", "magos-radar": "Magos Radar",
+                    "magos-apu": "Magos APU"};
+const PAGE = 100;
+let offset = 0, total = 0;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function pill(kind, text) { return `<span class="pill ${kind}">${esc(text)}</span>`; }
+function outcomePill(status) { return pill(status === "ok" ? "ok" : "err", status); }
+function verifiedPill(v) {
+  if (v === true)  return pill("ok", "verified");
+  if (v === false) return pill("err", "failed");
+  return pill("na", "n/a");
+}
+function took(s) {
+  if (s == null) return "";
+  return s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+}
+function when(iso) {
+  if (!iso) return "";
+  return iso.replace("T", " ").replace(/([.+].*|Z)$/, "").slice(0, 19);
+}
+
+function query() {
+  const p = new URLSearchParams();
+  for (const id of ["q", "station_id", "tool", "site", "status"]) {
+    const v = $(id).value.trim();
+    if (v) p.set(id, v);
+  }
+  if ($("since").value) p.set("since", $("since").value);
+  // The date input gives a day; extend to its very end so "To" is inclusive.
+  if ($("until").value) p.set("until", $("until").value + "T23:59:59.999999");
+  return p;
+}
+
+async function load(append) {
+  if (!append) offset = 0;
+  const p = query();
+  p.set("limit", PAGE);
+  p.set("offset", offset);
+  const data = await (await fetch("api/v1/runs?" + p)).json();
+  total = data.total;
+  const html = data.runs.map(r => `
+    <tr data-id="${esc(r.run_id)}">
+      <td>${esc(when(r.timestamp || r.received_at))}</td>
+      <td>${esc(TOOL_NAMES[r.tool] || r.tool || "?")}</td>
+      <td>${esc(r.serial)}</td>
+      <td>${esc(r.hostname || "")}</td>
+      <td>${esc(r.site || "")}</td>
+      <td>${esc(r.station_id || "")}</td>
+      <td>${esc(r.operator || "")}</td>
+      <td>${outcomePill(r.status)}</td>
+      <td>${verifiedPill(r.verified)}</td>
+      <td>${esc(took(r.duration_s))}</td>
+      <td class="err-cell" title="${esc(r.error || "")}">${esc(r.error || "")}</td>
+    </tr>`).join("");
+  if (append) $("rows").insertAdjacentHTML("beforeend", html);
+  else $("rows").innerHTML = html || `<tr><td colspan="11" class="empty">No runs match.</td></tr>`;
+  offset += data.runs.length;
+  $("count").textContent = total ? `Showing ${offset} of ${total} runs` : "";
+  $("more").hidden = offset >= total;
+}
+
+async function openDetail(runId) {
+  const r = await (await fetch("api/v1/runs/" + encodeURIComponent(runId))).json();
+  const d = r.device || {};
+  const core = {
+    Serial: r.serial, MAC: r.mac, Model: r.model, Firmware: r.firmware,
+    Hostname: d.hostname, Site: d.site_name, Channel: d.channel, IP: d.ip,
+    "Radar IP": d.radar_ip, Station: r.station_id, Operator: r.operator,
+    "Bench version": r.bench_version, Took: took(r.duration_s),
+  };
+  const grid = Object.entries(core).filter(([, v]) => v != null && v !== "")
+    .map(([k, v]) => `<div><b>${esc(k)}</b>${esc(v)}</div>`).join("");
+  const checks = (r.verification || []).map(c => `
+    <tr><td>${c.ok === true ? '<span class="checkmark">✓</span>'
+             : c.ok === false ? '<span class="cross">✗</span>' : "–"}</td>
+        <td>${esc(c.item)}</td><td>${esc(c.expected ?? "")}</td>
+        <td>${esc(c.actual ?? "")}</td></tr>`).join("");
+  const warnings = (r.warnings || []).map(w => `<li>${esc(w)}</li>`).join("");
+  const steps = (r.steps || []).map(s => {
+    const cls = s.level === "warning" ? "warn" : s.level === "error" ? "err" : "";
+    return `<span class="${cls}">[${esc(s.time)}] [${esc(s.sn)}] ${esc(s.msg)}</span>`;
+  }).join("\n");
+
+  $("detail").innerHTML = `
+    <button class="close" onclick="$('overlay').classList.remove('open')">✕</button>
+    <h2>${esc(TOOL_NAMES[r.tool] || r.tool)} — ${esc(r.serial)}
+        ${outcomePill(r.status)} ${verifiedPill(r.verified)}</h2>
+    <div class="when">${esc(when(r.timestamp))} UTC · run ${esc(r.run_id)}</div>
+    <div class="grid">${grid}</div>
+    ${r.error ? `<div class="error-box">${esc(r.error)}</div>` : ""}
+    ${r.verify_detail && r.verified === false
+      ? `<div class="error-box" style="margin-top:8px">${esc(r.verify_detail)}</div>` : ""}
+    ${checks ? `<h3>Verification</h3><table><thead><tr><th></th><th>Check</th>
+        <th>Expected</th><th>Actual</th></tr></thead><tbody>${checks}</tbody></table>` : ""}
+    ${warnings ? `<h3>Warnings</h3><ul>${warnings}</ul>` : ""}
+    ${steps ? `<h3>Step log</h3><pre>${steps}</pre>` : ""}`;
+  $("overlay").classList.add("open");
+}
+
+async function boot() {
+  const [health, filters] = await Promise.all([
+    (await fetch("api/v1/health")).json(),
+    (await fetch("api/v1/filters")).json(),
+  ]);
+  $("health").textContent = `${health.runs} runs on record`;
+  const fill = (id, values, labels) => {
+    for (const v of values) {
+      const opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = labels ? (labels[v] || v) : v;
+      $(id).appendChild(opt);
+    }
+  };
+  fill("station_id", filters.stations);
+  fill("tool", filters.tools, TOOL_NAMES);
+  fill("site", filters.sites);
+  await load(false);
+}
+
+$("apply").addEventListener("click", () => load(false));
+$("reset").addEventListener("click", () => {
+  $("filters").reset();
+  load(false);
+});
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") load(false); });
+$("more").addEventListener("click", () => load(true));
+$("rows").addEventListener("click", e => {
+  const tr = e.target.closest("tr[data-id]");
+  if (tr) openDetail(tr.dataset.id);
+});
+$("overlay").addEventListener("click", e => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.remove("open");
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") $("overlay").classList.remove("open");
+});
+
+boot();
+</script>
+</body>
+</html>
