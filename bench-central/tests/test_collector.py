@@ -204,3 +204,5 @@ def test_health(client):
     assert health["ok"] is True
     assert health["runs"] == 0
     assert health["db_bytes"] > 0
+    # The collector's own repo revision — comparable with bench_version.
+    assert isinstance(health["version"], str) and health["version"]
