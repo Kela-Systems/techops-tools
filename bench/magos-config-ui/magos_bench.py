@@ -44,6 +44,7 @@ from bench_core.bench_ui import (
     save_run_record,
     station_id,
 )
+from bench_core.central import start_central_uploader
 
 # The Magos device clients log through the "magos" logger; reuse its line format
 # so step lines render the same in every tool.
@@ -87,6 +88,9 @@ class MagosBench:
         self.log_dir.mkdir(exist_ok=True)
         self.log = self._setup_logging()
         prune_json_logs(self.log_dir)  # trim any backlog left by earlier sessions
+        # Ships queued run records to the collector when the station has
+        # BENCH_CENTRAL_URL set (TEC-573); None (fully off) otherwise.
+        self.central_uploader = start_central_uploader(self.log_dir, self.log)
         self.bench_version = bench_version(base_dir)
         self.station_id = station_id()
         self.operator_store = OperatorStore(base_dir.parent / OPERATOR_FILENAME)
