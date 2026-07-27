@@ -22,14 +22,18 @@ Host decisions (from TEC-574): t3.micro (or t4g.micro — everything here runs
 on ARM), 8–10 GB gp3, empty inbound security group, Tailscale installed and
 logged in.
 
+The checkout lives in ec2-user's home (`~/techops-tools`); the service runs as
+`ec2-user` (see the unit for why) and the database lives OUTSIDE the checkout
+in `/var/lib/bench-central`, so updating or even re-cloning the repo never
+touches the data.
+
 ```bash
 # as ec2-user
-sudo git clone https://github.com/Kela-Systems/techops-tools.git /opt/techops-tools
-cd /opt/techops-tools/bench-central
-sudo python3 -m venv .venv
-sudo .venv/bin/pip install -r requirements.txt
+git clone https://github.com/Kela-Systems/techops-tools.git ~/techops-tools
+cd ~/techops-tools/bench-central
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 
-sudo useradd --system --home /var/lib/bench-central bench-central 2>/dev/null || true
 sudo cp deploy/bench-central.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now bench-central
@@ -43,7 +47,7 @@ Then on each bench station set (before launching the bench):
 BENCH_CENTRAL_URL=http://techops-automations-host:8100
 ```
 
-To update the collector: `sudo git -C /opt/techops-tools pull`,
+To update the collector: `git -C ~/techops-tools pull`,
 `sudo systemctl restart bench-central`.
 
 ## Data & backup
