@@ -39,6 +39,7 @@ from bench_core.bench_ui import (
     OperatorBody,
     OperatorStore,
     bench_version,
+    install_loop_exception_handler,
     prune_json_logs,
     run_stamp,
     save_run_record,
@@ -495,6 +496,9 @@ class MagosBench:
     def build_app(self) -> FastAPI:
         @contextlib.asynccontextmanager
         async def lifespan(_app: FastAPI):
+            # Drop the harmless WinError 10054 tracebacks a dropped browser
+            # connection triggers on Windows (see bench_ui for the full story).
+            install_loop_exception_handler()
             poller = asyncio.create_task(self._poll_loop())
             try:
                 yield
