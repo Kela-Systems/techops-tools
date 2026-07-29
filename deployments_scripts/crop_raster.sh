@@ -72,8 +72,14 @@ crop_raster() {
     echo "Processing: $name"
     echo "========================================"
     
-    # Check if input file exists
-    if [[ ! -f "$input" ]]; then
+    # Check if input file exists. GDAL virtual paths (/vsis3/, /vsicurl/...)
+    # can't be stat'ed by bash - probe them with gdalinfo instead.
+    if [[ "$input" == /vsi* ]]; then
+        if ! gdalinfo "$input" > /dev/null 2>&1; then
+            echo "WARNING: Input '$input' not readable via GDAL VSI (missing or no credentials), skipping..."
+            return 1
+        fi
+    elif [[ ! -f "$input" ]]; then
         echo "WARNING: Input file '$input' not found, skipping..."
         return 1
     fi
