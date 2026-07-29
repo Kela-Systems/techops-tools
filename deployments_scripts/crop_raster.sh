@@ -8,6 +8,9 @@
 #   -i, --interactive  Interactive mode (prompt for coordinates and radius)
 #   -c, --center       Center coordinates as lat,lon (e.g. 32.104136,35.529141 or "32.104136, 35.529141")
 #   -r, --radius       Radius in meters
+#   --dtm-radius       Radius in meters for the DTM crop (default: same as --radius).
+#                      The DTM feeds AGL/projection and usually needs a wider
+#                      regional footprint than the orthophoto (e.g. 40000).
 #   -o, --output       Output directory (default: tiff_output)
 #   --site <name>      Create a site folder from template and move outputs there
 #   --upload           Upload site folder to S3 (requires --site)
@@ -40,6 +43,7 @@ usage() {
     echo "  -i, --interactive  Interactive mode (prompt for coordinates and radius)"
     echo "  -c, --center       Center coordinates as lat,lon (e.g. 32.104136,35.529141)"
     echo "  -r, --radius       Radius in meters"
+    echo "  --dtm-radius       Radius in meters for the DTM crop (default: same as --radius)"
     echo "  -o, --output       Output directory (default: tiff_output)"
     echo "  --site <name>      Create a site folder from template and move outputs there"
     echo "  --upload           Upload site folder to S3 (requires --site)"
@@ -150,6 +154,11 @@ while [[ $# -gt 0 ]]; do
             RADIUS="$2"
             shift 2
             ;;
+        --dtm-radius)
+            [[ -z "$2" || "$2" == -* ]] && { echo "Error: $1 requires a value"; exit 1; }
+            DTM_RADIUS="$2"
+            shift 2
+            ;;
         -o|--output)
             [[ -z "$2" || "$2" == -* ]] && { echo "Error: $1 requires a value"; exit 1; }
             OUTPUT_DIR="$2"
@@ -240,24 +249,30 @@ fi
 # Create output directory if it doesn't exist
 mkdir -p "$OUTPUT_DIR"
 
-# Convert radius from meters to degrees
+# Convert a radius in meters to a bounding box around the center point.
 # Approximate conversion:
 # 1 degree latitude ≈ 111320 meters
 # 1 degree longitude ≈ 111320 * cos(latitude) meters
-RADIUS_LAT=$(echo "scale=10; $RADIUS / 111320" | bc)
-RADIUS_LON=$(echo "scale=10; $RADIUS / (111320 * c($CENTER_Y * 3.14159265359 / 180))" | bc -l)
+# Sets the XMIN/XMAX/YMIN/YMAX globals used by crop_raster.
+set_bbox() {
+    local radius_m="$1"
+    local radius_lat radius_lon
+    radius_lat=$(echo "scale=10; $radius_m / 111320" | bc)
+    radius_lon=$(echo "scale=10; $radius_m / (111320 * c($CENTER_Y * 3.14159265359 / 180))" | bc -l)
+    XMIN=$(echo "scale=10; $CENTER_X - $radius_lon" | bc)
+    XMAX=$(echo "scale=10; $CENTER_X + $radius_lon" | bc)
+    YMIN=$(echo "scale=10; $CENTER_Y - $radius_lat" | bc)
+    YMAX=$(echo "scale=10; $CENTER_Y + $radius_lat" | bc)
+}
 
-# Calculate bounding box
-XMIN=$(echo "scale=10; $CENTER_X - $RADIUS_LON" | bc)
-XMAX=$(echo "scale=10; $CENTER_X + $RADIUS_LON" | bc)
-YMIN=$(echo "scale=10; $CENTER_Y - $RADIUS_LAT" | bc)
-YMAX=$(echo "scale=10; $CENTER_Y + $RADIUS_LAT" | bc)
+DTM_RADIUS="${DTM_RADIUS:-$RADIUS}"
+set_bbox "$RADIUS"
 
 echo "========================================"
 echo "Crop Parameters"
 echo "========================================"
 echo "Center: $CENTER_X, $CENTER_Y"
-echo "Radius: $RADIUS meters"
+echo "Radius: $RADIUS meters (DTM: $DTM_RADIUS meters)"
 echo "Bounding box: $XMIN $YMIN $XMAX $YMAX"
 echo "Output directory: $OUTPUT_DIR"
 
@@ -265,6 +280,7 @@ echo "Output directory: $OUTPUT_DIR"
 ORTHO_OK=false
 DTM_OK=false
 crop_raster "$INPUT_ORTHO" "$OUTPUT_DIR/orthophoto/orthophoto.tif" "Orthophoto" "near" && ORTHO_OK=true || true
+set_bbox "$DTM_RADIUS"
 crop_raster "$INPUT_DTM" "$OUTPUT_DIR/dtm/dtm.tif" "DTM" "bilinear" "$OUTPUT_DTM_VCRS" && DTM_OK=true || true
 
 echo ""

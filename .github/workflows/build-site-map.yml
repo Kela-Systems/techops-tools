@@ -1,0 +1,174 @@
+name: Build Site Map
+run-name: "map-build • ${{ inputs.site }} • ${{ inputs.lat }},${{ inputs.lon }} r=${{ inputs.radius_m }}m • @${{ github.actor }}"
+
+# Give it a site slug and coordinates, get the site's map bundle built and
+# deployed: crops the all-Israel base rasters (s3://kela-gis-data/all_israel/)
+# around the point, builds the C2 basemap tiles, uploads to
+# s3://kela-gis-data/<site>/ and triggers the qgis sync on the site's server.
+#
+# Automates the "How to upload a map to a server" Notion procedure
+# (deployments_scripts/crop_raster.sh + build_mbtiles.sh do the actual work).
+
+on:
+  workflow_dispatch:
+    inputs:
+      site:
+        description: "Site slug — S3 prefix AND Tailscale hostname (e.g. kela-gotcha-01)"
+        required: true
+        type: string
+      lat:
+        description: "Site latitude (WGS84 decimal degrees)"
+        required: true
+        type: string
+      lon:
+        description: "Site longitude (WGS84 decimal degrees)"
+        required: true
+        type: string
+      radius_m:
+        description: "Orthophoto/basemap radius around the site, meters"
+        required: false
+        type: string
+        default: "5000"
+      dtm_radius_m:
+        description: "DTM radius, meters (regional terrain for AGL/projection)"
+        required: false
+        type: string
+        default: "40000"
+      max_zoom:
+        description: "Deepest MBTiles zoom (17 ≈ 1 m/px; 18 quadruples size/time)"
+        required: false
+        type: string
+        default: "17"
+      sync_to_site:
+        description: "Trigger qgis data sync on the site after upload"
+        required: false
+        type: boolean
+        default: true
+      user:
+        description: "SSH user on the target (used by the sync)"
+        required: false
+        type: string
+        default: kela
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: eu-central-1
+  S3_BUCKET: kela-gis-data
+  CI_ROLE_ARN: arn:aws:iam::781540302536:role/kelahub_terraform_cicd
+
+jobs:
+  build:
+    name: Crop rasters, build tiles, upload
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/osgeo/gdal:ubuntu-full-3.9.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        env:
+          SITE: ${{ inputs.site }}
+          LAT: ${{ inputs.lat }}
+          LON: ${{ inputs.lon }}
+          RADIUS: ${{ inputs.radius_m }}
+          DTM_RADIUS: ${{ inputs.dtm_radius_m }}
+        run: |
+          echo "${SITE}" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9._-]*$' || { echo "ERROR: invalid site '${SITE}'"; exit 1; }
+          case "${SITE}" in
+            all_israel|site-template) echo "ERROR: '${SITE}' is a protected prefix"; exit 1 ;;
+          esac
+          python3 - << 'EOF'
+          import os, sys
+          lat, lon = float(os.environ["LAT"]), float(os.environ["LON"])
+          r, dr = float(os.environ["RADIUS"]), float(os.environ["DTM_RADIUS"])
+          if not (29.0 <= lat <= 34.0 and 34.0 <= lon <= 36.2):
+              sys.exit(f"ERROR: ({lat}, {lon}) is outside all_israel raster coverage - lat/lon swapped?")
+          if not (500 <= r <= 15000 and 5000 <= dr <= 60000):
+              sys.exit(f"ERROR: radius {r} m / dtm radius {dr} m out of sane range (500-15000 / 5000-60000)")
+          EOF
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.CI_ROLE_ARN }}
+          role-session-name: gha-build-site-map
+
+      - name: Install tools (aws cli, bc)
+        run: |
+          apt-get update -qq && apt-get install -y -qq bc curl unzip > /dev/null
+          curl -sS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install > /dev/null
+          aws --version
+
+      - name: Crop orthophoto + DTM from all_israel base
+        env:
+          INPUT_ORTHO: /vsis3/kela-gis-data/all_israel/orthophoto/raster.vrt
+          INPUT_DTM: /vsis3/kela-gis-data/all_israel/dtm/dtm_hae.tif
+          AWS_PROFILE: ""
+        run: |
+          ./deployments_scripts/crop_raster.sh \
+            -c "${{ inputs.lat }},${{ inputs.lon }}" \
+            -r "${{ inputs.radius_m }}" \
+            --dtm-radius "${{ inputs.dtm_radius_m }}" \
+            -o out
+
+      - name: Build MBTiles basemap
+        run: |
+          ./deployments_scripts/build_mbtiles.sh \
+            out/orthophoto/orthophoto.tif \
+            out/orthophoto/cuas.mbtiles \
+            "${{ inputs.max_zoom }}"
+
+      - name: Sanity-check terrain at site center
+        run: |
+          ELEV=$(gdallocationinfo -geoloc -valonly out/dtm/dtm.tif "${{ inputs.lon }}" "${{ inputs.lat }}")
+          echo "Terrain at site center: ${ELEV} m HAE"
+          python3 -c "
+          e = float('${ELEV}' or 'nan')
+          assert e == e and -450 <= e <= 2900, f'implausible terrain elevation {e} - wrong coordinates?'
+          "
+
+      - name: Upload to S3
+        env:
+          SITE: ${{ inputs.site }}
+        run: |
+          # Seed the QGIS project for brand-new sites (layer names/paths must
+          # match what the C2 expects; per-site copies are identical).
+          if ! aws s3 ls "s3://${S3_BUCKET}/${SITE}/project.qgs" > /dev/null 2>&1; then
+            echo "No project.qgs for ${SITE} - seeding from all_israel/"
+            aws s3 cp "s3://${S3_BUCKET}/all_israel/project.qgs" "s3://${S3_BUCKET}/${SITE}/project.qgs" --only-show-errors
+            aws s3 cp "s3://${S3_BUCKET}/all_israel/project_attachments.zip" "s3://${S3_BUCKET}/${SITE}/project_attachments.zip" --only-show-errors
+          fi
+          for f in dtm/dtm.tif orthophoto/orthophoto.tif orthophoto/cuas.mbtiles; do
+            aws s3 cp "out/${f}" "s3://${S3_BUCKET}/${SITE}/${f}" --only-show-errors
+          done
+          echo "Upload complete: s3://${S3_BUCKET}/${SITE}"
+          aws s3 ls "s3://${S3_BUCKET}/${SITE}/" --recursive --human-readable
+
+  sync:
+    name: Sync map onto the site
+    needs: build
+    if: ${{ inputs.sync_to_site }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger qgis sync workflow in Kela-Systems/kela
+        env:
+          GH_TOKEN: ${{ secrets.KELA_ACTIONS_TOKEN }}
+          SITE: ${{ inputs.site }}
+          TARGET_USER: ${{ inputs.user }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::KELA_ACTIONS_TOKEN secret is not set - cannot trigger the sync cross-repo."
+            echo "Run it manually:"
+            echo "  gh workflow run sync-qgis-data-baremetal.yml -R Kela-Systems/kela -f target=${SITE} -f user=${TARGET_USER}"
+            exit 1
+          fi
+          gh workflow run sync-qgis-data-baremetal.yml -R Kela-Systems/kela \
+            -f target="${SITE}" -f user="${TARGET_USER}"
+          echo "Sync triggered - watch it at:"
+          echo "  https://github.com/Kela-Systems/kela/actions/workflows/sync-qgis-data-baremetal.yml"
