@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes } from "react-router";
 import { HubProvider, useHub } from "./hub";
 import { ToastProvider } from "./toast";
 import AddContextModal from "./components/AddContextModal";
