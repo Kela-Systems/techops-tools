@@ -20,8 +20,9 @@ FROM python:3.13-slim
 ARG TARGETARCH
 ARG KUBECTL_VERSION=v1.31.4
 
+# openssh-client: scripts/k3s_kubeconfig.sh SSHes into sites to add contexts
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates openssh-client \
     && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
         -o /usr/local/bin/kubectl \
     && chmod +x /usr/local/bin/kubectl \
@@ -36,6 +37,9 @@ COPY hub-admin /app/hub-admin
 COPY hub-admin-web/backend /app/backend
 
 RUN pip install --no-cache-dir /app/hub-client-py /app/hub-admin /app/backend
+
+COPY hub-admin-web/scripts /app/scripts
+ENV HUB_ADMIN_K3S_SCRIPT=/app/scripts/k3s_kubeconfig.sh
 
 COPY --from=frontend /build/dist /app/frontend/dist
 ENV HUB_ADMIN_WEB_STATIC=/app/frontend/dist

@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useState,
@@ -11,6 +12,7 @@ interface HubState {
   contexts: string[];
   context: string | null;
   setContext: (ctx: string) => void;
+  refreshContexts: () => Promise<string[]>;
   contextsError: string | null;
 }
 
@@ -18,6 +20,7 @@ const HubContext = createContext<HubState>({
   contexts: [],
   context: null,
   setContext: () => {},
+  refreshContexts: async () => [],
   contextsError: null,
 });
 
@@ -30,17 +33,22 @@ export function HubProvider({ children }: { children: ReactNode }) {
   );
   const [contextsError, setContextsError] = useState<string | null>(null);
 
+  const refreshContexts = useCallback(async () => {
+    const ctxs = await api.listContexts();
+    setContexts(ctxs);
+    setContextsError(null);
+    return ctxs;
+  }, []);
+
   useEffect(() => {
-    api
-      .listContexts()
+    refreshContexts()
       .then((ctxs) => {
-        setContexts(ctxs);
         setContextState((cur) =>
           cur && ctxs.includes(cur) ? cur : (ctxs[0] ?? null),
         );
       })
       .catch((e) => setContextsError(String(e.message ?? e)));
-  }, []);
+  }, [refreshContexts]);
 
   const setContext = (ctx: string) => {
     localStorage.setItem(STORAGE_KEY, ctx);
@@ -49,7 +57,7 @@ export function HubProvider({ children }: { children: ReactNode }) {
 
   return (
     <HubContext.Provider
-      value={{ contexts, context, setContext, contextsError }}
+      value={{ contexts, context, setContext, refreshContexts, contextsError }}
     >
       {children}
     </HubContext.Provider>

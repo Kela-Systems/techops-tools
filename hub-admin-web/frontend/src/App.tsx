@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { HubProvider, useHub } from "./hub";
 import { ToastProvider } from "./toast";
+import AddContextModal from "./components/AddContextModal";
 import DeviceConfigsPage from "./pages/DeviceConfigsPage";
 import IntegrationsPage from "./pages/IntegrationsPage";
 import LinksPage from "./pages/LinksPage";
@@ -9,23 +11,34 @@ import ServerPage from "./pages/ServerPage";
 
 function ContextPicker() {
   const { contexts, context, setContext, contextsError } = useHub();
+  const [adding, setAdding] = useState(false);
   if (contextsError) {
     return <span className="context-error" title={contextsError}>kubeconfig unavailable</span>;
   }
   return (
-    <select
-      className="context-picker"
-      value={context ?? ""}
-      onChange={(e) => setContext(e.target.value)}
-      disabled={contexts.length === 0}
-    >
-      {contexts.length === 0 && <option value="">loading contexts…</option>}
-      {contexts.map((c) => (
-        <option key={c} value={c}>
-          {c}
-        </option>
-      ))}
-    </select>
+    <>
+      <select
+        className="context-picker"
+        value={context ?? ""}
+        onChange={(e) => setContext(e.target.value)}
+        disabled={contexts.length === 0}
+      >
+        {contexts.length === 0 && <option value="">loading contexts…</option>}
+        {contexts.map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+      <button
+        className="btn btn-sm"
+        onClick={() => setAdding(true)}
+        title="Add a context for a site not in the list"
+      >
+        + Add
+      </button>
+      {adding && <AddContextModal onClose={() => setAdding(false)} />}
+    </>
   );
 }
 

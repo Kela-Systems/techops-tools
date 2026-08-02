@@ -15,6 +15,8 @@ typically a shared ops server.
 browser ──HTTP──> FastAPI backend ──kubectl port-forward + gRPC──> hub-server pods
 ```
 
+
+
 ## Layout
 
 ```
@@ -31,6 +33,8 @@ hub-admin-web/
 ├── Dockerfile          multi-stage: frontend build + python runtime + kubectl
 └── docker-compose.yaml
 ```
+
+
 
 ## Saved profiles
 
@@ -88,7 +92,10 @@ for the frontend build, and a checkout of the internal `hub` repo for
 
 ```bash
 # as ec2-user
-sudo dnf install -y python3.11 nodejs git
+# hub-client pins requires-python >= 3.13; if dnf has no python3.13 package,
+# use uv instead: curl -LsSf https://astral.sh/uv/install.sh | sh
+#                 uv venv --seed --python 3.13 .venv
+sudo dnf install -y python3.13 nodejs git
 
 # kubectl (arm64 on t4g, amd64 on t3)
 ARCH=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
@@ -104,7 +111,7 @@ git -C ~/kela sparse-checkout set hub/client/hub-client-py
 
 # backend venv
 cd ~/techops-tools/hub-admin-web
-python3.11 -m venv .venv
+python3.13 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install ~/kela/hub/client/hub-client-py -e ../hub-admin -e ./backend
 
@@ -149,16 +156,18 @@ Then open `http://<server>:8000`.
 
 Configuration (all via environment / compose):
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `KUBECONFIG_PATH` | `~/.kube/config` | kubeconfig mounted into the container (read-only) |
-| `HUB_CLIENT_PY_PATH` | `../../kela/hub/client/hub-client-py` | build-time path to the internal hub-client-py checkout |
-| `HUB_BASIC_AUTH_USER` / `HUB_BASIC_AUTH_PASSWORD` | `hub-admin-web` | Basic-auth identity recorded in hub audit logs |
-| `HUB_API_TOKEN` | unset | use token auth instead of basic auth (hubs that enforce it) |
-| `HUB_NAMESPACE` | `kela` | namespace of `svc/hub-server` |
-| `HUB_REMOTE_PORT` | `8001` | hub-server service port |
-| `HUB_CONN_IDLE_TIMEOUT_S` | `900` | idle seconds before a port-forward is reaped |
-| `HUB_ADMIN_PROFILES_DIR` / `PROFILES_PATH` | `profiles/` | folder of saved profile bundles shown in the UI |
+
+| Variable                                          | Default                               | Meaning                                                     |
+| ------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------- |
+| `KUBECONFIG_PATH`                                 | `~/.kube/config`                      | kubeconfig mounted into the container (read-only)           |
+| `HUB_CLIENT_PY_PATH`                              | `../../kela/hub/client/hub-client-py` | build-time path to the internal hub-client-py checkout      |
+| `HUB_BASIC_AUTH_USER` / `HUB_BASIC_AUTH_PASSWORD` | `hub-admin-web`                       | Basic-auth identity recorded in hub audit logs              |
+| `HUB_API_TOKEN`                                   | unset                                 | use token auth instead of basic auth (hubs that enforce it) |
+| `HUB_NAMESPACE`                                   | `kela`                                | namespace of `svc/hub-server`                               |
+| `HUB_REMOTE_PORT`                                 | `8001`                                | hub-server service port                                     |
+| `HUB_CONN_IDLE_TIMEOUT_S`                         | `900`                                 | idle seconds before a port-forward is reaped                |
+| `HUB_ADMIN_PROFILES_DIR` / `PROFILES_PATH`        | `profiles/`                           | folder of saved profile bundles shown in the UI             |
+
 
 There is no app-level login: the service is meant to be reachable only on the
 internal network. Anyone who can open it can administer every hub in the
@@ -168,24 +177,27 @@ kubeconfig — scope the mounted kubeconfig accordingly.
 
 Interactive docs at `/docs`. Summary:
 
-| Method & path | CLI equivalent |
-| --- | --- |
-| `GET /api/contexts` | kubeconfig contexts |
-| `GET /api/hubs/{ctx}/manifests` | `manifests list` |
-| `GET /api/hubs/{ctx}/manifests/{id}/schemas` | — |
-| `GET/POST /api/hubs/{ctx}/integrations` | `integrations list` / `create` |
-| `GET /api/hubs/{ctx}/integrations/export` | `integrations export` |
-| `GET/POST .../integrations/{id}/devices` | `devices list` / `create` |
-| `PATCH .../devices/{device_id}` | `devices update` (merge-patch / rename) |
-| `POST /api/hubs/{ctx}/devices/import` | `devices add` |
-| `GET/PUT /api/device-configs/{name}`, `GET /api/device-configs` | device_config files |
-| `POST /api/hubs/{ctx}/device-config/apply` → job | `devices add` for every section |
-| `GET /api/hubs/{ctx}/assets`, `GET/POST .../links` | `links assets` / `list` / `add` |
-| `GET /api/profiles`, `GET /api/profiles/{name}` | saved profiles folder |
-| `POST /api/hubs/{ctx}/profile/export` | `profile export` |
-| `POST /api/profile/inspect` | `profile show` (offline) |
-| `POST /api/hubs/{ctx}/profile/apply` → `GET /api/jobs/{id}` | `profile apply` (async job) |
-| `POST /api/hubs/{ctx}/restart` | `server restart` |
+
+| Method & path                                                   | CLI equivalent                          |
+| --------------------------------------------------------------- | --------------------------------------- |
+| `GET /api/contexts`                                             | kubeconfig contexts                     |
+| `POST /api/contexts` → job                                      | add a k3s site context (`scripts/k3s_kubeconfig.sh`) |
+| `GET /api/hubs/{ctx}/manifests`                                 | `manifests list`                        |
+| `GET /api/hubs/{ctx}/manifests/{id}/schemas`                    | —                                       |
+| `GET/POST /api/hubs/{ctx}/integrations`                         | `integrations list` / `create`          |
+| `GET /api/hubs/{ctx}/integrations/export`                       | `integrations export`                   |
+| `GET/POST .../integrations/{id}/devices`                        | `devices list` / `create`               |
+| `PATCH .../devices/{device_id}`                                 | `devices update` (merge-patch / rename) |
+| `POST /api/hubs/{ctx}/devices/import`                           | `devices add`                           |
+| `GET/PUT /api/device-configs/{name}`, `GET /api/device-configs` | device_config files                     |
+| `POST /api/hubs/{ctx}/device-config/apply` → job                | `devices add` for every section         |
+| `GET /api/hubs/{ctx}/assets`, `GET/POST .../links`              | `links assets` / `list` / `add`         |
+| `GET /api/profiles`, `GET /api/profiles/{name}`                 | saved profiles folder                   |
+| `POST /api/hubs/{ctx}/profile/export`                           | `profile export`                        |
+| `POST /api/profile/inspect`                                     | `profile show` (offline)                |
+| `POST /api/hubs/{ctx}/profile/apply` → `GET /api/jobs/{id}`     | `profile apply` (async job)             |
+| `POST /api/hubs/{ctx}/restart`                                  | `server restart`                        |
+
 
 gRPC failures surface as HTTP 502 with the status code and message;
 port-forward failures likewise (with kubectl's stderr).

@@ -48,6 +48,12 @@ const hub = (ctx: string) => `/api/hubs/${encodeURIComponent(ctx)}`;
 export const api = {
   listContexts: () =>
     get<{ contexts: string[] }>("/api/contexts").then((r) => r.contexts),
+  addContext: (host: string, user: string, contextName?: string) =>
+    post<{ job_id: string }>("/api/contexts", {
+      host,
+      user,
+      context_name: contextName || undefined,
+    }),
 
   listManifests: (ctx: string) => get<Manifest[]>(`${hub(ctx)}/manifests`),
   getManifestSchemas: (ctx: string, manifestId: string) =>
