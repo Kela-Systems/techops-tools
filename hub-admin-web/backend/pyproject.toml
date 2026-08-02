@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hub-admin-web"
+version = "0.1.0"
+description = "Web UI for hub-admin — manage Kela hubs from a browser"
+requires-python = ">=3.11"
+dependencies = [
+    "hub-admin",
+    "fastapi",
+    "uvicorn[standard]",
+    "grpcio",
+    "protobuf",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

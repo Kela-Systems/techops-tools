@@ -1,0 +1,9 @@
+.venv/
+node_modules/
+frontend/dist/
+__pycache__/
+*.egg-info/
+
+# Real device configs hold IPs/credentials — never commit them
+device-configs/*.json
+!device-configs/*.example.json

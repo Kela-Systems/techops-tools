@@ -1,0 +1,36 @@
+# hub-admin-web — systemd unit for the tailnet host (techops-automations-host,
+# same box as bench-central). Install per hub-admin-web/README.md.
+[Unit]
+Description=hub-admin-web (browser UI for Kela hub administration)
+# Tailscale must be up before we bind; harmless if the unit name differs.
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as the checkout's owner, same reasoning as bench-central: the repo
+# lives in ec2-user's home, and this is a single-process tailnet-only host.
+# Note the service can administer every hub in ec2-user's kubeconfig — that
+# file defines the blast radius, not this unit.
+User=ec2-user
+Group=ec2-user
+# /var/lib/hub-admin-web, created and owned for us by systemd. Profiles and
+# device configs live OUTSIDE the checkout so a git pull or re-clone never
+# touches them (device configs hold credentials and are gitignored anyway).
+StateDirectory=hub-admin-web
+ExecStartPre=/bin/mkdir -p /var/lib/hub-admin-web/profiles /var/lib/hub-admin-web/device-configs
+Environment=HUB_ADMIN_PROFILES_DIR=/var/lib/hub-admin-web/profiles
+Environment=HUB_ADMIN_DEVICE_CONFIGS_DIR=/var/lib/hub-admin-web/device-configs
+# Recorded as the caller identity in hub audit logs (enduser.id=basic:<user>)
+Environment=HUB_BASIC_AUTH_USER=hub-admin-web
+Environment=HUB_BASIC_AUTH_PASSWORD=hub-admin-web
+Environment=KUBECONFIG=/home/ec2-user/.kube/config
+WorkingDirectory=/home/ec2-user/techops-tools/hub-admin-web
+# 0.0.0.0 is safe here: the instance has NO inbound security-group rules, so
+# only tailnet peers can reach the port. 8100 is bench-central; we take 8200.
+ExecStart=/home/ec2-user/techops-tools/hub-admin-web/.venv/bin/uvicorn hub_admin_web.main:app --host 0.0.0.0 --port 8200
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

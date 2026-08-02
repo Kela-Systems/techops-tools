@@ -1,0 +1,30 @@
+services:
+  hub-admin-web:
+    build:
+      # techops-tools root, so hub-admin/ is inside the build context
+      context: ..
+      dockerfile: hub-admin-web/Dockerfile
+      additional_contexts:
+        # Path to the internal hub-client-py package (hub_client + kela protos).
+        # Override for your checkout layout:
+        #   HUB_CLIENT_PY_PATH=/srv/kela/hub/client/hub-client-py docker compose up -d
+        hub-client-py: ${HUB_CLIENT_PY_PATH:-../../kela/hub/client/hub-client-py}
+    ports:
+      - "8000:8000"
+    volumes:
+      # kubeconfig with all the kela contexts this server should reach
+      - ${KUBECONFIG_PATH:-~/.kube/config}:/root/.kube/config:ro
+      # server-side profile bundles, selectable in the Profiles page
+      - ${PROFILES_PATH:-./profiles}:/app/profiles:ro
+      # editable device_config.json files (read-write: the UI saves edits)
+      - ${DEVICE_CONFIGS_PATH:-./device-configs}:/app/device-configs
+    environment:
+      # Recorded as the caller identity in hub audit logs (enduser.id=basic:<user>)
+      HUB_BASIC_AUTH_USER: ${HUB_BASIC_AUTH_USER:-hub-admin-web}
+      HUB_BASIC_AUTH_PASSWORD: ${HUB_BASIC_AUTH_PASSWORD:-hub-admin-web}
+      # Uncomment for hubs that enforce token auth instead of basic auth
+      # HUB_API_TOKEN: ${HUB_API_TOKEN}
+      HUB_NAMESPACE: ${HUB_NAMESPACE:-kela}
+      HUB_ADMIN_PROFILES_DIR: /app/profiles
+      HUB_ADMIN_DEVICE_CONFIGS_DIR: /app/device-configs
+    restart: unless-stopped
