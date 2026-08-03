@@ -35,8 +35,10 @@ Schema `bench-run-record/1` — the common core, identical for every tool:
     log           the step log flattened to one string
     device        per-family extension block (see below)
 
-The bench bases stamp three provenance fields into every entry after it is
-built (`operator`, `station_id`, `bench_version` — TEC-345) plus `log_file`.
+The bench bases stamp four provenance fields into every entry after it is
+built (`operator`, `station_id`, `bench_version` — TEC-345 — and
+`config_hash`, the fingerprint of the redacted station config the run was
+provisioned under — TEC-356) plus `log_file`.
 (Before `run_id`/`timestamp` joined the core, the full ISO timestamp was added
 only by the per-run JSON writer — `parse_run_record()` still accepts those.)
 
