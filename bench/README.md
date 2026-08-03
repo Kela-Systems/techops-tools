@@ -109,12 +109,21 @@ the one launcher.
   label printing) read any record — including pre-schema JSONs from old
   benches — through `parse_run_record()`.
 - **Run provenance:** every per-run JSON (and history entry) is stamped with
-  `operator`, `station_id` and `bench_version`. The operator name is entered in
-  the header of any tool page (badge scan or typed, once at day start) and is
-  shared station-wide via `bench/.bench-operator.json` (gitignored). The
-  station ID defaults to the machine hostname; set `BENCH_STATION_ID` before
-  launching to override it. `bench_version` is the short git revision exported
-  by the launcher as `BENCH_VERSION`.
+  `operator`, `station_id`, `bench_version` and `config_hash`. The operator
+  name is entered in the header of any tool page (badge scan or typed, once at
+  day start) and is shared station-wide via `bench/.bench-operator.json`
+  (gitignored). The station ID defaults to the machine hostname; set
+  `BENCH_STATION_ID` before launching to override it. `bench_version` is the
+  short git revision exported by the launcher as `BENCH_VERSION`.
+- **Config self-check + hash:** at startup (and on every config reload) each
+  tool validates its config — placeholder values (`xxxxx`, `example.com`, ...),
+  expired or soon-to-expire API tokens, and fields missing vs the committed
+  example template (`bench_core/src/bench_core/config_check.py`). Warnings show
+  in an amber banner on the tool page, in `/api/state` (`config_warnings`) and
+  in the launch console, so a mis-configured station announces itself at launch
+  instead of failing (or silently falling back) mid-run. `config_hash` — a
+  short fingerprint of the redacted config, also in `/api/state` — is stamped
+  into every run record, so config drift across stations is visible centrally.
 - **Central shipping (opt-in per station):** set `BENCH_CENTRAL_URL` to the
   collector's base URL (e.g. `http://techops-automations-host:8100`, reachable
   over Tailscale) before launching, and every completed run record is also

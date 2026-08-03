@@ -111,7 +111,7 @@ def test_hostname_uses_prefix():
     assert cfg.hostname_for({"site_name": "Haifa Port"}) == "otd-haifa-port"
 
 
-# ── run provenance (operator / station_id / bench_version, TEC-345) ──────────
+# ── run provenance (operator / station / version / config, TEC-345+356) ──────
 
 def test_run_records_carry_provenance(monkeypatch, tmp_path):
     monkeypatch.setattr(cfg, "operator_store", OperatorStore(tmp_path / "op.json"))
@@ -122,6 +122,7 @@ def test_run_records_carry_provenance(monkeypatch, tmp_path):
     assert entry["operator"] == "Dana K"
     assert entry["station_id"] == cfg.station_id
     assert entry["bench_version"] == cfg.bench_version
+    assert entry["config_hash"] == cfg.config_hash
 
 
 def test_unset_operator_stamps_unknown(monkeypatch, tmp_path):
@@ -149,3 +150,8 @@ def test_public_state_exposes_station_fields(monkeypatch, tmp_path):
     assert s["operator"] == "Dana K"
     assert s["station_id"] == cfg.station_id
     assert s["bench_version"] == cfg.bench_version
+    # Config self-check (TEC-356): the fingerprint and warnings are part of
+    # /api/state, so the page banner and central tooling can read them.
+    assert s["config_hash"] == cfg.config_hash
+    assert s["config_warnings"] == cfg.config_warnings
+    assert isinstance(s["config_warnings"], list)

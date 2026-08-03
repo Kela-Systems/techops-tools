@@ -99,6 +99,41 @@ function mountOperatorBox() {
   };
 }
 
+// Config self-check banner (TEC-356). Injected under the page header by
+// connectBenchWS, so every tool surfaces its startup config warnings
+// (placeholder values, expired tokens, missing fields) without per-page
+// markup. Hidden while the server reports no warnings. Returns {update(state)}.
+function mountConfigWarn() {
+  let box = null;
+
+  function ensure() {
+    if (box) return box;
+    box = document.createElement('div');
+    box.id = 'configWarnBox';
+    box.className = 'configwarn hidden';
+    const header = document.querySelector('.container > header') ||
+      document.querySelector('header');
+    if (header && header.parentNode) header.insertAdjacentElement('afterend', box);
+    else document.body.prepend(box);
+    return box;
+  }
+
+  return {
+    update(s) {
+      const warns = s.config_warnings || [];
+      if (!warns.length) {
+        if (box) box.classList.add('hidden');
+        return;
+      }
+      const el = ensure();
+      const html = '<b>&#9888; Config check — fix before running devices</b><ul>' +
+        warns.map(w => `<li>${esc(w)}</li>`).join('') + '</ul>';
+      if (el.innerHTML !== html) el.innerHTML = html; // 1 Hz feed: avoid re-render churn
+      el.classList.remove('hidden');
+    },
+  };
+}
+
 // Resilient WebSocket state feed.
 //
 // Calls `onState(state)` for every frame. Also bootstraps once via GET
@@ -111,7 +146,8 @@ function connectBenchWS(onState, opts) {
   opts = opts || {};
   const connEl = $('conn');
   const operatorBox = mountOperatorBox();
-  const handleState = (s) => { operatorBox.update(s); onState(s); };
+  const configWarn = mountConfigWarn();
+  const handleState = (s) => { operatorBox.update(s); configWarn.update(s); onState(s); };
   let ws = null, retry = 0, closed = false, bootstrapping = false;
 
   function setConn(text, up) {

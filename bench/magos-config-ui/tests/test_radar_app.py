@@ -230,7 +230,7 @@ def test_configure_route_rejects_when_not_detected():
     assert "error" in result
 
 
-# ── run provenance (operator / station_id / bench_version, TEC-345) ──────────
+# ── run provenance (operator / station / version / config, TEC-345+356) ──────
 
 def test_run_records_carry_provenance(device, monkeypatch, tmp_path):
     from bench_core.bench_ui import OperatorStore
@@ -241,6 +241,20 @@ def test_run_records_carry_provenance(device, monkeypatch, tmp_path):
     assert entry["operator"] == "Dana K"
     assert entry["station_id"] == radar.station_id
     assert entry["bench_version"] == radar.bench_version
+    assert entry["config_hash"] == radar.config_hash
+
+
+def test_config_hash_tracks_settings_changes():
+    before = radar.config_hash
+    assert before == radar._config_fingerprint()
+    original_ntp = radar.cfg["ntp"]
+    radar.apply_settings({"ntp": "10.99.99.99"})
+    try:
+        assert radar.config_hash != before          # settings drift → new hash
+        assert radar.public_state()["config_hash"] == radar.config_hash
+    finally:
+        radar.apply_settings({"ntp": original_ntp})
+    assert radar.config_hash == before              # restored settings → same hash
 
 
 def test_unset_operator_stamps_unknown(device, monkeypatch, tmp_path):

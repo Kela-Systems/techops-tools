@@ -46,6 +46,7 @@ from bench_core.bench_ui import (
     station_id,
 )
 from bench_core.central import start_central_uploader
+from bench_core.config_check import config_fingerprint
 
 # The Magos device clients log through the "magos" logger; reuse its line format
 # so step lines render the same in every tool.
@@ -98,6 +99,10 @@ class MagosBench:
         self.log.info("%s starting — bench version %s, station %s",
                       self.title, self.bench_version, self.station_id)
         self.cfg: dict = dict(default_cfg)
+        # No JSON config file here (in-code defaults + /api/settings), so there
+        # is nothing to self-check — but the hash still pins the settings each
+        # run was provisioned under (TEC-356).
+        self.config_hash: str = self._config_fingerprint()
         self._misses = 0
         # Monotonic clock + last-activity stamp drive the hands-free idle
         # timeout. `_now` is an attribute so tests can inject a fake clock.
@@ -239,11 +244,17 @@ class MagosBench:
 
     # ── public state ──────────────────────────────────────────────────────────
 
+    def _config_fingerprint(self) -> str:
+        """Hash of the current (redacted) settings — recomputed when settings
+        change and stamped into every run record (TEC-356)."""
+        return config_fingerprint({k: v for k, v in self.cfg.items()
+                                   if k != "password"})
+
     def run_stamp(self) -> dict:
-        """Provenance fields (operator / station_id / bench_version) added to
-        every history entry and per-unit JSON."""
+        """Provenance fields (operator / station_id / bench_version /
+        config_hash) added to every history entry and per-unit JSON."""
         return run_stamp(self.operator_store.get(), self.station_id,
-                         self.bench_version)
+                         self.bench_version, self.config_hash)
 
     def public_state(self) -> dict:
         return {
@@ -252,6 +263,8 @@ class MagosBench:
             "station_id": self.station_id,
             "operator": self.operator_store.get(),
             "config": {k: v for k, v in self.cfg.items() if k != "password"},
+            "config_hash": self.config_hash,
+            "config_warnings": [],  # no config file to self-check (see __init__)
             "password_set": bool(self.cfg.get("password")),
             "channel_ips": self.channel_ips,
             **self.extra_public_state(),
@@ -395,6 +408,7 @@ class MagosBench:
                     self.cfg["hosts"] = cleaned
             else:
                 self.cfg[key] = value
+        self.config_hash = self._config_fingerprint()
         if self.state["phase"] == "waiting":
             self.state["message"] = f"Waiting for a {self.device_word} at {self._hosts_str()}..."
         return self.public_state()

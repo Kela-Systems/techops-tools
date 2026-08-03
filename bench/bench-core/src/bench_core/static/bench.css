@@ -240,6 +240,15 @@ pre.log {
   padding: 10px 14px; border-radius: 10px; margin-bottom: 16px; font-size: .85rem;
 }
 
+/* Config self-check banner (injected by bench.js, TEC-356). Amber: the tool
+   still runs, but this station's config needs fixing before devices do. */
+.configwarn {
+  border: 1px solid rgba(251, 191, 36, .55); background: var(--yellow-bg); color: var(--yellow);
+  padding: 10px 14px; border-radius: 10px; margin-bottom: 16px; font-size: .85rem;
+}
+.configwarn ul { margin: 4px 0 0 20px; }
+.configwarn li { margin: 2px 0; }
+
 /* Narrow screens: stack the dense grids so nothing overflows the viewport. */
 @media (max-width: 640px) {
   .container { padding: 20px 14px 50px; }

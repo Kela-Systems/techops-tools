@@ -38,6 +38,7 @@ from pydantic import BaseModel
 
 from bench_core import LOG_LINE_FORMAT, normalize_mac
 from bench_core.central import spool_run_record, start_central_uploader
+from bench_core.config_check import check_config, config_fingerprint
 
 try:
     import requests
@@ -228,12 +229,16 @@ class OperatorStore:
         return name
 
 
-def run_stamp(operator: str, station: str, version: str) -> dict:
+def run_stamp(operator: str, station: str, version: str,
+              config_hash: str) -> dict:
     """The provenance fields stamped into every run record by both bench bases
-    (BenchConfigurator and MagosBench)."""
+    (BenchConfigurator and MagosBench). `config_hash` pins which station config
+    the device was provisioned under (TEC-356), so drift across stations is
+    visible once records are centralized."""
     return {"operator": operator or "unknown",
             "station_id": station,
-            "bench_version": version}
+            "bench_version": version,
+            "config_hash": config_hash}
 
 
 class OperatorBody(BaseModel):
@@ -398,6 +403,9 @@ class BenchConfigurator:
         self.logger.info("%s starting — bench version %s, station %s",
                          self.title, self.bench_version, self.station_id)
         self.cfg: dict = self.load_config()
+        self.config_hash: str = ""
+        self.config_warnings: list[str] = []
+        self._check_config()
         self.state: dict = self.initial_state()
         self.state["config_loaded"] = bool(self.cfg)
         self._live_collector: Optional[StepCollector] = None
@@ -411,6 +419,33 @@ class BenchConfigurator:
                 return {k: v for k, v in json.load(f).items() if not k.startswith("_")}
         self.logger.warning("%s not found — copy the example.", self.config_path.name)
         return {}
+
+    def example_config_path(self) -> Optional[Path]:
+        """The tool's committed `*.config.example.json` — the reference for
+        which fields a live config must carry. None when the tool has none."""
+        example = Path(str(self.config_path).replace(".config.json",
+                                                     ".config.example.json"))
+        return example if example != self.config_path and example.exists() else None
+
+    def _check_config(self) -> None:
+        """Startup config self-check (TEC-356): fingerprint the redacted config
+        and flag placeholder values, expired tokens and fields missing vs the
+        example — so a mis-configured station announces itself at launch
+        instead of failing (or silently falling back) mid-run."""
+        self.config_hash = config_fingerprint(redact_config(self.cfg))
+        if not self.config_path.exists():
+            self.config_warnings = [
+                f"{self.config_filename} not found — copy the example config "
+                "and fill in this station's values."]
+        else:
+            example = None
+            example_path = self.example_config_path()
+            if example_path:
+                with contextlib.suppress(OSError, ValueError):
+                    example = json.loads(example_path.read_text(encoding="utf-8"))
+            self.config_warnings = check_config(self.cfg, example)
+        for warning in self.config_warnings:
+            self.logger.warning("Config check: %s", warning)
 
     def initial_state(self) -> dict:  # override
         raise NotImplementedError
@@ -426,6 +461,7 @@ class BenchConfigurator:
         """Re-read config from disk. Override to also reload a manifest. Returns
         the status message to show in the UI."""
         self.cfg = self.load_config()
+        self._check_config()
         self.state["config_loaded"] = bool(self.cfg)
         return ("Config reloaded." if self.cfg
                 else f"No {self.config_filename} found — copy the example.")
@@ -437,6 +473,8 @@ class BenchConfigurator:
                 "station_id": self.station_id,
                 "operator": self.operator_store.get(),
                 "config": redact_config(self.cfg),
+                "config_hash": self.config_hash,
+                "config_warnings": self.config_warnings,
                 "live_steps": list(self._live_collector.steps)[-200:]
                               if busy and self._live_collector else [],
                 "run_seconds": int(time.monotonic() - self._run_t0)
@@ -520,10 +558,10 @@ class BenchConfigurator:
         prune_json_logs(self.log_dir, keep)
 
     def run_stamp(self) -> dict:
-        """Provenance fields (operator / station_id / bench_version) added to
-        every history entry and per-run JSON."""
+        """Provenance fields (operator / station_id / bench_version /
+        config_hash) added to every history entry and per-run JSON."""
         return run_stamp(self.operator_store.get(), self.station_id,
-                         self.bench_version)
+                         self.bench_version, self.config_hash)
 
     def _save_log(self, entry: dict) -> Optional[str]:
         return save_run_record(self.log_dir, entry,
@@ -672,6 +710,9 @@ class BenchConfigurator:
         print(f"  version      : {self.bench_version}")
         print(f"  station      : {self.station_id}")
         print(f"  operator     : {self.operator_store.get() or '(not set — enter it on the page)'}")
+        print(f"  config hash  : {self.config_hash}")
+        for warning in self.config_warnings:
+            print(f"  CONFIG WARNING: {warning}")
         self.print_banner()
         app = self.build_app()
         # Tools are launched by the bench dashboard, which opens the one browser
