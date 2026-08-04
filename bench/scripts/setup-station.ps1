@@ -8,7 +8,8 @@
 #    .\setup.ps1 -CentralUrl http://techops-automations-host:8100
 #
 #  Optional:
-#    -StationId bench-3            (default: this PC's hostname)
+#    -StationId bench-3            (default: $env:BENCH_STATION_ID, else this
+#                                   PC's hostname)
 #    -InstallDir C:\kela-bench     (default: %USERPROFILE%\kela-bench)
 #
 #  What it does (idempotent - safe to re-run over an existing install):
@@ -26,7 +27,10 @@
 # ============================================================================
 param(
     [string]$CentralUrl = $env:BENCH_CENTRAL_URL,
-    [string]$StationId = $env:COMPUTERNAME,
+    # Same precedence the rest of the stack uses for the station identity:
+    # explicit flag > BENCH_STATION_ID in the environment > the hostname.
+    [string]$StationId = $(if ($env:BENCH_STATION_ID) { $env:BENCH_STATION_ID }
+                           else { $env:COMPUTERNAME }),
     [string]$InstallDir = (Join-Path $env:USERPROFILE "kela-bench")
 )
 

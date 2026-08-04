@@ -32,7 +32,8 @@ writes the station identity (`.bench-station.json`), seeds each tool's config
 from its committed example template, builds the shared `.venv`, drops a
 desktop shortcut (Windows), verifies, and checks the station in — it appears
 on bench-central's **Fleet** page immediately. Pass `-StationId bench-3` /
-`--station-id bench-3` to name the station (default: the hostname).
+`--station-id bench-3` to name the station (or set `BENCH_STATION_ID` in the
+environment before running; default: the hostname).
 
 ## For the operator
 

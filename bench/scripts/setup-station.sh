@@ -9,7 +9,8 @@
 #    bash setup.sh --central-url http://techops-automations-host:8100
 #
 #  Optional:
-#    --station-id bench-3     (default: this machine's hostname)
+#    --station-id bench-3     (default: $BENCH_STATION_ID, else this
+#                              machine's hostname)
 #    --dir ~/kela-bench       (default: ~/kela-bench)
 #
 #  What it does (idempotent - safe to re-run over an existing install):
@@ -27,7 +28,9 @@
 set -uo pipefail
 
 CENTRAL_URL="${BENCH_CENTRAL_URL:-}"
-STATION_ID="$(hostname -s 2>/dev/null || hostname)"
+# Same precedence the rest of the stack uses for the station identity:
+# explicit flag > BENCH_STATION_ID in the environment > the hostname.
+STATION_ID="${BENCH_STATION_ID:-$(hostname -s 2>/dev/null || hostname)}"
 INSTALL_DIR="$HOME/kela-bench"
 
 while [ $# -gt 0 ]; do
