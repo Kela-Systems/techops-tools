@@ -2,12 +2,13 @@
 REM ===========================================================================
 REM  Kela Bench - launcher body (all the real logic lives here)
 REM
-REM  This script is CALLed by "Start Bench Tools.bat" AFTER it has finished the
-REM  git pull. Keeping the pull in the tiny outer wrapper (and the rest here)
-REM  avoids the cmd.exe self-update trap: cmd reads a .bat line-by-line by byte
-REM  offset from disk, so a script that git-pulls itself resumes at a stale
-REM  offset once the pull rewrites it. This file is only opened by cmd AFTER the
-REM  pull is done, so it is safe to change freely.
+REM  This script lives in scripts\ and is CALLed by the bench root's
+REM  "Start Bench Tools.bat" AFTER it has finished the bench-central update
+REM  (scripts\updater.py). Keeping the update in the tiny outer wrapper (and the
+REM  rest here) avoids the cmd.exe self-update trap: cmd reads a .bat
+REM  line-by-line by byte offset from disk, so a script that updates itself
+REM  resumes at a stale offset once the update rewrites it. This file is only
+REM  opened by cmd AFTER the update is done, so it is safe to change freely.
 REM
 REM  Starts ALL bench configurators in THIS one window and opens the dashboard:
 REM
@@ -18,17 +19,13 @@ REM    Teltonika RUTM08 -> http://127.0.0.1:8004   (adapter on 192.168.1.x)
 REM    Raythink Camera  -> http://127.0.0.1:8005   (adapter on 192.168.1.x)
 REM    ISR Speaker      -> http://127.0.0.1:8006   (DHCP - scans 192.168.1/2/88.x)
 REM
-REM  All the tools share ONE .venv in this folder.
+REM  All the tools share ONE .venv at the bench root.
 REM ===========================================================================
 setlocal
-cd /d "%~dp0"
-
-REM ── Record which version this station is running (after the wrapper's pull) ──
-REM Passed to every tool via the environment so it can log/surface it; recorded
-REM here so 5+ stations can be told apart when debugging "works on my bench".
-set "BENCH_VERSION=unknown"
-where git >nul 2>nul && for /f "delims=" %%v in ('git rev-parse --short HEAD 2^>nul') do set "BENCH_VERSION=%%v"
-echo Bench version: %BENCH_VERSION%
+REM This file sits in scripts\ — everything else is addressed from the bench
+REM root (one level up), which also becomes the working directory.
+cd /d "%~dp0.."
+set "ROOT=%CD%"
 
 REM ── Guard against a double-launch ───────────────────────────────────────────
 REM If a bench is already running, a second set would just fail to bind all the
@@ -40,7 +37,7 @@ for %%p in (8001 8002 8003 8004 8005 8006) do (
 )
 if defined BENCH_ALREADY (
   echo A bench instance is already running ^(a tool port is in use^) - opening its dashboard.
-  start "" "%~dp0launcher\index.html"
+  start "" "%ROOT%\launcher\index.html"
   exit /b 0
 )
 
@@ -73,26 +70,44 @@ REM already has working packages. We only hard-abort above when .venv is missing
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt || echo [warn] dependency install failed ^(offline, or a flaky pip index^) - launching with the packages already in .venv.
 echo.
 
+REM ── Version + station identity (from the updater's stamp files) ─────────────
+REM BENCH_VERSION comes from .bench-build.json — the bundle stamp bench-central
+REM injects (git rev-parse is updater.py's fallback for engineer checkouts).
+REM Passed to every tool via the environment so it can log/surface it; recorded
+REM so 5+ stations can be told apart when debugging "works on my bench".
+REM BENCH_STATION_ID / BENCH_CENTRAL_URL come from .bench-station.json (written
+REM once by setup-station.ps1) so nobody has to remember to set env vars on a
+REM fresh bench PC; values already in the environment win.
+set "BENCH_VERSION=unknown"
+for /f "delims=" %%v in ('.venv\Scripts\python.exe scripts\updater.py --print-version 2^>nul') do set "BENCH_VERSION=%%v"
+if not defined BENCH_STATION_ID (
+  for /f "delims=" %%v in ('.venv\Scripts\python.exe scripts\updater.py --print-station station_id 2^>nul') do set "BENCH_STATION_ID=%%v"
+)
+if not defined BENCH_CENTRAL_URL (
+  for /f "delims=" %%v in ('.venv\Scripts\python.exe scripts\updater.py --print-station central_url 2^>nul') do set "BENCH_CENTRAL_URL=%%v"
+)
+echo Bench version: %BENCH_VERSION%
+
 REM The tools never auto-open their own browser tab (that's opt-in via
 REM BENCH_OPEN_BROWSER=1); this launcher opens the one dashboard below instead.
 
 echo Starting all bench configurators in this window...
 REM /b runs each tool in THIS console instead of spawning its own window;
 REM /d sets the tool's working directory. Closing this window stops them all.
-start "Magos Radar"      /d "%~dp0magos-config-ui"    /b "%~dp0.venv\Scripts\python.exe" app.py
-start "Magos APU"        /d "%~dp0magos-config-ui"    /b "%~dp0.venv\Scripts\python.exe" apu_app.py
-start "Teltonika OTD500" /d "%~dp0otd-config-ui"      /b "%~dp0.venv\Scripts\python.exe" otd_app.py
-start "Teltonika RUTM08" /d "%~dp0rutm-config-ui"     /b "%~dp0.venv\Scripts\python.exe" rutm_app.py
-start "Raythink Camera"  /d "%~dp0raythink-config-ui" /b "%~dp0.venv\Scripts\python.exe" raythink_app.py
-start "ISR Speaker"      /d "%~dp0speaker-config-ui"  /b "%~dp0.venv\Scripts\python.exe" speaker_app.py
+start "Magos Radar"      /d "%ROOT%\magos-config-ui"    /b "%ROOT%\.venv\Scripts\python.exe" app.py
+start "Magos APU"        /d "%ROOT%\magos-config-ui"    /b "%ROOT%\.venv\Scripts\python.exe" apu_app.py
+start "Teltonika OTD500" /d "%ROOT%\otd-config-ui"      /b "%ROOT%\.venv\Scripts\python.exe" otd_app.py
+start "Teltonika RUTM08" /d "%ROOT%\rutm-config-ui"     /b "%ROOT%\.venv\Scripts\python.exe" rutm_app.py
+start "Raythink Camera"  /d "%ROOT%\raythink-config-ui" /b "%ROOT%\.venv\Scripts\python.exe" raythink_app.py
+start "ISR Speaker"      /d "%ROOT%\speaker-config-ui"  /b "%ROOT%\.venv\Scripts\python.exe" speaker_app.py
 
 REM Open the dashboard immediately — it self-polls every few seconds, so any tool
 REM still doing its cold start shows a grey dot that flips green on its own.
-start "" "%~dp0launcher\index.html"
+start "" "%ROOT%\launcher\index.html"
 
 REM Optionally open the operator guide too (e.g. on the side screen). Off by
 REM default; set BENCH_OPEN_GUIDE=1 before running to also open it.
-if "%BENCH_OPEN_GUIDE%"=="1" start "" "%~dp0launcher\guide.html"
+if "%BENCH_OPEN_GUIDE%"=="1" start "" "%ROOT%\launcher\guide.html"
 
 echo.
 echo Dashboard opened: launcher\index.html  (guide: launcher\guide.html)

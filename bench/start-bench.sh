@@ -13,9 +13,10 @@
 #    Raythink Camera  -> http://127.0.0.1:8005   (adapter on 192.168.1.x)
 #    ISR Speaker      -> http://127.0.0.1:8006   (DHCP — scans 192.168.1/2/88.x)
 #
-#  All the tools share ONE .venv in this folder. Every launch pulls the latest
-#  tools (git) and installs requirements (needs internet that once, then it's a
-#  near-instant no-op). Set BENCH_NO_PULL=1 to freeze the on-disk version.
+#  All the tools share ONE .venv in this folder. Every launch converges to the
+#  release pinned on bench-central (updater.py) and installs requirements
+#  (needs the tailnet/internet that once, then it's a near-instant no-op).
+#  Set BENCH_NO_PULL=1 to freeze the on-disk version.
 #
 #  Usage:   ./start-bench.sh        (chmod +x once if needed)
 #  Leave this window open. Press Ctrl+C here to stop everything.
@@ -23,7 +24,7 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
-. "$ROOT/_lib.sh"
+. "$ROOT/scripts/_lib.sh"
 
 # The tools never auto-open their own browser tab (that's opt-in via
 # BENCH_OPEN_BROWSER=1); this launcher opens the one dashboard itself below.
@@ -60,12 +61,15 @@ for p in $TOOL_PORTS; do
 done
 
 # ── Step 1: prepare the single shared venv + deps ──────────────────────────
-echo "Preparing the shared environment (pull + install; first run ~1 min)..."
+echo "Preparing the shared environment (update + install; first run ~1 min)..."
 bench_ensure_venv || { read -r -p "Dependency setup failed. Press Return to close..." _; exit 1; }
 
 # ── Step 2: start the servers in the background ─────────────────────────────
-# Pass the running version to every tool so it can log/surface it (traceability).
+# Pass the running version to every tool so it can log/surface it (traceability),
+# and the station identity from .bench-station.json (installer-written) so
+# run records and central shipping work without hand-set env vars.
 export BENCH_VERSION="$(bench_version)"
+bench_export_station_env
 pids=()
 cleanup() {
   echo

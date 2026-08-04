@@ -5,26 +5,48 @@ plug-in at a time. All the tools share the same workflow — *plug a device in �
 it's detected → configure → unplug → repeat* — and the same look, so learning
 one teaches you all of them.
 
-This `bench/` folder is the **only** thing you need to copy onto the bench PC.
-The rest of `techops-tools/` (cluster scripts, GIS tools, etc.) is not used here.
+This `bench/` folder is the **only** thing that runs on the bench PC — and it
+gets there via **bench-central**, not by hand: stations install and update
+from the release pinned there (see "Station setup" below). The rest of
+`techops-tools/` (cluster scripts, GIS tools, etc.) is not used here.
+
+## Station setup (new bench PC)
+
+The PC must reach bench-central (tailnet or LAN) — that's the only
+prerequisite. Then, in a PowerShell window (Windows) or terminal (macOS/Linux):
+
+```powershell
+# Windows
+irm http://techops-automations-host:8100/setup.ps1 -OutFile setup.ps1
+.\setup.ps1 -CentralUrl http://techops-automations-host:8100
+```
+
+```bash
+# macOS / Linux
+curl -fsS http://techops-automations-host:8100/setup.sh -o setup.sh
+bash setup.sh --central-url http://techops-automations-host:8100
+```
+
+The installer finds/installs Python, downloads the pinned bench release,
+writes the station identity (`.bench-station.json`), seeds each tool's config
+from its committed example template, builds the shared `.venv`, drops a
+desktop shortcut (Windows), verifies, and checks the station in — it appears
+on bench-central's **Fleet** page immediately. Pass `-StationId bench-3` /
+`--station-id bench-3` to name the station (default: the hostname).
 
 ## For the operator
 
 The tools run the same on **Windows** and **macOS** — only the launcher you
 double-click differs.
 
-1. Install **Python 3.11+** once:
-   - **Windows:** the [python.org installer](https://www.python.org/downloads/)
-     — tick *"Add python.exe to PATH"*.
-   - **macOS:** the [python.org installer](https://www.python.org/downloads/),
-     or `brew install python`.
-2. Start everything with one launcher:
-   - **Windows:** double-click `Start Bench Tools.bat`
+1. Start everything with one launcher:
+   - **Windows:** double-click **Kela Bench Tools** on the desktop
+     (`Start Bench Tools.bat`)
    - **macOS/Linux:** run `./start-bench.sh` from a terminal in this folder
 
-   It pulls the latest tools (`git`), sets up the shared environment, launches
-   all the tools, and opens the dashboard in your browser.
-3. On the dashboard, click the tool for whatever you're plugging in. A green dot
+   It updates to the release pinned on bench-central, sets up the shared
+   environment, launches all the tools, and opens the dashboard in your browser.
+2. On the dashboard, click the tool for whatever you're plugging in. A green dot
    means that tool is up; grey means it's still starting (first run installs
    dependencies — give it a moment) or stopped.
 
@@ -48,9 +70,10 @@ There is a single launcher that starts all the tools together (they run side by
 side on fixed, non-colliding ports). To stop everything, close the launcher
 window (Windows) or press Ctrl+C in the terminal (macOS/Linux).
 
-> **Frozen bench:** every launch does a best-effort `git pull` to get the latest
-> tools. To freeze the version currently on disk (e.g. mid-session), set
-> `BENCH_NO_PULL=1` before launching.
+> **Frozen bench:** every launch converges (best-effort) to the release pinned
+> on bench-central. To freeze the version currently on disk (e.g. mid-session),
+> set `BENCH_NO_PULL=1` before launching. An offline bench just launches
+> what's on disk — an update is never required to work.
 
 > **macOS/Linux first-launch:** if the script won't run, restore the executable
 > bit with `chmod +x start-bench.sh` (it can be lost in transit). On macOS, if
@@ -87,10 +110,32 @@ the one launcher.
   device clients (`raythink_camera.py`, a Dahua-OEM RPC2 JSON client, and
   `speaker_client.py`, a session-cookie CGI client) instead of the Teltonika
   one — proof the base is protocol-agnostic.
+- **Layout:** the bench root holds only the two double-click entry points
+  (`Start Bench Tools.bat` / `start-bench.sh`), the docs and
+  `requirements.txt`; everything they delegate to — `bench-launch.bat`,
+  `_lib.sh`, `updater.py`, the `setup-station.*` installers — lives in
+  `scripts/`. The tools and `bench-core/` are siblings at the root.
+- **Updates are pushed from bench-central** (`bench-central/README.md`,
+  "Fleet"): an admin pins a release (any git ref, resolved to a SHA) and every
+  station converges to it at launch. The station half is `scripts/updater.py`
+  — run by the launchers before anything starts — which compares the local
+  `.bench-build.json` stamp with the pin, downloads the bundle (`git archive`
+  of `bench/`, built by bench-central) when they differ, extracts it over this
+  folder, and checks the station in. Stations need **no git and no GitHub
+  credentials**. It is fail-open end to end (offline → launch what's on disk),
+  never touches gitignored local state (configs, `.venv`, logs, the
+  `.bench-*.json` files — they're never in a bundle), and skips a folder that
+  is a git checkout, so an engineer's working copy never self-updates. One
+  trade-off: files *deleted* from the repo are not deleted on stations
+  (harmless orphans).
+- **Station identity** lives in `.bench-station.json` (gitignored, written
+  once by the installer): `station_id` and `central_url`. The launchers export
+  `BENCH_STATION_ID` / `BENCH_CENTRAL_URL` from it, so nothing needs env vars
+  set by hand on a station; values already in the environment still win.
 - **One shared `.venv`** lives at the `bench/` root and is used by all the
   tools. The launchers (`Start Bench Tools.bat` / `start-bench.sh`) create it on
-  first run, `git pull` (unless `BENCH_NO_PULL=1`), and re-sync the single
-  `requirements.txt` every run (a near-instant no-op once installed). Only the
+  first run, update from bench-central (unless `BENCH_NO_PULL=1`), and re-sync
+  the single `requirements.txt` every run (a near-instant no-op once installed). Only the
   dashboard opens a browser tab; the tools don't auto-open their own (set
   `BENCH_OPEN_BROWSER=1` to opt a single tool back in). On macOS/Linux the tools
   run as background jobs in the launcher's terminal window, and Ctrl+C stops them all.
@@ -112,9 +157,11 @@ the one launcher.
   `operator`, `station_id`, `bench_version` and `config_hash`. The operator
   name is entered in the header of any tool page (badge scan or typed, once at
   day start) and is shared station-wide via `bench/.bench-operator.json`
-  (gitignored). The station ID defaults to the machine hostname; set
-  `BENCH_STATION_ID` before launching to override it. `bench_version` is the
-  short git revision exported by the launcher as `BENCH_VERSION`.
+  (gitignored). The station ID comes from `.bench-station.json` (falling back
+  to the machine hostname); `BENCH_STATION_ID` in the environment overrides
+  it. `bench_version` is the `.bench-build.json` bundle stamp (short git
+  revision for engineer checkouts), exported by the launcher as
+  `BENCH_VERSION`.
 - **Config self-check + hash:** at startup (and on every config reload) each
   tool validates its config — placeholder values (`xxxxx`, `example.com`, ...),
   expired or soon-to-expire API tokens, and fields missing vs the committed
@@ -124,16 +171,18 @@ the one launcher.
   instead of failing (or silently falling back) mid-run. `config_hash` — a
   short fingerprint of the redacted config, also in `/api/state` — is stamped
   into every run record, so config drift across stations is visible centrally.
-- **Central shipping (opt-in per station):** set `BENCH_CENTRAL_URL` to the
+- **Central shipping (opt-in per station):** with `BENCH_CENTRAL_URL` set —
+  the launcher exports it from `.bench-station.json`, or set it by hand to the
   collector's base URL (e.g. `http://techops-automations-host:8100`, reachable
-  over Tailscale) before launching, and every completed run record is also
+  over Tailscale) before launching — every completed run record is also
   queued under `<tool>/logs/outbox/` and uploaded in the background
   (`bench_core/src/bench_core/central.py`). Offline benches just queue —
   records upload when connectivity returns, with backoff, and a run never
   blocks or fails because the network is down. Raw Magos device payloads stay
   in the local per-run JSON only; they are never shipped. When the variable is
   unset (the default), nothing is spooled and no uploader runs.
-- **Tests** live per tool under `<tool>/tests/` and run with no hardware. From
-  the `bench/` root: `.venv/bin/python -m pytest` runs every tool's suite.
+- **Tests** live per tool under `<tool>/tests/` (plus `tests/` at this root
+  for `scripts/updater.py`) and run with no hardware. From the `bench/` root:
+  `.venv/bin/python -m pytest` runs every suite.
 - Secrets stay local: real `*.config.json`, exported `profiles/`, and `firmware/`
   are gitignored; only the `*.example.*` templates are committed.
