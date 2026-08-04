@@ -166,9 +166,16 @@ const TOOL_NAMES = {otd: "OTD500", rutm: "RUTM08", raythink: "Raythink",
                     "magos-apu": "Magos APU"};
 const PAGE = 100;
 let offset = 0, total = 0;
-// bench_version of the newest run on record (set at boot) — rows on any
-// other version get flagged, so drifting stations stand out.
-let newestVersion = null;
+// ONE version reference on this page: the pinned release (full sha, set by
+// loadFleet before anything renders). Station rows AND run rows are compared
+// against it — amber means "not on the pinned release". Versions come in
+// different lengths (40-char check-ins, 12-char bundle stamps, 7-char git
+// stamps from pre-fleet benches), so matching is by prefix.
+let desiredVersion = null;
+
+function sameRelease(a, b) {
+  return !!(a && b && (a.startsWith(b) || b.startsWith(a)));
+}
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
@@ -191,20 +198,18 @@ function when(iso) {
 }
 function versionCell(v) {
   if (!v || v === "unknown") return pill("na", "?");
-  if (newestVersion && v !== newestVersion)
-    return `<span class="pill warn ver" title="newest seen: ${esc(newestVersion)}">${esc(v)}</span>`;
-  return `<span class="ver">${esc(v)}</span>`;
+  const short = v.slice(0, 12);
+  if (desiredVersion && !sameRelease(v, desiredVersion))
+    return `<span class="pill warn ver" title="pinned: ${esc(desiredVersion.slice(0, 12))}">${esc(short)}</span>`;
+  return `<span class="ver">${esc(short)}</span>`;
 }
 
 // ── fleet panel ───────────────────────────────────────────────────────────
-// The pinned release (full sha) — station rows on any other version get the
-// drift flag. Distinct from newestVersion: this is what SHOULD be running.
-let desiredVersion = null;
 
 function fleetVersionCell(v) {
   if (!v || v === "unknown") return pill("na", "?");
   const short = v.slice(0, 12);
-  if (desiredVersion && v !== desiredVersion)
+  if (desiredVersion && !sameRelease(v, desiredVersion))
     return `<span class="pill warn ver" title="pinned: ${esc(desiredVersion.slice(0, 12))}">${esc(short)}</span>`;
   return `<span class="pill ok ver">${esc(short)}</span>`;
 }
@@ -329,15 +334,14 @@ async function openDetail(runId) {
 }
 
 async function boot() {
-  const [health, filters, newest] = await Promise.all([
+  // The collector's own revision stays out of the header (it lives in
+  // /api/v1/health for debugging) — the pin in the Fleet panel is the only
+  // version reference shown on this page.
+  const [health, filters] = await Promise.all([
     (await fetch("api/v1/health")).json(),
     (await fetch("api/v1/filters")).json(),
-    (await fetch("api/v1/runs?limit=1")).json(),
   ]);
-  newestVersion = newest.runs[0]?.bench_version || null;
-  $("health").textContent = `${health.runs} runs on record`
-    + (newestVersion ? ` · newest bench version: ${newestVersion}` : "")
-    + ` · collector ${health.version}`;
+  $("health").textContent = `${health.runs} runs on record`;
   const fill = (id, values, labels) => {
     for (const v of values) {
       const opt = document.createElement("option");
@@ -349,7 +353,9 @@ async function boot() {
   fill("station_id", filters.stations);
   fill("tool", filters.tools, TOOL_NAMES);
   fill("site", filters.sites);
-  await Promise.all([load(false), loadFleet()]);
+  // Fleet first: the run rows are compared against the pin it sets.
+  await loadFleet();
+  await load(false);
 }
 
 $("pin-apply").addEventListener("click", pinRelease);
