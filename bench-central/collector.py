@@ -29,6 +29,11 @@ Read side:
     GET /api/v1/filters        distinct stations/tools/sites/operators for
                                the dashboard's dropdowns
 
+Fleet (station install + pinned releases, see fleet.py):
+
+    /api/v1/fleet/*            desired pin, code bundles, station check-ins
+    /setup.ps1, /setup.sh      the one-command station installers
+
 Durability: WAL journal + synchronous=FULL — a row acknowledged with 201 is
 on disk before the uploader deletes its outbox copy, so an instance restart
 (or crash) loses nothing that was acknowledged.
@@ -42,6 +47,8 @@ Config (env):
     BENCH_CENTRAL_HOST   bind address          (default 127.0.0.1; the systemd
                          unit sets 0.0.0.0 — safe with an empty inbound SG)
     BENCH_CENTRAL_PORT   port                  (default 8100)
+    BENCH_CENTRAL_REPO   repo checkout bundles are built from
+                         (default: this file's own checkout)
 """
 from __future__ import annotations
 
@@ -59,6 +66,8 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from bench_core.run_record import parse_run_record
+
+from fleet import FLEET_SCHEMA, add_fleet_routes
 
 DEFAULT_PORT = 8100
 
@@ -116,6 +125,7 @@ def init_db(db_path: Path) -> None:
     with closing(_connect(db_path)) as conn:
         conn.execute("PRAGMA journal_mode=WAL")  # persistent once set
         conn.executescript(_SCHEMA)
+        conn.executescript(FLEET_SCHEMA)
         # TEC-575 migration: databases created before the dashboard lack the
         # site/hostname columns (they lived only inside the record JSON).
         # Add them and backfill from the stored records, once.
@@ -168,11 +178,20 @@ def _repo_version() -> str:
     return "unknown"
 
 
-def create_app(db_path: Optional[Path] = None) -> FastAPI:
+def create_app(db_path: Optional[Path] = None,
+               repo_root: Optional[Path] = None) -> FastAPI:
     db = Path(db_path or os.environ.get("BENCH_CENTRAL_DB", "bench-central.db"))
     init_db(db)
     version = _repo_version()  # once at startup, not per health poll
     app = FastAPI(title="Bench Central Collector")
+
+    # Fleet: pinned releases + station check-ins (fleet.py). Bundles are
+    # built from this checkout and cached next to the database, so a redeploy
+    # never touches them and StateDirectory covers both.
+    repo = Path(repo_root or os.environ.get(
+        "BENCH_CENTRAL_REPO", Path(__file__).resolve().parent.parent))
+    add_fleet_routes(app, connect=lambda: _connect(db), repo=repo,
+                     bundle_dir=db.parent / "bundles")
 
     @app.post("/api/v1/runs", status_code=201)
     def ingest(record: dict = Body(...)):

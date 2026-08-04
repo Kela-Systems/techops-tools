@@ -10,8 +10,11 @@ How to provision devices at the bench. Keep this open on the side screen.
 
 ## 1. Starting the bench
 
-1. Double-click `Start Bench Tools.bat` on the desktop.
+1. Double-click **Kela Bench Tools** on the desktop (it may also appear as
+   `Start Bench Tools.bat`).
 2. A black window opens and stays open — **leave it open all day.** Closing it stops every tool.
+   It first checks for a tools update — if the engineers released one, it installs
+   itself here; no internet at the bench just means it starts with what it has.
 3. After a few seconds the **dashboard** opens in the browser with six tool cards.
 4. Click the card for whatever you're about to plug in. A **green dot** means that tool is ready.
 5. **Enter your name** in the **Operator** box at the top of the tool page (scan your badge or

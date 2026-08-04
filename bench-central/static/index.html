@@ -1,7 +1,9 @@
 <!DOCTYPE html>
-<!-- Bench Central — read-only dashboard over the run-record audit trail
-     (TEC-575). One self-contained file, no build step: vanilla JS against the
-     collector's own /api/v1 endpoints. Served at / by collector.py. -->
+<!-- Bench Central — dashboard over the run-record audit trail (TEC-575)
+     plus the fleet panel (pinned release + station check-ins; the runs side
+     stays read-only). One self-contained file, no build step: vanilla JS
+     against the collector's own /api/v1 endpoints. Served at / by
+     collector.py. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -59,6 +61,22 @@
   .more { display: block; margin: 14px auto; }
   .empty { text-align: center; color: var(--muted); padding: 30px; }
 
+  /* fleet panel */
+  .fleet { background: var(--card); border: 1px solid var(--line);
+           border-radius: 8px; padding: 12px; margin-bottom: 14px; }
+  .fleet .head { display: flex; flex-wrap: wrap; align-items: center;
+                 gap: 10px; margin-bottom: 8px; }
+  .fleet h2 { margin: 0; font-size: 14px; }
+  .fleet .head .sub { color: var(--muted); font-size: 12.5px; flex: 1; }
+  .fleet form { display: flex; gap: 6px; }
+  .fleet input { font: inherit; padding: 5px 8px; border: 1px solid var(--line);
+                 border-radius: 6px; min-width: 220px; }
+  .fleet button { font: inherit; padding: 6px 14px; border-radius: 6px;
+                  border: 1px solid var(--accent); background: var(--accent);
+                  color: #fff; cursor: pointer; }
+  .fleet table { border-radius: 6px; }
+  .fleet .empty { padding: 14px; }
+
   /* detail modal */
   #overlay { position: fixed; inset: 0; background: rgba(20,26,38,.45);
              display: none; align-items: flex-start; justify-content: center;
@@ -92,6 +110,24 @@
   <span class="sub" id="health">…</span>
 </header>
 <main>
+  <section class="fleet">
+    <div class="head">
+      <h2>Fleet</h2>
+      <span class="sub" id="pin-info">…</span>
+      <form id="pin-form" onsubmit="return false">
+        <input id="pin-ref" placeholder="ref to pin (main, a tag, a sha)">
+        <button id="pin-apply">Pin release</button>
+      </form>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Station</th><th>Hostname</th><th>Platform</th><th>Version</th>
+        <th>First seen (UTC)</th><th>Last seen (UTC)</th>
+      </tr></thead>
+      <tbody id="fleet-rows"></tbody>
+    </table>
+  </section>
+
   <form class="filters" id="filters" onsubmit="return false">
     <label>Search (serial / MAC / hostname / site / operator)
       <input type="search" id="q" placeholder="e.g. 6008952944"></label>
@@ -158,6 +194,59 @@ function versionCell(v) {
   if (newestVersion && v !== newestVersion)
     return `<span class="pill warn ver" title="newest seen: ${esc(newestVersion)}">${esc(v)}</span>`;
   return `<span class="ver">${esc(v)}</span>`;
+}
+
+// ── fleet panel ───────────────────────────────────────────────────────────
+// The pinned release (full sha) — station rows on any other version get the
+// drift flag. Distinct from newestVersion: this is what SHOULD be running.
+let desiredVersion = null;
+
+function fleetVersionCell(v) {
+  if (!v || v === "unknown") return pill("na", "?");
+  const short = v.slice(0, 12);
+  if (desiredVersion && v !== desiredVersion)
+    return `<span class="pill warn ver" title="pinned: ${esc(desiredVersion.slice(0, 12))}">${esc(short)}</span>`;
+  return `<span class="pill ok ver">${esc(short)}</span>`;
+}
+
+async function loadFleet() {
+  const data = await (await fetch("api/v1/fleet/stations")).json();
+  desiredVersion = data.desired.version;
+  $("pin-info").textContent = desiredVersion
+    ? `pinned: ${desiredVersion.slice(0, 12)} (${data.desired.ref}) · ${when(data.desired.pinned_at)} UTC`
+    : "no release pinned — stations launch whatever is on disk";
+  $("fleet-rows").innerHTML = data.stations.map(s => `
+    <tr>
+      <td>${esc(s.station_id)}</td>
+      <td>${esc(s.hostname || "")}</td>
+      <td>${esc(s.platform || "")}</td>
+      <td>${fleetVersionCell(s.version)}</td>
+      <td>${esc(when(s.first_seen))}</td>
+      <td>${esc(when(s.last_seen))}</td>
+    </tr>`).join("")
+    || `<tr><td colspan="6" class="empty">No stations have checked in yet.</td></tr>`;
+}
+
+async function pinRelease() {
+  const ref = $("pin-ref").value.trim();
+  if (!ref) return;
+  $("pin-apply").disabled = true;
+  try {
+    const resp = await fetch("api/v1/fleet/desired", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ref}),
+    });
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try { detail = (await resp.json()).detail || detail; } catch {}
+      alert(`Pin failed: ${detail}`);
+      return;
+    }
+    $("pin-ref").value = "";
+    await loadFleet();
+  } finally {
+    $("pin-apply").disabled = false;
+  }
 }
 
 function query() {
@@ -260,9 +349,11 @@ async function boot() {
   fill("station_id", filters.stations);
   fill("tool", filters.tools, TOOL_NAMES);
   fill("site", filters.sites);
-  await load(false);
+  await Promise.all([load(false), loadFleet()]);
 }
 
+$("pin-apply").addEventListener("click", pinRelease);
+$("pin-ref").addEventListener("keydown", e => { if (e.key === "Enter") pinRelease(); });
 $("apply").addEventListener("click", () => load(false));
 $("reset").addEventListener("click", () => {
   $("filters").reset();

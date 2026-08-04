@@ -78,6 +78,12 @@ bench/speaker-config-ui/config/media/*
 bench/.bench-operator.json
 bench/.bench-operator.tmp
 
+# Bench station identity + bundle stamp (written by setup-station.* and the
+# bench-central bundle build; per-station, must never reach a bundle)
+bench/.bench-station.json
+bench/.bench-build.json
+bench/*.bundle.zip
+
 # Logs
 *.log
 bench/magos-config-ui/logs/
