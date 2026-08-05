@@ -47,6 +47,7 @@ from bench_core import (
     host_iface_for,
     load_settings,
     log,
+    assign_rms_pack,
     make_step_runner,
     register_in_rms,
     renew_host_dhcp,
@@ -222,6 +223,13 @@ def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
                 mac=identity.get("mac", ""), device_password=new_password,
                 device_series=rms.get("device_series", "rutm"),
                 wait=net_timeout))
+            # License: assign the Management pack (the RMS UI's "Set pack"
+            # action) so the device doesn't run on 30-day credits.
+            if rms.get("pack"):
+                _step("rms-set-pack", lambda: assign_rms_pack(
+                    rms.get("api_token", ""), rms.get("company_id", ""),
+                    serial=identity.get("serial", ""), pack=str(rms.get("pack")),
+                    wait=net_timeout))
         else:
             log.info("RMS api_token/company_id not set — device enabled on-device only "
                      "(set rms.api_token + rms.company_id in the config to also register "

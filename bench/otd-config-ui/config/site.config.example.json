@@ -32,7 +32,9 @@
     "_comment_api": "api_token must be an RMS Personal Access Token with the 'devices:read' + 'devices:write' scopes, and the account must have 2FA enabled (else the API returns 403). The bench run auto-registers each device by serial+MAC; password_confirmation uses new_password above. device_series is the RMS device family ('otd' for OTD500).",
     "api_token": "",
     "company_id": "",
-    "device_series": "otd"
+    "device_series": "otd",
+    "_comment_pack": "Optional license: assign a Management pack right after registration (the RMS UI's Actions -> Device -> 'Set pack'). Accepts the RMS pack type name ('management_3y' = Paid Management pack 3y.), a numeric credit_type_id, or a fragment of the display name. Leave empty to keep credit-based management. NOTE: packs cannot be revoked once assigned; the step skips devices that already carry a matching pack.",
+    "pack": "management_3y"
   },
 
   "tailscale": {

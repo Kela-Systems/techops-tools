@@ -12,7 +12,9 @@ CSV** — when a router is detected, the UI asks for the **site name** and the
 3. Hostname / device name → `rut-<site_name>`.
 4. Timezone → `Asia/Jerusalem`.
 5. Firmware upgrade (FOTA latest-stable by default; local `.bin` supported).
-6. Enable RMS on-device + register the unit in the RMS cloud (serial+MAC).
+6. Enable RMS on-device + register the unit in the RMS cloud (serial+MAC),
+   then assign the RMS Management pack license (`rms.pack`, the UI's
+   "Set pack" action) so the device doesn't run on 30-day credits.
 7. Join Tailscale (per-device minted key or a static one).
 8. Verify every setting by reading it back off the device.
 9. **Last step:** move the LAN to `192.168.88.1`. The connection drops by

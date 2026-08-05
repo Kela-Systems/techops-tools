@@ -248,10 +248,10 @@ def register_in_rms(api_token: str, company_id: str, *, name: str, serial: str,
         raise SystemExit(f"RMS registration failed: HTTP {r.status_code}: {body}")
 
 
-def rms_cloud_device_status(api_token: str, serial: str, timeout: int = 20) -> Optional[bool]:
-    """Authoritative connectivity check: ask the RMS cloud whether the device
-    with `serial` shows as connected. Returns True/False, or None when the
-    lookup could not answer (no token, API error, device not found)."""
+def rms_find_device(api_token: str, serial: str, timeout: int = 20) -> Optional[dict]:
+    """The RMS cloud record for the device with `serial` (device id, connection
+    state, management pack fields, ...). None when the lookup could not answer
+    (no token, API error) or the device is not registered."""
     if not api_token or not serial or serial == "unknown":
         return None
     try:
@@ -265,8 +265,161 @@ def rms_cloud_device_status(api_token: str, serial: str, timeout: int = 20) -> O
         return None
     for dev in payload.get("data") or []:
         if isinstance(dev, dict) and str(dev.get("serial", "")).strip() == str(serial).strip():
-            return rms_status_connected(json.dumps(dev))
+            return dev
     return None
+
+
+def rms_cloud_device_status(api_token: str, serial: str, timeout: int = 20) -> Optional[bool]:
+    """Authoritative connectivity check: ask the RMS cloud whether the device
+    with `serial` shows as connected. Returns True/False, or None when the
+    lookup could not answer (no token, API error, device not found)."""
+    dev = rms_find_device(api_token, serial, timeout)
+    return rms_status_connected(json.dumps(dev)) if dev is not None else None
+
+
+def _pack_matches(pack: str, credit_type_id, credit_type_name: str) -> bool:
+    """True when the configured `pack` selects this credit type. Accepts a
+    numeric credit_type_id, the RMS short type name ('management_3y'), or the
+    display name ('Paid Management pack 3y.'). Names are compared as token
+    sets — the smaller set must be contained in the larger — so
+    'management_3y' == {management,3y} matches the display name's
+    {paid,management,pack,3y}, while 'management_1y' can never match
+    'management_10y' (the duration token differs)."""
+    want = pack.strip().lower()
+    if not want:
+        return False
+    if want.isdigit():
+        return str(credit_type_id) == want
+    a = set(re.findall(r"[a-z0-9]+", want))
+    b = set(re.findall(r"[a-z0-9]+", (credit_type_name or "").lower()))
+    if not a or not b:
+        return False
+    return a <= b or b <= a
+
+
+def assign_rms_pack(api_token: str, company_id: str, *, serial: str, pack: str,
+                    wait: int = 180) -> None:
+    """Assign a Management/Data pack to the device — the RMS UI's
+    Actions -> Device -> "Set pack" action, done via the API:
+
+        GET /devices?serial=...    -> device id (+ current pack, for idempotency)
+        GET /credits?company_id=.. -> credit_type_id of the wanted pack
+        PUT /devices/credit        -> {"data":[{device_id, credit_type_id,
+                                                credit_enabled: 1}]}
+
+    `pack` selects the pack type: numeric credit_type_id, the RMS short name
+    ('management_3y'), or a fragment of the display name ('Paid Management
+    pack 3y.'). Idempotent: a device that already carries a matching pack is
+    left alone — RMS packs CANNOT be revoked, so a blind re-assign on a re-run
+    would burn a second pack. Like register_in_rms, connection errors are
+    retried for up to `wait` seconds (the bench usually reaches the internet
+    through the device being provisioned). Raises SystemExit on real failure."""
+    if not api_token:
+        raise SystemExit("RMS pack assignment needs rms.api_token in config.")
+    if not serial or serial == "unknown":
+        raise SystemExit(f"RMS pack assignment needs a real serial (got {serial!r}).")
+    headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
+    deadline = time.time() + max(wait, 0)
+
+    def _get(url: str, **params) -> dict:
+        """GET with the same wait-out-the-uplink retry loop as register_in_rms."""
+        while True:
+            try:
+                r = requests.get(url, headers=headers, params=params or None, timeout=30)
+            except requests.exceptions.RequestException as e:
+                if time.time() < deadline:
+                    log.info("RMS API not reachable yet — uplink likely still "
+                             "recovering; retrying in 10s ...")
+                    time.sleep(10)
+                    continue
+                raise SystemExit(f"RMS API unreachable after ~{wait}s: {e}")
+            if r.status_code in (401, 403):
+                raise SystemExit(
+                    f"RMS rejected the token (HTTP {r.status_code}: {r.text[:200]}). "
+                    f"Pack assignment needs the 'devices:read' + 'devices:write' + "
+                    f"'credits:read' scopes on the personal access token.")
+            if r.status_code != 200:
+                raise SystemExit(f"RMS API {url} failed: HTTP {r.status_code}: {r.text[:300]}")
+            try:
+                return r.json()
+            except ValueError:
+                raise SystemExit(f"RMS API {url} returned non-JSON: {r.text[:200]}")
+
+    # 1) Device id — the unit was usually registered moments ago, so give the
+    # cloud a little time to show it before declaring failure.
+    dev = None
+    while dev is None:
+        payload = _get(f"{RMS_API_BASE}/devices", serial=serial, limit=100)
+        dev = next((d for d in payload.get("data") or []
+                    if isinstance(d, dict)
+                    and str(d.get("serial", "")).strip() == str(serial).strip()), None)
+        if dev is None:
+            if time.time() >= deadline:
+                raise SystemExit(f"Device {serial} not found in RMS — register it "
+                                 "first (rms-register step) before assigning a pack.")
+            log.info("Device %s not visible in RMS yet — retrying in 10s ...", serial)
+            time.sleep(10)
+    dev_id = dev.get("id")
+
+    # Idempotency: a matching pack already on the device means a re-run — skip
+    # (packs cannot be revoked; re-assigning would consume another one).
+    cur_name = dev.get("management_credit_type_name") or dev.get("management_credit_type") or ""
+    if _pack_matches(pack, dev.get("management_credit_type_id"), cur_name) or \
+       _pack_matches(pack, None, dev.get("management_credit_type") or ""):
+        log.info("Device already has pack '%s' — skipping (packs are not revocable).",
+                 cur_name or pack)
+        return
+
+    # 2) Which credit_type_id is the wanted pack, and does the company still
+    # have one left to assign?
+    params = {"limit": 100}
+    if company_id:
+        params["company_id"] = int(company_id) if str(company_id).strip().isdigit() else company_id
+    credits = (_get(f"{RMS_API_BASE}/credits", **params).get("data") or [])
+    matching = [c for c in credits if isinstance(c, dict)
+                and _pack_matches(pack, c.get("credit_type_id"), c.get("credit_type_name"))]
+    available = [c for c in matching if (c.get("credit_left") or 0) > 0]
+    if not available:
+        have = ", ".join(sorted({f"{c.get('credit_type_name')} (left={c.get('credit_left')})"
+                                 for c in credits if isinstance(c, dict)})) or "(none)"
+        detail = "no packs of that type left" if matching else "no such pack type"
+        raise SystemExit(f"RMS pack '{pack}': {detail} in the company pool. "
+                         f"Company credits: {have}")
+    credit_type_id = available[0]["credit_type_id"]
+    log.info("Assigning pack '%s' (credit_type_id=%s, %s left) to %s (device id %s) ...",
+             available[0].get("credit_type_name") or pack, credit_type_id,
+             available[0].get("credit_left"), serial, dev_id)
+
+    # 3) The actual "Set pack" save.
+    body = {"data": [{"device_id": dev_id, "credit_type_id": credit_type_id,
+                      "credit_enabled": 1}]}
+    while True:
+        try:
+            r = requests.put(f"{RMS_API_BASE}/devices/credit", headers=headers,
+                             json=body, timeout=30)
+        except requests.exceptions.RequestException as e:
+            if time.time() < deadline:
+                log.info("RMS API not reachable yet — retrying the pack assignment in 10s ...")
+                time.sleep(10)
+                continue
+            raise SystemExit(f"RMS API unreachable after ~{wait}s: {e}")
+        break
+    if r.status_code not in (200, 201, 202):
+        raise SystemExit(f"RMS pack assignment failed: HTTP {r.status_code}: {r.text[:300]}")
+
+    # 4) The PUT is asynchronous (status-channel based) — confirm the pack
+    # actually landed on the device record before reporting success.
+    confirm_deadline = time.time() + 90
+    while time.time() < confirm_deadline:
+        dev = rms_find_device(api_token, serial)
+        if dev and str(dev.get("management_credit_type_id")) == str(credit_type_id):
+            log.info("Pack assigned: %s now has '%s'.",
+                     serial, dev.get("management_credit_type_name") or pack)
+            return
+        time.sleep(5)
+    raise SystemExit(f"RMS accepted the pack assignment (HTTP {r.status_code}) but the "
+                     f"device record does not show the pack after 90s — check the RMS UI "
+                     f"(Actions -> Device -> Set pack) for {serial}.")
 
 
 def _norm_key(k: str) -> str:

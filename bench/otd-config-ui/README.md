@@ -13,7 +13,9 @@ password**, and it provisions. Nothing is saved beyond the session history.
 4. Timezone, then SIM 4G-only (if enabled).
 5. Firmware upgrade (local `.bin`, FOTA, defer-to-RMS, or none).
 6. Enable RMS on-device + register the unit in the RMS cloud (serial+MAC) when
-   `rms.api_token` + `rms.company_id` are set in the config.
+   `rms.api_token` + `rms.company_id` are set in the config, then assign the
+   RMS Management pack license (`rms.pack`, the UI's "Set pack" action) so the
+   device doesn't run on 30-day credits.
 7. Join Tailscale (per-device minted key or a static one).
 8. Verify every setting by reading it back off the device.
 

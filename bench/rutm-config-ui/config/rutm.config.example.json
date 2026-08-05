@@ -32,7 +32,9 @@
     "_comment_api": "api_token must be an RMS Personal Access Token with the 'devices:read' + 'devices:write' scopes, and the account must have 2FA enabled (else the API returns 403). device_series is the RMS device family — 'rutm' for RUTM08; if RMS rejects the registration with an unknown-series error, try 'rut'.",
     "api_token": "",
     "company_id": "",
-    "device_series": "rutm"
+    "device_series": "rutm",
+    "_comment_pack": "Optional license: assign a Management pack right after registration (the RMS UI's Actions -> Device -> 'Set pack'). Accepts the RMS pack type name ('management_3y' = Paid Management pack 3y.), a numeric credit_type_id, or a fragment of the display name. Leave empty to keep credit-based management. NOTE: packs cannot be revoked once assigned; the step skips devices that already carry a matching pack.",
+    "pack": "management_3y"
   },
 
   "tailscale": {
