@@ -2,9 +2,14 @@
 """Magos APU Configurator — iterative APU-provisioning Web UI (FastAPI).
 
 Same iterative workflow as the radar configurator (app.py), but for the AR
-Processing Unit (APU): detect a unit on its factory IP (192.168.40.60), pick a
-channel, and it sets NTP + timezone, the controlled-radar IP, and the APU's own
-static IP — then loops for the next one. Runs independently on its own port.
+Processing Unit (APU): detect a unit on its factory IP (192.168.40.60), pick
+which APU it is (0 or 1), and it sets NTP + timezone, the two controlled
+radars, and the APU's own static IP — then loops for the next one. Runs
+independently on its own port.
+
+Requires APU firmware 3.1.2 (rc builds accepted) — the multi-radar firmware
+where one APU controls two radars, so a full system is 4 radars + 2 APUs.
+Older units are refused with a message asking the operator to upgrade first.
 
 The shared bench machinery lives in `magos_bench.MagosBench`; this file adds only
 the APU specifics. Device talking is delegated to APUClient in apu_configure.py.
@@ -23,7 +28,7 @@ from bench_core.run_record import build_run_entry
 from apu_configure import (
     APUClient,
     APU_CHANNEL_IPS,
-    CONTROLLED_RADAR_IPS,
+    APU_RADAR_ASSIGNMENTS,
     DEFAULT_DNS,
     DEFAULT_GATEWAY,
     DEFAULT_HOST,
@@ -33,9 +38,13 @@ from apu_configure import (
     DEFAULT_PASSWORD,
     DEFAULT_TIMEZONE,
     DEFAULT_USERNAME,
+    firmware_error,
+    firmware_ok,
+    firmware_version,
+    radars_from_ips,
 )
 from magos_bench import MagosBench
-from magos_configure import set_log_serial, verify_device_at
+from magos_configure import MagosError, set_log_serial, verify_device_at
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -71,14 +80,14 @@ class SettingsBody(BaseModel):
 class ConfigureBody(BaseModel):
     channel: Optional[str] = None
     ip: Optional[str] = None
-    radar_ip: Optional[str] = None
+    radar_ips: Optional[str] = None      # comma-separated, manual targets only
 
 
 class AutoBody(BaseModel):
     enabled: bool
     channel: Optional[str] = None
     ip: Optional[str] = None
-    radar_ip: Optional[str] = None
+    radar_ips: Optional[str] = None
 
 
 class CycleBody(BaseModel):
@@ -98,33 +107,44 @@ class ApuBench(MagosBench):
     uses_radar_ip = True
 
     def extra_public_state(self) -> dict:
-        return {"controlled_radar_ips": CONTROLLED_RADAR_IPS}
+        return {"apu_radars": APU_RADAR_ASSIGNMENTS}
+
+    @staticmethod
+    def _radars_summary(radars: list) -> Optional[str]:
+        """One human-readable line, e.g. 'radar_0=192.168.88.50, radar_1=...'
+        — stored as device.radar_ip so history/central columns stay simple."""
+        if not radars:
+            return None
+        return ", ".join(f"{r['radar_id']}={r['ip']}" for r in radars)
 
     def resolve_target(self, channel: Optional[str], ip: Optional[str],
-                       radar_ip: Optional[str] = None) -> Optional[dict]:
-        """For a channel, the APU IP is .6N and the controlled radar is .5N. For
-        a manual IP, the radar IP is whatever (optionally) was supplied."""
+                       radar_ips: Optional[str] = None) -> Optional[dict]:
+        """APU 0/1 maps to a fixed IP + its two assigned radars. For a manual
+        IP, the radars are whatever (optionally) was supplied, comma-separated,
+        with IDs assigned radar_0, radar_1, ... in order."""
         ch = (channel or "").strip().lower()
         if ch in APU_CHANNEL_IPS:
             return {"channel": ch, "ip": APU_CHANNEL_IPS[ch],
-                    "radar_ip": CONTROLLED_RADAR_IPS[ch]}
+                    "radars": [dict(r) for r in APU_RADAR_ASSIGNMENTS[ch]]}
         if ip and ip.strip():
+            ips = [s.strip() for s in (radar_ips or "").split(",") if s.strip()]
             return {"channel": ch or "other", "ip": ip.strip(),
-                    "radar_ip": radar_ip.strip() if radar_ip else None}
+                    "radars": radars_from_ips(ips)}
         return None
 
     def do_configure(self, target: dict, host: str,
                      avoid_serial: Optional[str]) -> dict:
-        """login → identity → NTP/TZ → controlled radar → networking → verify.
-        Never raises."""
+        """login → identity → firmware gate → NTP/TZ → controlled radars →
+        networking → verify. Never raises."""
         ip = target["ip"]
-        radar_ip = target.get("radar_ip")
+        radars = target.get("radars") or []
         collector = StepCollector()
         self.log.addHandler(collector)
         set_log_serial(None)
 
         identity = {"serial": "unknown", "mac": "unknown", "model": "unknown"}
         raw: dict = {}
+        firmware: Optional[str] = None
         error: Optional[str] = None
         ok = skipped = verified = False
         verify_detail: Optional[str] = None
@@ -135,6 +155,7 @@ class ApuBench(MagosBench):
             ident = client.get_identity()
             raw = ident.pop("raw", {})
             identity = ident
+            firmware = firmware_version(raw)
             if avoid_serial and identity.get("serial") not in (None, "", "unknown") \
                     and identity["serial"] == avoid_serial:
                 skipped = True
@@ -142,9 +163,14 @@ class ApuBench(MagosBench):
                     "Same APU as the previous run (SN %s) is still answering on the "
                     "factory IP — skipping. Unplug it before the next one.", avoid_serial)
             else:
+                # Refuse pre-3.1.2 units BEFORE changing anything — the
+                # multi-radar assignment below only exists on 3.1.2+.
+                if not firmware_ok(firmware):
+                    raise MagosError(firmware_error(firmware))
+                self.log.info("Firmware %s — OK.", firmware)
                 client.set_ntp_tz(self.cfg["ntp"], self.cfg["timezone"])
-                if radar_ip:
-                    client.set_controlled_radar(radar_ip)
+                if radars:
+                    client.set_radars(radars)
                 client.set_network(self.cfg["iface"], ip, self.cfg["netmask"],
                                    self.cfg["gateway"], self.cfg["dns"])
                 vres = verify_device_at(ip, scheme=self.cfg["scheme"],
@@ -164,13 +190,14 @@ class ApuBench(MagosBench):
         log_text = "\n".join(f"[{s['level']}] [{s['sn']}] {s['msg']}" for s in steps)
         return {
             "ok": ok, "skipped": skipped, "ip": ip, "identity": identity, "raw": raw,
-            "steps": steps, "log": log_text, "error": error,
+            "firmware": firmware, "steps": steps, "log": log_text, "error": error,
             "verified": verified, "verify_detail": verify_detail,
         }
 
     def build_entry(self, target: dict, host: str, result: dict,
                     duration: int) -> dict:
         ident = result["identity"]
+        radars = target.get("radars") or []
         return build_run_entry(
             tool="magos-apu",
             ok=result["ok"],
@@ -178,6 +205,7 @@ class ApuBench(MagosBench):
             serial=ident["serial"],
             mac=ident["mac"],
             model=ident["model"],
+            firmware=result.get("firmware"),
             duration_s=duration,
             verified=result["verified"],
             verify_detail=result["verify_detail"],
@@ -186,7 +214,8 @@ class ApuBench(MagosBench):
             device={
                 "channel": target["channel"],
                 "ip": result["ip"],
-                "radar_ip": target.get("radar_ip") or "—",
+                "radars": radars,
+                "radar_ip": self._radars_summary(radars) or "—",
                 "from_host": host,
                 "ntp": self.cfg["ntp"],
                 "timezone": self.cfg["timezone"],
@@ -194,11 +223,11 @@ class ApuBench(MagosBench):
         )
 
     def success_message(self, ident: dict, result: dict, target: dict) -> str:
-        radar_ip = target.get("radar_ip")
+        radars = self._radars_summary(target.get("radars") or [])
         verified_note = (" Verified at the new IP." if result["verified"]
                          else f" NOT verified: {result['verify_detail']}.")
         return (f"Configured {ident['model']} (SN {ident['serial']}) as {result['ip']}"
-                + (f", controlling radar {radar_ip}" if radar_ip else "")
+                + (f", controlling {radars}" if radars else "")
                 + "." + verified_note + " Unplug it and plug in the next one.")
 
     def register_routes(self, app: FastAPI) -> None:
@@ -208,11 +237,11 @@ class ApuBench(MagosBench):
 
         @app.post("/api/configure")
         async def configure(body: ConfigureBody):
-            return await self.configure_request(body.channel, body.ip, body.radar_ip)
+            return await self.configure_request(body.channel, body.ip, body.radar_ips)
 
         @app.post("/api/auto")
         async def set_auto(body: AutoBody):
-            return self.set_auto(body.enabled, body.channel, body.ip, body.radar_ip)
+            return self.set_auto(body.enabled, body.channel, body.ip, body.radar_ips)
 
         @app.post("/api/cycle")
         async def set_cycle(body: CycleBody):

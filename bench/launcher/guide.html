@@ -136,18 +136,31 @@
   <!-- 4 -->
   <h2 id="magos">4. Magos Radar &amp; APU <span class="pill magos">network 192.168.40.x</span></h2>
   <p>Radar opens on its own card; APU on another. Plug the unit in, then choose its <b>channel</b>
-     and click configure. The tool sets the time and the device's permanent IP, then verifies it.</p>
+     (radar) or which <b>APU</b> it is (0 or 1) and click configure. The tool sets the time and
+     the device's permanent IP, then verifies it.</p>
 
-  <h3>Channel → address</h3>
+  <h3>Radar: channel → address <span class="pill magos">4 radars per system</span></h3>
   <table>
-    <thead><tr><th>Channel</th><th>Radar address</th><th>APU address</th></tr></thead>
+    <thead><tr><th>Channel</th><th>Radar address</th></tr></thead>
     <tbody>
-      <tr><td>0</td><td>192.168.88.50</td><td>192.168.88.60</td></tr>
-      <tr><td>1</td><td>192.168.88.51</td><td>192.168.88.61</td></tr>
-      <tr><td>2</td><td>192.168.88.52</td><td>192.168.88.62</td></tr>
-      <tr><td>3</td><td>192.168.88.53</td><td>192.168.88.63</td></tr>
+      <tr><td>0</td><td>192.168.88.50</td></tr>
+      <tr><td>1</td><td>192.168.88.51</td></tr>
+      <tr><td>2</td><td>192.168.88.52</td></tr>
+      <tr><td>3</td><td>192.168.88.53</td></tr>
     </tbody>
   </table>
+
+  <h3>APU: which APU → address + its two radars <span class="pill magos">2 APUs per system</span></h3>
+  <table>
+    <thead><tr><th>APU</th><th>APU address</th><th>Controls radars</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>192.168.88.60</td><td>radar_0 (192.168.88.50) + radar_1 (192.168.88.51)</td></tr>
+      <tr><td>1</td><td>192.168.88.61</td><td>radar_2 (192.168.88.52) + radar_3 (192.168.88.53)</td></tr>
+    </tbody>
+  </table>
+  <div class="note warn"><b>APU firmware:</b> APUs must already run firmware <b>3.1.2</b>. The tool
+    refuses an older unit and asks you to upgrade it manually via its dashboard first — nothing is
+    changed on a refused unit.</div>
   <div class="note"><b>Manual ("other") IP:</b> if you type your own IP instead of picking a channel,
     the device goes to <b>exactly</b> that address and the RF channel is left unchanged. Double-check
     the number — a typo sends the unit to the wrong address.</div>
@@ -155,8 +168,9 @@
   <h3>Auto &amp; Cycle (hands-free) modes</h3>
   <ul>
     <li><b>Auto</b> — set one target once; every unit you plug in gets configured to it automatically.</li>
-    <li><b>Cycle</b> — configures units in groups of four, giving each the next channel
-        (0 → 1 → 2 → 3, then back to 0). Just keep plugging them in.</li>
+    <li><b>Cycle</b> — radars are configured in groups of four, each taking the next channel
+        (0 → 1 → 2 → 3, then back to 0); APUs in groups of two (APU 0 → APU 1, then back to 0).
+        Just keep plugging them in.</li>
   </ul>
   <p>Both skip a unit that briefly re-appears (so unplug each one), and both
      <b>turn themselves off after 10 minutes with nothing plugged in</b> — the page shows a message;

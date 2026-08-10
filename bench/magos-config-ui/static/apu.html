@@ -36,8 +36,8 @@
     <div class="auto-row" id="cycleRow">
       <label class="switch"><input type="checkbox" id="cycleToggle" onchange="toggleCycle()"><span class="slider"></span></label>
       <div style="flex:1;">
-        <div class="title">Cycle mode <span class="muted" style="font-weight:400;">(groups of 4)</span></div>
-        <div class="muted" id="cycleHint">Start a cycle — the 1st APU you plug in becomes the start channel, the next the channel after it, and so on, wrapping back around after 4.</div>
+        <div class="title">Cycle mode <span class="muted" style="font-weight:400;">(groups of 2)</span></div>
+        <div class="muted" id="cycleHint">Start a cycle — the 1st unit you plug in becomes the start APU, the next the APU after it, wrapping back around after 2.</div>
       </div>
       <div class="cycle-start">
         <label for="cycleStart">Start at</label>
@@ -62,8 +62,8 @@
           <input id="manualIp" placeholder="e.g. 192.168.88.61" />
         </div>
         <div class="form-group">
-          <label>Controlled radar IP (optional)</label>
-          <input id="manualRadar" placeholder="e.g. 192.168.88.51" />
+          <label>Controlled radar IPs (comma-separated, optional)</label>
+          <input id="manualRadars" placeholder="e.g. 192.168.88.50, 192.168.88.51" />
         </div>
       </div>
     </div>
@@ -110,7 +110,7 @@
   <div class="card">
     <h3>Configured this session (<span id="histCount">0</span>)</h3>
     <table>
-      <thead><tr><th>Time</th><th>Model</th><th>Serial</th><th>MAC</th><th>Ch</th><th>APU IP</th><th>Radar</th><th>Status</th></tr></thead>
+      <thead><tr><th>Time</th><th>Model</th><th>Serial</th><th>MAC</th><th>APU</th><th>APU IP</th><th>Radars</th><th>Status</th></tr></thead>
       <tbody id="histBody"><tr><td colspan="8" class="muted">Nothing configured yet.</td></tr></tbody>
     </table>
     <p class="muted" style="margin-top:10px;">Step-by-step logs are saved under <span class="mono">magos-config-ui/logs/</span> (one JSON per APU, plus a rolling <span class="mono">apu-config.log</span>).</p>
@@ -121,8 +121,8 @@
 <script>
 let cfg = {};
 let channelIps = {};
-let radarIps = {};
-let selectedChannel = null;   // "0".."3" or "other"
+let apuRadars = {};           // APU index -> [{radar_id, ip, name}, ...]
+let selectedChannel = null;   // "0"/"1" (APU index) or "other"
 let settingsOpen = false;
 let lastPhase = null;
 
@@ -147,8 +147,9 @@ function buildChannels() {
     wrap.appendChild(el);
   };
   Object.entries(channelIps).forEach(([ch, ip]) => {
-    const radar = radarIps[ch] ? `<div class="radar">↳ radar ${esc(radarIps[ch])}</div>` : '';
-    makeChan(ch, `<div class="n">${esc(ch)}</div><div class="ip">${esc(ip)}</div>${radar}`);
+    const radars = (apuRadars[ch] || [])
+      .map(r => `<div class="radar">↳ ${esc(r.radar_id)} ${esc(r.ip)}</div>`).join('');
+    makeChan(ch, `<div class="n">APU ${esc(ch)}</div><div class="ip">${esc(ip)}</div>${radars}`);
   });
   makeChan('other', `<div class="n">⋯</div><div class="ip">manual IP</div>`);
 
@@ -159,7 +160,7 @@ function buildChannels() {
     Object.keys(channelIps).forEach(ch => {
       const opt = document.createElement('option');
       opt.value = ch;
-      opt.textContent = `channel ${ch}`;
+      opt.textContent = `APU ${ch}`;
       start.appendChild(opt);
     });
     if (prev && channelIps[prev] !== undefined) start.value = prev;
@@ -181,7 +182,7 @@ function targetBody(enabled) {
   if (selectedChannel === 'other') {
     body.channel = 'other';
     body.ip = $('manualIp').value.trim();
-    body.radar_ip = $('manualRadar').value.trim();
+    body.radar_ips = $('manualRadars').value.trim();
   } else if (selectedChannel !== null) {
     body.channel = selectedChannel;
   }
@@ -196,7 +197,7 @@ async function armAuto(enabled) {
 function toggleAuto() {
   const enabled = $('autoToggle').checked;
   if (enabled && (selectedChannel === null || (selectedChannel === 'other' && !$('manualIp').value.trim()))) {
-    alert('Pick a channel or enter a manual IP first.');
+    alert('Pick an APU or enter a manual IP first.');
     $('autoToggle').checked = false;
     return;
   }
@@ -208,7 +209,7 @@ function updateCycleHint() {
   if (cycle.enabled) return;   // running-cycle hint is owned by render()
   const start = $('cycleStart').value || '0';
   $('cycleHint').textContent =
-    `Start a cycle at channel ${start} — each APU you plug in takes the next channel, wrapping back around after 4.`;
+    `Start a cycle at APU ${start} — each unit you plug in takes the next APU slot, wrapping back around after 2.`;
 }
 
 async function toggleCycle() {
@@ -242,8 +243,8 @@ function render(s) {
   window._state = s;
   cfg = s.config || {};
   if (JSON.stringify(channelIps) !== JSON.stringify(s.channel_ips)
-      || JSON.stringify(radarIps) !== JSON.stringify(s.controlled_radar_ips)) {
-    channelIps = s.channel_ips; radarIps = s.controlled_radar_ips || {}; buildChannels();
+      || JSON.stringify(apuRadars) !== JSON.stringify(s.apu_radars)) {
+    channelIps = s.channel_ips; apuRadars = s.apu_radars || {}; buildChannels();
   }
 
   const st = $('status');
@@ -276,7 +277,7 @@ function render(s) {
   const auto = s.auto || { enabled: false };
   const cycle = s.cycle || { enabled: false, index: 0, count: 0 };
 
-  // Cycle mode: auto-advancing channel for groups of 4.
+  // Cycle mode: auto-advancing APU slot for groups of 2.
   $('cycleToggle').checked = !!cycle.enabled;
   $('cycleRow').classList.toggle('on', !!cycle.enabled);
   // auto + cycle are mutually exclusive — grey out the other while one is on.
@@ -288,16 +289,16 @@ function render(s) {
   if (cycle.enabled) {
     const nxt = Object.keys(channelIps)[cycle.index] ?? String(cycle.index);
     const ip = channelIps[nxt];
-    const radar = radarIps[nxt];
+    const radars = (apuRadars[nxt] || []).map(r => `${r.radar_id} ${r.ip}`).join(', ');
     $('cycleHint').textContent =
-      `Cycle ON — next APU → channel ${nxt} (APU ${ip}` +
-      (radar ? ` / radar ${radar}` : '') + `). ${cycle.count} configured so far.`;
+      `Cycle ON — next unit → APU ${nxt} (${ip}` +
+      (radars ? ` / ${radars}` : '') + `). ${cycle.count} configured so far.`;
   } else {
     const start = $('cycleStart').value || '0';
     $('cycleHint').textContent =
-      `Start a cycle at channel ${start} — each APU you plug in takes the next channel, wrapping back around after 4.`;
+      `Start a cycle at APU ${start} — each unit you plug in takes the next APU slot, wrapping back around after 2.`;
   }
-  // highlight the channel the next APU will get
+  // highlight the APU slot the next unit will get
   document.querySelectorAll('.chan').forEach(c => {
     const isNext = cycle.enabled && c.dataset.ch === String(cycle.index);
     c.classList.toggle('next', isNext);
@@ -310,7 +311,7 @@ function render(s) {
   $('autoRow').classList.toggle('on', !!auto.enabled);
   if (selectedChannel === null && auto.enabled && (auto.channel || auto.ip)) {
     if (auto.channel && channelIps[auto.channel]) selectChannel(auto.channel);
-    else if (auto.ip) { selectChannel('other'); $('manualIp').value = auto.ip; if (auto.radar_ip) $('manualRadar').value = auto.radar_ip; }
+    else if (auto.ip) { selectChannel('other'); $('manualIp').value = auto.ip; if (auto.radar_ips) $('manualRadars').value = auto.radar_ips; }
   }
   if (auto.enabled) {
     const tgt = (auto.channel && channelIps[auto.channel]) ? channelIps[auto.channel] : auto.ip;
@@ -328,7 +329,7 @@ function render(s) {
 
   const hint = $('configHint');
   if (s.phase === 'waiting')      hint.textContent = 'No APU reachable at ' + (cfg.hosts || []).join(' / ') + '. Plug one in.';
-  else if (s.phase === 'detected') hint.textContent = 'APU is reachable. Pick a channel, then Configure.';
+  else if (s.phase === 'detected') hint.textContent = 'APU is reachable. Pick which APU it is, then Configure.';
   else if (s.phase === 'configured') hint.textContent = 'Unplug this APU and plug in the next one — selection auto-advanced.';
   else hint.textContent = '';
   updateConfigureBtn();
@@ -421,7 +422,7 @@ async function configure() {
   const body = { channel: selectedChannel };
   if (selectedChannel === 'other') {
     body.ip = $('manualIp').value.trim();
-    body.radar_ip = $('manualRadar').value.trim();
+    body.radar_ips = $('manualRadars').value.trim();
   }
   $('configureBtn').disabled = true;
   await postJSON('/api/configure', body, { buttons: ['configureBtn'] });
