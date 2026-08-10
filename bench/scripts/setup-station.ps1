@@ -105,8 +105,12 @@ Write-Host "    extracted to $InstallDir"
 
 # ---- 4. Station identity + config seeding -----------------------------------
 Step 4 "Writing station identity + seeding configs"
-@{ station_id = $StationId; central_url = $CentralUrl } |
-    ConvertTo-Json | Set-Content -Path (Join-Path $InstallDir ".bench-station.json") -Encoding UTF8
+# BOM-less UTF-8 on purpose: Windows PowerShell 5.1's `Set-Content -Encoding
+# UTF8` prepends a BOM, which json.loads() in updater.py rejects — the station
+# file would exist but read as empty, silently disabling updates/check-ins.
+$stationJson = @{ station_id = $StationId; central_url = $CentralUrl } | ConvertTo-Json
+[System.IO.File]::WriteAllText((Join-Path $InstallDir ".bench-station.json"),
+                               $stationJson, [System.Text.UTF8Encoding]::new($false))
 Push-Location $InstallDir
 try {
     & $py.Exe $py.Args scripts\updater.py --seed-configs
@@ -148,7 +152,13 @@ Check "bundle stamp present (.bench-build.json)" (Test-Path $stamp)
 if (Test-Path $stamp) {
     Check "installed version matches the pin" ((Get-Content $stamp -Raw | ConvertFrom-Json).version -eq $sha)
 }
-Check "station file present (.bench-station.json)" (Test-Path (Join-Path $InstallDir ".bench-station.json"))
+# Read the station file back through updater.py — the exact path the
+# launchers use — so "written but unreadable" fails here, not silently later.
+Push-Location $InstallDir
+try {
+    $pinnedUrl = (& $py.Exe $py.Args scripts\updater.py --print-station central_url 2>$null | Out-String).Trim()
+} finally { Pop-Location }
+Check "station file readable (central_url pinned)" ($pinnedUrl -eq $CentralUrl)
 Check "launcher present (Start Bench Tools.bat)" (Test-Path (Join-Path $InstallDir "Start Bench Tools.bat"))
 Check "shared .venv usable" (Test-Path (Join-Path $InstallDir ".venv\Scripts\python.exe"))
 try {

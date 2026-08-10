@@ -123,7 +123,10 @@ check() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then echo "PASS  $d"; PA
 check "bundle stamp present (.bench-build.json)" test -f "$INSTALL_DIR/.bench-build.json"
 check "installed version matches the pin" \
   "$PY" -c "import json; raise SystemExit(0 if json.load(open('$INSTALL_DIR/.bench-build.json'))['version'] == '$SHA' else 1)"
-check "station file present (.bench-station.json)" test -f "$INSTALL_DIR/.bench-station.json"
+# Read the station file back through updater.py — the exact path the
+# launchers use — so "written but unreadable" fails here, not silently later.
+check "station file readable (central_url pinned)" \
+  test "$(cd "$INSTALL_DIR" && "$PY" scripts/updater.py --print-station central_url 2>/dev/null)" = "$CENTRAL_URL"
 check "launcher present + executable (start-bench.sh)" test -x "$INSTALL_DIR/start-bench.sh"
 check "shared .venv usable" test -x "$INSTALL_DIR/.venv/bin/python"
 check "checked in with bench-central (see the Fleet page)" \

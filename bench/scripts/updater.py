@@ -87,8 +87,11 @@ def _say(msg: str) -> None:
 
 
 def _load_json(path: Path) -> dict:
+    # utf-8-sig, not utf-8: early setup-station.ps1 wrote the station file
+    # with a UTF-8 BOM (Windows PowerShell 5.1's Set-Content), and json.loads
+    # rejects a BOM — the file would silently read as {} on those stations.
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}

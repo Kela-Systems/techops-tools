@@ -180,6 +180,18 @@ def test_short_version_unknown_without_stamp_or_git(root):
     assert updater.short_version() == "unknown"
 
 
+def test_station_config_tolerates_a_utf8_bom(root):
+    # Windows PowerShell 5.1's `Set-Content -Encoding UTF8` (the original
+    # setup-station.ps1) prepends a BOM; the station file must still parse,
+    # or the station silently loses its central URL and never self-updates.
+    (root / ".bench-station.json").write_bytes(
+        b'\xef\xbb\xbf{"station_id": "bench-1", '
+        b'"central_url": "http://central:8100"}')
+    cfg = updater.station_config()
+    assert cfg["station_id"] == "bench-1"
+    assert cfg["central_url"] == "http://central:8100"
+
+
 def test_station_config_env_overrides_the_file(root, monkeypatch):
     (root / ".bench-station.json").write_text(json.dumps(
         {"station_id": "bench-1", "central_url": "http://file:8100"}))
