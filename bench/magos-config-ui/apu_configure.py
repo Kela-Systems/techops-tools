@@ -39,7 +39,9 @@ APU mapping (a full system = 4 radars + 2 APUs):
   APU 1 -> 192.168.88.61, controlling radar_2 (192.168.88.52, channel 2)
                                   and radar_3 (192.168.88.53, channel 3)
 
-Defaults match a fresh APU, so the common case is:
+Defaults match a fresh APU (operator-editable via the "apu" section of
+config/magos.config.json; missing keys fall back to the built-in values), so
+the common case is:
 
   python3 apu_configure.py --interactive
 
@@ -73,6 +75,7 @@ from magos_configure import (  # noqa: E402
     MagosError,
     _find_field,
     fetch_identity,
+    load_factory_defaults,
     log,
     rejected_extra_fields,
     set_log_serial,
@@ -81,21 +84,28 @@ from magos_configure import (  # noqa: E402
 
 
 # --- APU factory defaults ---------------------------------------------------
-DEFAULT_HOST = "192.168.40.60"      # APU's initial (factory) IP
-DEFAULT_USERNAME = "admin"
-DEFAULT_PASSWORD = "password"
-DEFAULT_GATEWAY = "192.168.88.1"
-DEFAULT_DNS = "192.168.88.1"
-DEFAULT_NETMASK = "255.255.255.0"
-DEFAULT_NTP = "192.168.88.10"
-DEFAULT_IFACE = "port1"
+# Operator-editable via the "apu" section of config/magos.config.json (see
+# load_factory_defaults); the built-in values below match a fresh APU.
+_cfg = load_factory_defaults("apu")
+DEFAULT_HOST = _cfg.get("host", "192.168.40.60")      # APU's initial (factory) IP
+DEFAULT_USERNAME = _cfg.get("username", "admin")
+DEFAULT_PASSWORD = _cfg.get("password", "password")
+DEFAULT_GATEWAY = _cfg.get("gateway", "192.168.88.1")
+DEFAULT_DNS = _cfg.get("dns", "192.168.88.1")
+DEFAULT_NETMASK = _cfg.get("netmask", "255.255.255.0")
+DEFAULT_NTP = _cfg.get("ntp", "192.168.88.10")
+DEFAULT_IFACE = _cfg.get("iface", "port1")
+DEFAULT_TIMEZONE = _cfg.get("timezone", DEFAULT_TIMEZONE)  # falls back to the ar300 value
 
 # APU index -> the APU's own static IP. Firmware 3.1.2 controls TWO radars per
-# APU, so a full system is 2 APUs (.60/.61), not 4.
+# APU, so a full system is 2 APUs (.60/.61), not 4. The config file's
+# "channel_ips" (apu section) merges over the built-ins per index.
 APU_CHANNEL_IPS = {
     "0": "192.168.88.60",
     "1": "192.168.88.61",
 }
+APU_CHANNEL_IPS.update({str(k): str(v) for k, v in (_cfg.get("channel_ips") or {}).items()})
+del _cfg
 # APU index -> the radars it controls. radar_id is "radar_<radar channel>" (it
 # becomes the instanceId in MASS): APU 0 gets channels 0+1, APU 1 gets 2+3.
 APU_RADAR_ASSIGNMENTS = {

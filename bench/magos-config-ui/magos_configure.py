@@ -37,7 +37,9 @@ final POST /networking will usually not return a clean response — that's expec
 After it, reach the radar on its NEW address.
 
 A fresh AR-300 ships on 192.168.40.50 with admin:password, so all of those are
-the script defaults — out of the box you can just run:
+the script defaults (operator-editable via the "ar300" section of
+config/magos.config.json; missing keys fall back to the built-in values) — out
+of the box you can just run:
 
   python3 magos_configure.py --interactive
 
@@ -77,13 +79,14 @@ import socket
 import sys
 import time
 from getpass import getpass
+from pathlib import Path
 
 try:
     import requests
 except ImportError:
     sys.exit("This script needs 'requests'.  Install it with:  pip install requests")
 
-from bench_core import LOG_LINE_FORMAT, install_log_context, set_log_serial
+from bench_core import LOG_LINE_FORMAT, install_log_context, load_settings, set_log_serial
 
 
 class MagosError(Exception):
@@ -113,23 +116,52 @@ MODEL_KEYS = ("model", "modelname", "productname", "product", "devicemodel",
               "hardwaremodel", "hwmodel", "devicetype", "boardtype", "productmodel")
 
 
-# --- AR-300 factory defaults ------------------------------------------------
-DEFAULT_HOST = "192.168.40.50"      # radar's initial (factory) IP
-DEFAULT_USERNAME = "admin"
-DEFAULT_PASSWORD = "password"
-DEFAULT_GATEWAY = "192.168.88.1"
-DEFAULT_DNS = "192.168.88.1"
-DEFAULT_NETMASK = "255.255.255.0"
-DEFAULT_NTP = "192.168.88.10"
-DEFAULT_TIMEZONE = "Asia/Jerusalem"
+# --- factory-defaults config file --------------------------------------------
+# config/magos.config.json holds the operator-editable factory defaults, in an
+# "ar300" and an "apu" section (the APU tool loads its own via the helper
+# below). Any missing key — or the whole file — falls back to the built-in
+# values, which match a fresh unit.
+FACTORY_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "magos.config.json"
 
-# channel number -> static IP on the operational subnet
+
+def load_factory_defaults(section: str) -> dict:
+    """The `section` ("ar300" / "apu") of the factory-defaults config file,
+    with `_`-prefixed comment keys dropped. {} when the file doesn't exist
+    (built-in defaults apply); a hard exit on unparseable JSON — a typo in the
+    config must be fixed, not silently replaced by built-ins."""
+    try:
+        cfg = load_settings(str(FACTORY_CONFIG_PATH))
+    except FileNotFoundError:
+        return {}
+    except ValueError as e:
+        sys.exit(f"Invalid JSON in {FACTORY_CONFIG_PATH}: {e}")
+    section_cfg = cfg.get(section) or {}
+    return {k: v for k, v in section_cfg.items() if not k.startswith("_")}
+
+
+# --- AR-300 factory defaults ------------------------------------------------
+_cfg = load_factory_defaults("ar300")
+DEFAULT_HOST = _cfg.get("host", "192.168.40.50")      # radar's initial (factory) IP
+DEFAULT_USERNAME = _cfg.get("username", "admin")
+DEFAULT_PASSWORD = _cfg.get("password", "password")
+DEFAULT_GATEWAY = _cfg.get("gateway", "192.168.88.1")
+DEFAULT_DNS = _cfg.get("dns", "192.168.88.1")
+DEFAULT_NETMASK = _cfg.get("netmask", "255.255.255.0")
+DEFAULT_NTP = _cfg.get("ntp", "192.168.88.10")
+DEFAULT_TIMEZONE = _cfg.get("timezone", "Asia/Jerusalem")
+
+# channel number -> static IP on the operational subnet. The config file's
+# "channel_ips" merges over the built-ins per channel, so an operator can
+# change one channel's IP without restating the rest (and the channel keys —
+# which also select the RF variant chan0..chan3 — always stay present).
 CHANNEL_IPS = {
     "0": "192.168.88.50",
     "1": "192.168.88.51",
     "2": "192.168.88.52",
     "3": "192.168.88.53",
 }
+CHANNEL_IPS.update({str(k): str(v) for k, v in (_cfg.get("channel_ips") or {}).items()})
+del _cfg
 
 
 def netmask_to_prefix(netmask: str) -> int:

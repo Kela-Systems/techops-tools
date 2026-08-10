@@ -1,0 +1,39 @@
+{
+  "_comment": "Factory defaults for the Magos configurators (radar + APU). Edit and restart the tools to apply. Any missing key — or the whole file — falls back to the built-in values, which match a fresh unit; keys starting with _ are comments and ignored.",
+
+  "ar300": {
+    "_comment": "A fresh AR-300 radar boots on `host` with `username`:`password`. The rest are the values APPLIED when provisioning: gateway/dns/netmask of the operational subnet, the NTP server and the timezone.",
+    "host": "192.168.40.50",
+    "username": "admin",
+    "password": "password",
+    "gateway": "192.168.88.1",
+    "dns": "192.168.88.1",
+    "netmask": "255.255.255.0",
+    "ntp": "192.168.88.10",
+    "timezone": "Asia/Jerusalem",
+    "_comment_channel_ips": "Radar channel -> the static IP it gets. Overrides merge per channel, so you can change just one. The channel numbers also select the radar's RF variant (chan0..chan3) — keep the keys 0-3.",
+    "channel_ips": {
+      "0": "192.168.88.50",
+      "1": "192.168.88.51",
+      "2": "192.168.88.52",
+      "3": "192.168.88.53"
+    }
+  },
+
+  "apu": {
+    "_comment": "A fresh APU boots on `host` with `username`:`password`. `iface` is the APU network interface the static IP is applied to. `timezone` falls back to the ar300 value when omitted.",
+    "host": "192.168.40.60",
+    "username": "admin",
+    "password": "password",
+    "gateway": "192.168.88.1",
+    "dns": "192.168.88.1",
+    "netmask": "255.255.255.0",
+    "ntp": "192.168.88.10",
+    "iface": "port1",
+    "_comment_channel_ips": "APU index -> the APU's own static IP (overrides merge per index). APU 0 controls radar channels 0+1, APU 1 controls 2+3; the radars' IPs follow the ar300 channel_ips above.",
+    "channel_ips": {
+      "0": "192.168.88.60",
+      "1": "192.168.88.61"
+    }
+  }
+}
