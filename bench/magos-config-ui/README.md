@@ -26,27 +26,42 @@ APU side by side.
    every tool — radar on 8001, APU on 8002 — then opens the dashboard. First run
    installs dependencies (needs internet once).
 2. Plug a device into the laptop. The page detects it on the factory IP.
-3. Pick the **channel** (0–3) or enter a manual IP, then click configure. The
-  tool sets NTP + timezone and the static IP (the APU also sets the controlled
-   radar IP), verifies the device at its new address, and tells you to unplug it
-   and plug in the next one.
+3. Pick the **channel** (0–3, radar) or which **APU** it is (0/1), or enter a
+   manual IP, then click configure. The tool sets NTP + timezone and the static
+   IP (the APU also gets its two controlled radars assigned), verifies the
+   device at its new address, and tells you to unplug it and plug in the next
+   one.
 
-### Channel mapping
+> **APU firmware:** the APU tool requires firmware **3.1.2** (rc builds like
+> `3.1.2-rc5` are accepted) — the multi-radar firmware where one APU controls
+> two radars. An older unit is refused *before anything is changed on it*, with
+> a message asking you to upgrade it manually via its dashboard first.
 
-Channel `N` maps to a fixed scheme on the `192.168.88.x` subnet:
+### Channel / APU mapping
+
+A full system is **4 radars + 2 APUs** on the `192.168.88.x` subnet. Radar
+channel `N` maps to `.5N`; each APU controls two radars (their `radar_id`s —
+`radar_0`…`radar_3`, named after the radar's channel — become the instanceIds
+in MASS):
 
 
-| Channel | Radar IP        | APU IP          | APU controls radar |
-| ------- | --------------- | --------------- | ------------------ |
-| 0       | `192.168.88.50` | `192.168.88.60` | `192.168.88.50`    |
-| 1       | `192.168.88.51` | `192.168.88.61` | `192.168.88.51`    |
-| 2       | `192.168.88.52` | `192.168.88.62` | `192.168.88.52`    |
-| 3       | `192.168.88.53` | `192.168.88.63` | `192.168.88.53`    |
+| Radar channel | Radar IP        |
+| ------------- | --------------- |
+| 0             | `192.168.88.50` |
+| 1             | `192.168.88.51` |
+| 2             | `192.168.88.52` |
+| 3             | `192.168.88.53` |
+
+
+| APU | APU IP          | Controls radars                                        |
+| --- | --------------- | ------------------------------------------------------ |
+| 0   | `192.168.88.60` | `radar_0` (`192.168.88.50`) + `radar_1` (`192.168.88.51`) |
+| 1   | `192.168.88.61` | `radar_2` (`192.168.88.52`) + `radar_3` (`192.168.88.53`) |
 
 
 ### Picking a manual ("other") IP instead of a channel
 
-If you enter your own IP rather than choosing a channel 0–3, the device is
+If you enter your own IP rather than choosing a channel / APU, the device is
 treated as channel `other` and only the parts you actually gave it are applied:
 
 - **Radar:** NTP + timezone and the static IP/gateway/DNS are set, but the **RF
@@ -54,9 +69,10 @@ channel is left untouched** — it's only changed when you pick a channel 0–3
 (firmware ≥ 3.x). So a manual IP keeps whatever RF channel the radar already
 has; it does *not* default to channel 0. The IP is combined with the configured
 netmask, and the radar is then verified at that new address.
-- **APU:** NTP + timezone and the static IP are set, but the **controlled radar
-is only changed if you supply a radar IP** — leave it blank and the APU keeps
-its existing `phoenix_ip` target.
+- **APU:** NTP + timezone and the static IP are set, but the **controlled
+radars are only changed if you supply radar IPs** (comma-separated; they get
+IDs `radar_0, radar_1, …` in the order given) — leave the field blank and the
+APU keeps its existing radar assignment.
 
 In both cases nothing checks that the IP belongs to the expected `192.168.88.x`
 scheme — the device goes to exactly the address you type, so a typo lands the
@@ -67,8 +83,9 @@ Double-check a manual IP before configuring.
 
 - **Auto:** arm a single target; every device detected on the factory IP is
 configured to it automatically.
-- **Cycle:** configure devices in groups of four, each taking the next channel
-(0 → 1 → 2 → 3, wrapping). Just keep plugging them in.
+- **Cycle:** radars are configured in groups of four, each taking the next
+channel (0 → 1 → 2 → 3, wrapping); APUs in groups of two (APU 0 → APU 1,
+wrapping). Just keep plugging them in.
 
 Both modes refuse to reconfigure the same unit if it briefly reappears on the
 factory IP (matched by serial number) — so unplug each one before the next.
@@ -84,7 +101,7 @@ Both device clients also run standalone, without the web UI:
 
 ```bash
 python3 magos_configure.py --interactive   # radar: asks the channel, picks the IP
-python3 apu_configure.py --interactive      # APU: asks the channel, picks the IPs
+python3 apu_configure.py --interactive      # APU: asks which APU (0/1), picks the IPs
 ```
 
 Pass `--host`, `--ip`, `--ntp`, etc. to drive them explicitly, or set

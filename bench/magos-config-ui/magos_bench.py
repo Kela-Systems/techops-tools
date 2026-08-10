@@ -4,8 +4,8 @@
 The radar UI (app.py) and the APU UI (apu_app.py) are the same iterative
 plug-in → detect → configure → unplug workflow with the same auto / cycle modes,
 the same settings panel, and the same per-unit logging — they differ only in the
-device they talk to and a couple of fields (the APU also sets the controlled
-radar). All of that common machinery lives here in `MagosBench`; each app is a
+device they talk to and a couple of fields (the APU also sets its controlled
+radars). All of that common machinery lives here in `MagosBench`; each app is a
 thin subclass that fills in the device-specific hooks.
 
 This reuses the small generic bits from the shared `bench_core` package
@@ -82,7 +82,7 @@ class MagosBench:
     logger_name: str = "magos"
     device_word: str = "radar"            # used in user-facing messages
     channel_ips: dict = {}                # CHANNEL_IPS / APU_CHANNEL_IPS
-    uses_radar_ip: bool = False           # APU also targets a controlled radar
+    uses_radar_ip: bool = False           # APU also targets controlled radars
 
     def __init__(self, base_dir: Path, default_cfg: dict) -> None:
         self.base_dir = base_dir
@@ -136,7 +136,7 @@ class MagosBench:
     def _initial_auto(self) -> dict:
         auto = {"enabled": False, "channel": None, "ip": None}
         if self.uses_radar_ip:
-            auto["radar_ip"] = None
+            auto["radar_ips"] = None
         return auto
 
     def _initial_state(self) -> dict:
@@ -171,9 +171,9 @@ class MagosBench:
     # ── device hooks (override in the subclass) ───────────────────────────────
 
     def resolve_target(self, channel: Optional[str], ip: Optional[str],
-                       radar_ip: Optional[str] = None) -> Optional[dict]:
-        """Map a (channel, ip[, radar_ip]) choice to a target dict
-        ({"channel","ip",[ "radar_ip"]}) or None when nothing is selected."""
+                       radar_ips: Optional[str] = None) -> Optional[dict]:
+        """Map a (channel, ip[, radar_ips]) choice to a target dict
+        ({"channel","ip",[ "radars"]}) or None when nothing is selected."""
         raise NotImplementedError
 
     def do_configure(self, target: dict, host: str,
@@ -360,7 +360,7 @@ class MagosBench:
                     cycle["index"] = (cycle["index"] + 1) % len(self.cycle_channels)
             elif phase in ("waiting", "detected") and auto["enabled"]:
                 target = self.resolve_target(auto["channel"], auto["ip"],
-                                             auto.get("radar_ip"))
+                                             auto.get("radar_ips"))
                 if target:
                     await self.run_configuration(target, active, guard_repeat=True)
                 elif phase != "detected":
@@ -414,14 +414,15 @@ class MagosBench:
         return self.public_state()
 
     async def configure_request(self, channel: Optional[str], ip: Optional[str],
-                                radar_ip: Optional[str] = None) -> dict:
+                                radar_ips: Optional[str] = None) -> dict:
         if self.state["phase"] != "detected":
             return {"error": f"No {self.device_word} is currently detected to configure."}
         if self.state["busy"]:
             return {"error": "A configuration is already in progress."}
-        target = self.resolve_target(channel, ip, radar_ip)
+        target = self.resolve_target(channel, ip, radar_ips)
         if not target:
-            return {"error": "Provide a channel (0-3) or a manual IP."}
+            return {"error": f"Provide a channel ({'/'.join(self.channel_ips)}) "
+                             "or a manual IP."}
         host = self.state["active_host"] or (self.cfg["hosts"][0] if self.cfg.get("hosts") else None)
         if not host:
             return {"error": "No factory host configured."}
@@ -429,18 +430,20 @@ class MagosBench:
         return self.public_state()
 
     def set_auto(self, enabled: bool, channel: Optional[str], ip: Optional[str],
-                 radar_ip: Optional[str] = None) -> dict:
-        target = self.resolve_target(channel, ip, radar_ip)
+                 radar_ips: Optional[str] = None) -> dict:
+        target = self.resolve_target(channel, ip, radar_ips)
         if enabled and not target:
             return {"error": "Pick a channel or enter an IP before turning on auto mode."}
         auto = {"enabled": enabled, "channel": channel, "ip": ip}
         if self.uses_radar_ip:
-            auto["radar_ip"] = radar_ip
+            auto["radar_ips"] = radar_ips
         self.state["auto"] = auto
         if enabled:
             self.state["cycle"]["enabled"] = False  # auto + cycle are mutually exclusive
-            extra = (f" (radar {target['radar_ip']})"
-                     if self.uses_radar_ip and target.get("radar_ip") else "")
+            extra = ""
+            if self.uses_radar_ip and target.get("radars"):
+                extra = " (radars " + ", ".join(
+                    f"{r['radar_id']}={r['ip']}" for r in target["radars"]) + ")"
             self.state["message"] = (f"Auto mode ON — the next {self.device_word} will be "
                                      f"configured as {target['ip']}{extra}.")
         elif self.state["phase"] not in ("configuring",):

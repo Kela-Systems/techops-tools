@@ -62,19 +62,32 @@ the factory address — that's expected, it means the move worked.
 
 ## 4. Magos Radar & APU  *(network 192.168.40.x)*
 
-Radar opens on its own card; APU on another. Plug the unit in, then choose its **channel** and
-click configure. The tool sets the time and the device's permanent IP, then verifies it.
+Radar opens on its own card; APU on another. Plug the unit in, then choose its **channel**
+(radar) or which **APU** it is (APU 0 or 1) and click configure. The tool sets the time and
+the device's permanent IP, then verifies it.
 
-**Channel → address**
+**Radar: channel → address** (4 radars per system)
 
 
-| Channel | Radar address | APU address   |
-| ------- | ------------- | ------------- |
-| 0       | 192.168.88.50 | 192.168.88.60 |
-| 1       | 192.168.88.51 | 192.168.88.61 |
-| 2       | 192.168.88.52 | 192.168.88.62 |
-| 3       | 192.168.88.53 | 192.168.88.63 |
+| Channel | Radar address |
+| ------- | ------------- |
+| 0       | 192.168.88.50 |
+| 1       | 192.168.88.51 |
+| 2       | 192.168.88.52 |
+| 3       | 192.168.88.53 |
 
+
+**APU: which APU → address + its two radars** (2 APUs per system — each controls two radars)
+
+
+| APU | APU address   | Controls radars                                 |
+| --- | ------------- | ----------------------------------------------- |
+| 0   | 192.168.88.60 | radar_0 (192.168.88.50) + radar_1 (192.168.88.51) |
+| 1   | 192.168.88.61 | radar_2 (192.168.88.52) + radar_3 (192.168.88.53) |
+
+
+> **APU firmware:** APUs must already run firmware **3.1.2**. The tool refuses an older unit and
+> asks you to upgrade it manually via its dashboard first — nothing is changed on a refused unit.
 
 > **Manual ("other") IP:** if you type your own IP instead of picking a channel, the device goes
 > to **exactly** that address and the RF channel is left unchanged. Double-check the number — a
@@ -85,8 +98,9 @@ click configure. The tool sets the time and the device's permanent IP, then veri
 **Auto & Cycle (hands-free) modes**
 
 - **Auto** — set one target once; every unit you plug in gets configured to it automatically.
-- **Cycle** — configures units in groups of four, giving each the next channel (0 → 1 → 2 → 3,
-then back to 0). Just keep plugging them in.
+- **Cycle** — radars are configured in groups of four, each taking the next channel (0 → 1 → 2
+→ 3, then back to 0); APUs in groups of two (APU 0 → APU 1, then back to 0). Just keep
+plugging them in.
 
 Both skip a unit that briefly re-appears (so unplug each one), and both **turn themselves off
 after 10 minutes with nothing plugged in** — the page shows a message; just switch the mode back

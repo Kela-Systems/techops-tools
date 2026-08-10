@@ -49,7 +49,9 @@ only by the per-run JSON writer — `parse_run_record()` still accepts those.)
     raythink      hostname, profile, ip
     speaker       hostname, ip, from_host
     magos-radar   channel, ip, from_host, ntp, timezone
-    magos-apu     channel, ip, radar_ip, from_host, ntp, timezone
+    magos-apu     channel, ip, radars ([{radar_id, ip, name}] — one APU
+                  controls two radars since firmware 3.1.2), radar_ip (the
+                  same list as one display string), from_host, ntp, timezone
 """
 from __future__ import annotations
 
