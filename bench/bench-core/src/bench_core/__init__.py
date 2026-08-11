@@ -336,8 +336,8 @@ def assign_rms_pack(api_token: str, company_id: str, *, serial: str, pack: str,
             if r.status_code in (401, 403):
                 raise SystemExit(
                     f"RMS rejected the token (HTTP {r.status_code}: {r.text[:200]}). "
-                    f"Pack assignment needs the 'devices:read' + 'devices:write' + "
-                    f"'credits:read' scopes on the personal access token.")
+                    f"Pack assignment needs the 'devices:read', 'credits:read' and "
+                    f"'device_credits:write' scopes on the personal access token.")
             if r.status_code != 200:
                 raise SystemExit(f"RMS API {url} failed: HTTP {r.status_code}: {r.text[:300]}")
             try:
@@ -404,6 +404,11 @@ def assign_rms_pack(api_token: str, company_id: str, *, serial: str, pack: str,
                 continue
             raise SystemExit(f"RMS API unreachable after ~{wait}s: {e}")
         break
+    if r.status_code in (401, 403):
+        raise SystemExit(
+            f"RMS rejected the pack assignment (HTTP {r.status_code}: {r.text[:200]}). "
+            f"The personal access token is missing the 'device_credits:write' scope "
+            f"(the PUT /devices/credit endpoint) — regenerate it with that scope added.")
     if r.status_code not in (200, 201, 202):
         raise SystemExit(f"RMS pack assignment failed: HTTP {r.status_code}: {r.text[:300]}")
 

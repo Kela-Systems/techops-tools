@@ -81,13 +81,19 @@ Double-check a manual IP before configuring.
 
 ### Changing the factory defaults
 
-The factory defaults both tools start from — the factory IP and login the
+The factory defaults both tools start from — the factory IP(s) and login the
 detection loop expects, plus the gateway/DNS/netmask, NTP server and timezone
 they apply — live in `config/magos.config.json`, with an `ar300` section for
 the radar and an `apu` section for the APU (which also has the `iface` the
-static IP is applied to). Edit the file and restart the tools to apply. Any
-key you remove — or the whole file — falls back to the built-in values, which
-match a fresh unit; keys starting with `_` are comments.
+static IP is applied to). Any key you remove — or the whole file — falls back
+to the built-in values, which match a fresh unit; keys starting with `_` are
+comments.
+
+The file and each tool's **settings panel edit the same settings**: the file
+is read once at startup, and changes made in the web UI are saved back into
+the tool's section of the file, so they survive a restart — whatever was set
+last, in either place, wins. The only asymmetry: hand-edits to the file apply
+on the next restart, while UI edits apply immediately.
 
 Each section also has a `channel_ips` map: radar channel → the static IP it
 gets, and APU index → the APU's own IP (the tables above show the built-ins).

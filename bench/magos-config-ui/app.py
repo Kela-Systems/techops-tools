@@ -34,6 +34,7 @@ from magos_configure import (
     DEFAULT_TIMEZONE,
     DEFAULT_USERNAME,
     MagosClient,
+    load_factory_defaults,
     set_log_serial,
     to_cidr,
     verify_device_at,
@@ -42,12 +43,15 @@ from magos_configure import (
 BASE_DIR = Path(__file__).resolve().parent
 
 # Factory IPs a fresh radar may boot on — detection checks each in order.
-DEFAULT_HOSTS = [DEFAULT_HOST, "192.168.40.60"]
+# From the config file's "hosts" when set (the UI's settings editor persists
+# there); a fresh file falls back to the two known factory IPs.
+_cfg = load_factory_defaults("ar300")
+DEFAULT_HOSTS = list(_cfg.get("hosts") or [DEFAULT_HOST, "192.168.40.60"])
 
 DEFAULT_CFG = {
     "hosts": list(DEFAULT_HOSTS),
-    "scheme": "http",
-    "insecure": False,
+    "scheme": _cfg.get("scheme", "http"),
+    "insecure": bool(_cfg.get("insecure", False)),
     "username": DEFAULT_USERNAME,
     "password": DEFAULT_PASSWORD,
     "ntp": DEFAULT_NTP,
@@ -56,6 +60,7 @@ DEFAULT_CFG = {
     "dns": DEFAULT_DNS,
     "netmask": DEFAULT_NETMASK,
 }
+del _cfg
 
 
 class SettingsBody(BaseModel):
@@ -97,6 +102,7 @@ class RadarBench(MagosBench):
     device_word = "radar"
     channel_ips = CHANNEL_IPS
     uses_radar_ip = False
+    config_section = "ar300"   # UI settings edits persist into this file section
 
     def resolve_target(self, channel: Optional[str], ip: Optional[str],
                        radar_ip: Optional[str] = None) -> Optional[dict]:

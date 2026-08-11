@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import logging.handlers
 import os
@@ -52,6 +53,7 @@ from bench_core.config_check import config_fingerprint
 # so step lines render the same in every tool.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from magos_configure import (  # noqa: E402
+    FACTORY_CONFIG_PATH,
     LOG_LINE_FORMAT,
     is_on_link,
     probe_http,
@@ -83,6 +85,8 @@ class MagosBench:
     device_word: str = "radar"            # used in user-facing messages
     channel_ips: dict = {}                # CHANNEL_IPS / APU_CHANNEL_IPS
     uses_radar_ip: bool = False           # APU also targets controlled radars
+    config_section: str = ""              # this tool's section of the config file
+                                          # ("ar300" / "apu"); "" = no persistence
 
     def __init__(self, base_dir: Path, default_cfg: dict) -> None:
         self.base_dir = base_dir
@@ -99,9 +103,12 @@ class MagosBench:
         self.log.info("%s starting — bench version %s, station %s",
                       self.title, self.bench_version, self.station_id)
         self.cfg: dict = dict(default_cfg)
-        # No JSON config file here (in-code defaults + /api/settings), so there
-        # is nothing to self-check — but the hash still pins the settings each
-        # run was provisioned under (TEC-356).
+        # The defaults were seeded from config/magos.config.json (via the apps'
+        # DEFAULT_CFG); UI edits are written back into this file so it stays
+        # the single source of truth across restarts. An attribute (not the
+        # module constant) so tests can point persistence at a scratch file.
+        self.config_path: Path = FACTORY_CONFIG_PATH
+        # The hash pins the settings each run was provisioned under (TEC-356).
         self.config_hash: str = self._config_fingerprint()
         self._misses = 0
         # Monotonic clock + last-activity stamp drive the hands-free idle
@@ -264,7 +271,8 @@ class MagosBench:
             "operator": self.operator_store.get(),
             "config": {k: v for k, v in self.cfg.items() if k != "password"},
             "config_hash": self.config_hash,
-            "config_warnings": [],  # no config file to self-check (see __init__)
+            "config_warnings": [],  # the config file holds no tokens/placeholders
+                                    # worth self-checking (unlike the RUTM/OTD tools)
             "password_set": bool(self.cfg.get("password")),
             "channel_ips": self.channel_ips,
             **self.extra_public_state(),
@@ -409,9 +417,39 @@ class MagosBench:
             else:
                 self.cfg[key] = value
         self.config_hash = self._config_fingerprint()
+        self._persist_settings()
         if self.state["phase"] == "waiting":
             self.state["message"] = f"Waiting for a {self.device_word} at {self._hosts_str()}..."
         return self.public_state()
+
+    def _persist_settings(self) -> None:
+        """Write the current settings back into this tool's section of the
+        factory-defaults config file, so a UI edit survives a restart and the
+        file stays the single source of truth (editing the FILE by hand still
+        needs a restart — it is only read at startup).
+
+        Only the keys in self.cfg are (over)written: `_comment` keys, `host`
+        (the CLI default), `channel_ips` and the OTHER tool's section are
+        preserved, so the radar and APU apps can share the file. The write is
+        atomic (tmp + replace) and best-effort — a disk problem is logged but
+        never blocks the in-memory settings change."""
+        if not self.config_section:
+            return
+        try:
+            raw: dict = {}
+            if self.config_path.exists():
+                raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+            raw.setdefault(self.config_section, {}).update(self.cfg)
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.config_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
+            os.replace(tmp, self.config_path)
+            self.log.info("Settings saved to %s (%s section).",
+                          self.config_path.name, self.config_section)
+        except (OSError, ValueError) as e:
+            self.log.warning("Settings applied for this session but could NOT be "
+                             "saved to %s: %s", self.config_path, e)
 
     async def configure_request(self, channel: Optional[str], ip: Optional[str],
                                 radar_ips: Optional[str] = None) -> dict:

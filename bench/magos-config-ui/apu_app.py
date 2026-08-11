@@ -44,14 +44,23 @@ from apu_configure import (
     radars_from_ips,
 )
 from magos_bench import MagosBench
-from magos_configure import MagosError, set_log_serial, verify_device_at
+from magos_configure import (
+    MagosError,
+    load_factory_defaults,
+    set_log_serial,
+    verify_device_at,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 
+# From the config file's "hosts" when set (the UI's settings editor persists
+# there); a fresh file falls back to the APU factory IP.
+_cfg = load_factory_defaults("apu")
+
 DEFAULT_CFG = {
-    "hosts": [DEFAULT_HOST],         # APU factory IP(s) to watch
-    "scheme": "http",
-    "insecure": False,
+    "hosts": list(_cfg.get("hosts") or [DEFAULT_HOST]),   # APU factory IP(s) to watch
+    "scheme": _cfg.get("scheme", "http"),
+    "insecure": bool(_cfg.get("insecure", False)),
     "username": DEFAULT_USERNAME,
     "password": DEFAULT_PASSWORD,
     "ntp": DEFAULT_NTP,
@@ -61,6 +70,7 @@ DEFAULT_CFG = {
     "netmask": DEFAULT_NETMASK,
     "iface": DEFAULT_IFACE,
 }
+del _cfg
 
 
 class SettingsBody(BaseModel):
@@ -105,6 +115,7 @@ class ApuBench(MagosBench):
     device_word = "APU"
     channel_ips = APU_CHANNEL_IPS
     uses_radar_ip = True
+    config_section = "apu"     # UI settings edits persist into this file section
 
     def extra_public_state(self) -> dict:
         return {"apu_radars": APU_RADAR_ASSIGNMENTS}

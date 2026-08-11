@@ -33,7 +33,7 @@
     "api_token": "",
     "company_id": "",
     "device_series": "rutm",
-    "_comment_pack": "Optional license: assign a Management pack right after registration (the RMS UI's Actions -> Device -> 'Set pack'). Accepts the RMS pack type name ('management_3y' = Paid Management pack 3y.), a numeric credit_type_id, or a fragment of the display name. Leave empty to keep credit-based management. NOTE: packs cannot be revoked once assigned; the step skips devices that already carry a matching pack.",
+    "_comment_pack": "Optional license: assign a Management pack right after registration (the RMS UI's Actions -> Device -> 'Set pack'). Accepts the RMS pack type name ('management_3y' = Paid Management pack 3y.), a numeric credit_type_id, or a fragment of the display name. Leave empty to keep credit-based management. Needs the 'credits:read' + 'device_credits:write' scopes on api_token (on top of devices:read/write above). NOTE: packs cannot be revoked once assigned; the step skips devices that already carry a matching pack.",
     "pack": "management_3y"
   },
 

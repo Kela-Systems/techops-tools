@@ -257,6 +257,54 @@ def test_config_hash_tracks_settings_changes():
     assert radar.config_hash == before              # restored settings → same hash
 
 
+def test_apply_settings_persists_to_config_file(tmp_path, monkeypatch):
+    """A UI settings edit is written back into the tool's section of the
+    config file — preserving comments, non-UI keys (host, channel_ips) and
+    the other tool's section."""
+    import json
+    path = tmp_path / "persisted.config.json"
+    path.write_text(json.dumps({
+        "_comment": "top-level comment",
+        "ar300": {"_comment": "radar comment", "host": "192.168.40.50",
+                  "channel_ips": {"0": "192.168.88.50"}},
+        "apu": {"host": "192.168.40.60"},
+    }), encoding="utf-8")
+    monkeypatch.setattr(radar, "config_path", path)
+
+    original_ntp = radar.cfg["ntp"]
+    radar.apply_settings({"ntp": "10.11.12.13"})
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved["ar300"]["ntp"] == "10.11.12.13"
+        assert saved["ar300"]["_comment"] == "radar comment"
+        assert saved["ar300"]["host"] == "192.168.40.50"
+        assert saved["ar300"]["channel_ips"] == {"0": "192.168.88.50"}
+        assert saved["apu"] == {"host": "192.168.40.60"}   # other tool untouched
+        assert saved["_comment"] == "top-level comment"
+        # The full session settings land in the section, not just the edit —
+        # so a restart reconstructs exactly what the UI showed.
+        assert saved["ar300"]["gateway"] == radar.cfg["gateway"]
+    finally:
+        monkeypatch.setattr(radar, "config_path", tmp_path / "scratch.json")
+        radar.apply_settings({"ntp": original_ntp})
+
+
+def test_apply_settings_survives_missing_config_file(tmp_path, monkeypatch):
+    """Persistence must create the file when absent (fresh checkout) and a
+    write failure must never block the in-memory settings change."""
+    import json
+    path = tmp_path / "created" / "magos.config.json"
+    monkeypatch.setattr(radar, "config_path", path)
+    original_ntp = radar.cfg["ntp"]
+    radar.apply_settings({"ntp": "10.99.88.77"})
+    try:
+        assert radar.cfg["ntp"] == "10.99.88.77"
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved["ar300"]["ntp"] == "10.99.88.77"
+    finally:
+        radar.apply_settings({"ntp": original_ntp})
+
+
 def test_unset_operator_stamps_unknown(device, monkeypatch, tmp_path):
     from bench_core.bench_ui import OperatorStore
     monkeypatch.setattr(radar, "operator_store", OperatorStore(tmp_path / "op.json"))
