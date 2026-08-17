@@ -17,8 +17,8 @@ prerequisite. Then, in a PowerShell window (Windows) or terminal (macOS/Linux):
 
 ```powershell
 # Windows
-irm http://techops-automations-host:8100/setup.ps1 -OutFile setup.ps1 -StationId bench-3
-.\setup.ps1 -CentralUrl http://techops-automations-host:8100
+irm http://techops-automations-host:8100/setup.ps1 -OutFile setup.ps1
+.\setup.ps1 -CentralUrl http://techops-automations-host:8100 -StationId bench-3
 ```
 
 ```bash

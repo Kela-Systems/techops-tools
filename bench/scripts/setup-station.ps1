@@ -67,18 +67,60 @@ Write-Host "    collector $($health.version), pinned release $($sha.Substring(0,
 
 # ---- 2. Python 3.11+ --------------------------------------------------------
 Step 2 "Locating Python 3.11+"
-# Returns @{Exe=...; Args=@(...)} for a Python >= 3.10, or $null. An empty
-# Args array flattens to nothing when calling a native exe, so callers can
-# always write: & $py.Exe $py.Args <more args>.
+# Returns @{Exe=<full path>; Args=@(...)} for a Python >= 3.10, or $null. An
+# empty Args array flattens to nothing when calling a native exe, so callers
+# can always write: & $py.Exe $py.Args <more args>.
 function Find-Python {
+    # Two Windows traps, both of which used to end the install right here:
+    #
+    # 1. Windows 10/11 ship "app execution alias" stubs for python.exe and
+    #    python3.exe under ...\WindowsApps. Get-Command finds them on a PC with
+    #    no Python, and running one prints "Python was not found; run without
+    #    arguments to install from the Microsoft Store" to stderr. We skip them
+    #    by path and call the resolved path so PATH can't hand one back. Every
+    #    match is probed, not just the first, so a too-old python earlier in
+    #    PATH doesn't hide a good one behind it.
+    # 2. Under this script's $ErrorActionPreference = "Stop", stderr from any
+    #    native command becomes a terminating NativeCommandError in Windows
+    #    PowerShell 5.1 (and 2>$null does not prevent it — the error record is
+    #    raised before the redirection discards it). That killed the installer
+    #    inside this probe, before the winget fallback below could run. The
+    #    assignment below is function-scoped, so it relaxes only this probe.
+    $ErrorActionPreference = "Continue"
     foreach ($candidate in @(@{Exe = "py"; Args = @("-3")}, @{Exe = "python"; Args = @()})) {
-        if (-not (Get-Command $candidate.Exe -ErrorAction SilentlyContinue)) { continue }
-        & $candidate.Exe $candidate.Args -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)" 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { return $candidate }
+        $cmds = @(Get-Command $candidate.Exe -All -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Source -and $_.Source -notlike "*\WindowsApps\*" })
+        foreach ($exe in $cmds) {
+            & $exe.Source $candidate.Args -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)" 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { return @{Exe = $exe.Source; Args = $candidate.Args} }
+        }
     }
     return $null
 }
+
+# The python.org installer that winget drives does not reliably prepend its
+# install directory to PATH, which leaves a SUCCESSFUL install invisible to
+# Find-Python. Look where it actually lands before concluding winget failed.
+function Add-PythonInstallDirsToPath {
+    $roots = @("$env:LOCALAPPDATA\Programs\Python", $env:ProgramFiles,
+               ${env:ProgramFiles(x86)}) | Where-Object { $_ -and (Test-Path $_) }
+    foreach ($root in $roots) {
+        Get-ChildItem $root -Directory -Filter "Python3*" -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending | ForEach-Object {
+                if (Test-Path (Join-Path $_.FullName "python.exe")) {
+                    $env:Path = "$($_.FullName);$env:Path"
+                }
+            }
+    }
+}
 $py = Find-Python
+if (-not $py) {
+    # Python may already be installed and simply not on PATH — the python.org
+    # installer's "Add python.exe to PATH" box is off by default. Cheap to
+    # check, and it saves a pointless multi-minute winget download.
+    Add-PythonInstallDirsToPath
+    $py = Find-Python
+}
 if (-not $py) {
     # Why the automatic install didn't produce a usable Python. Without it the
     # only symptom of a blocked/absent winget source, a "no applicable
@@ -101,7 +143,11 @@ if (-not $py) {
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                         [Environment]::GetEnvironmentVariable("Path", "User")
             $py = Find-Python
-            if (-not $py) { $reason = "winget reported success but no Python is on PATH" }
+            if (-not $py) {
+                Add-PythonInstallDirsToPath
+                $py = Find-Python
+            }
+            if (-not $py) { $reason = "winget reported success but no Python 3.10+ could be located" }
         }
     }
     if (-not $py) {
