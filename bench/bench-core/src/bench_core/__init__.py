@@ -43,7 +43,7 @@ import socket
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
 try:
@@ -662,12 +662,16 @@ SCAN_WORKERS = 128
 SCAN_TCP_TIMEOUT = 0.3
 
 
-def arp_table() -> dict[str, str]:
-    """{canonical MAC: IP} for every resolved entry in the host's ARP cache.
+def arp_table() -> dict[str, list[str]]:
+    """{canonical MAC: [address, ...]} from the host's ARP cache.
 
     One listing covers the whole cache, so a caller looking for one device among
     many candidate addresses reads it once instead of shelling out per address.
-    Best-effort: an empty dict when no listing command works."""
+    Every address a MAC appears at is kept, in the order the OS listed them: a
+    device that has just moved is often cached at BOTH its old address (stale,
+    not yet expired) and its new one, and picking one blind is how you end up
+    chasing the address it left. Best-effort: empty when no listing command
+    works."""
     cmds = ([["arp", "-a"]] if sys.platform == "win32"
             else [["arp", "-an"], ["ip", "neigh", "show"]])
     for cmd in cmds:
@@ -675,35 +679,30 @@ def arp_table() -> dict[str, str]:
             out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
         except Exception:  # noqa: BLE001 — try the next command / give up quietly
             continue
-        table: dict[str, str] = {}
+        table: dict[str, list[str]] = {}
         for ip, mac in _ARP_ROW_RE.findall(out or ""):
             canon = canonical_mac(mac)
-            # First entry wins: a MAC listed on several interfaces (e.g. an
-            # alias route) resolves to the address the OS lists first.
-            if canon not in _NON_MACS:
-                table.setdefault(canon, ip)
+            if canon in _NON_MACS:
+                continue
+            addresses = table.setdefault(canon, [])
+            if ip not in addresses:
+                addresses.append(ip)
         if table:
             return table
     return {}
 
 
-def find_ip_by_mac(mac: str, subnets: list[str], *, port: int,
-                   timeout: float = SCAN_TCP_TIMEOUT,
-                   workers: int = SCAN_WORKERS) -> Optional[str]:
-    """The address of the host with `mac` on `subnets`, or None.
+def refresh_arp_cache(subnets: list[str], *, port: int,
+                      timeout: float = SCAN_TCP_TIMEOUT,
+                      workers: int = SCAN_WORKERS) -> None:
+    """Knock on every address in `subnets` so the host's ARP cache learns who is
+    out there (and forgets who isn't).
 
-    For a device that has moved somewhere we can't predict — it was just
-    switched to DHCP, say — so we have to find it by the one identifier that
-    doesn't change. TCP-probes every candidate address in parallel (which both
-    finds the live hosts and populates the host's ARP cache), then reads the
-    cache once and matches the MAC.
-
-    A hit must ALSO be answering on `port`, which is what makes this safe to
-    call repeatedly while a device boots: a stale cache entry still pointing at
-    the device's old address can't be mistaken for the new one."""
-    want = canonical_mac(mac or "")
-    if not want or want in _NON_MACS:
-        return None
+    Only the ARP side effect matters, so the results are dropped: address
+    resolution happens BEFORE the connection is attempted, which means a device
+    lands in the cache whether or not it is serving `port` yet. That is the
+    point — a device still finishing its boot has no open port but does answer
+    ARP."""
     candidates: list[str] = []
     for subnet in subnets or []:
         try:
@@ -712,16 +711,46 @@ def find_ip_by_mac(mac: str, subnets: list[str], *, port: int,
         except ValueError:
             log.warning("Skipping invalid scan subnet %r.", subnet)
     if not candidates:
-        return None
-
+        return
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(tcp_port_open, ip, port, timeout): ip
-                   for ip in candidates}
-        open_hosts = {futures[f] for f in as_completed(futures) if f.result()}
-    if not open_hosts:
+        for ip in candidates:
+            pool.submit(tcp_port_open, ip, port, timeout)
+        # The pool's exit waits for every probe, so the cache is warm on return.
+
+
+def find_ip_by_mac(mac: str, subnets: list[str], *, port: int,
+                   confirm_timeout: float = 2.0,
+                   timeout: float = SCAN_TCP_TIMEOUT,
+                   workers: int = SCAN_WORKERS) -> Optional[str]:
+    """The address of the host with `mac` on `subnets` that is answering on
+    `port`, or None.
+
+    For a device that has moved somewhere we can't predict — it was just
+    switched to DHCP, say — so it has to be found by the one identifier that
+    didn't change. Refreshes the ARP cache over `subnets`, then checks EVERY
+    address that MAC is cached at, returning the first that actually answers.
+
+    Two rules earn their keep here, both learned the hard way:
+
+    * the answering check is a real connection with its own `confirm_timeout`,
+      not the sweep's deliberately-impatient probe — a device that has an
+      address but has not finished starting its web server is found, and the
+      caller can wait for it rather than concluding it vanished;
+    * every cached address is tried, so a stale entry pointing at the address
+      the device just left neither hides the new one nor gets mistaken for it
+      (the device it points at is gone, so it cannot answer).
+
+    NOTE: ARP is link-local. This only ever finds a device on a subnet the host
+    itself holds an address on — off-subnet, the cache resolves the router's
+    MAC, never the device's."""
+    want = canonical_mac(mac or "")
+    if not want or want in _NON_MACS:
         return None
-    found = arp_table().get(want)
-    return found if found in open_hosts else None
+    refresh_arp_cache(subnets, port=port, timeout=timeout, workers=workers)
+    for ip in arp_table().get(want, []):
+        if tcp_port_open(ip, port, confirm_timeout):
+            return ip
+    return None
 
 
 class TeltonikaClient:

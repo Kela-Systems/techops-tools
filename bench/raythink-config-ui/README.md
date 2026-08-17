@@ -51,16 +51,37 @@ a site that addresses its cameras that way. No octet to choose.
 Both static modes are confirmed the obvious way: the tool reconnects on the
 address it chose (renewing the laptop's DHCP lease so it can follow). **DHCP has
 nothing to reconnect to** — nothing on the bench picked the address — so the
-tool finds the camera again by the one thing that didn't change, its **MAC**: it
-sweeps `dhcp.scan_subnets` for a host answering on the camera's web port whose
-MAC matches, for up to `dhcp.lease_timeout` seconds, then verifies everything on
-whatever address it landed on. Consequences worth knowing:
+tool finds the camera again by the one thing that didn't change, its **MAC**.
+Every few seconds, for up to `dhcp.lease_timeout` seconds, it:
 
-- The bench PC must be on a subnet listed in `dhcp.scan_subnets`, and that
-subnet needs a **DHCP server** — otherwise the camera is switched to DHCP but
-the run reports the lease as not found and can verify nothing on it. (The
+1. knocks on every address in `dhcp.scan_subnets`, which makes the PC's **ARP
+  cache** learn who is out there — resolution happens before the connection is
+   attempted, so a camera that has an address but hasn't finished starting its
+   web server still shows up;
+2. checks **every** address that MAC is cached at (a camera that just moved is
+  often cached at its old address as well as its new one) and takes the first
+   that actually answers;
+3. re-renews the PC's own DHCP lease as it goes, since the PC may need an
+  address on the camera's new subnet before it can see the camera there.
+
+It then verifies everything on whatever address the camera landed on. Progress is
+logged while it waits, so the step log shows it is still looking rather than
+appearing to hang.
+
+Consequences worth knowing:
+
+- **The PC must hold an address on the subnet the camera lands on.** ARP is
+link-local: off-subnet, the PC's cache holds the *router's* MAC, never the
+camera's, so the camera can't be found no matter how long the tool waits. That
+subnet also needs a **DHCP server**, or there is no lease to find.
+- `dhcp.lease_timeout` defaults to **300s**, much longer than the static move's,
+because it has to cover the camera rebooting, taking a lease *and* starting its
+web server. If it runs out, the two failures are reported differently: the MAC
+was **seen** at an address but nothing answered there yet (the tool points at it
+anyway, so verification gets a last chance and you get an address to go look at),
+or the MAC was **never seen at all** (check the two requirements above). The
 camera's previous static address is deliberately left in place as its fallback,
-so it does not end up unreachable.)
+so it never ends up with no address at all.
 - A camera whose MAC the bench never read over ARP is **refused** for DHCP up
 front, with a message saying so — there would be no way to check the result.
 - A DHCP run is named `raythink-dhcp` and its run record carries **no IP**: the

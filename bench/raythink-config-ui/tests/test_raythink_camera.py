@@ -50,6 +50,7 @@ def client(monkeypatch):
     # Host-side effects and the retry pacing are not what these tests are about.
     monkeypatch.setattr(mod, "host_iface_for", lambda ip: "en0")
     monkeypatch.setattr(mod, "renew_host_dhcp", lambda iface: None)
+    monkeypatch.setattr(mod, "arp_table", dict)
     monkeypatch.setattr(mod.time, "sleep", lambda s: None)
     return cam
 
@@ -122,6 +123,36 @@ def test_set_dhcp_reports_a_lease_that_never_appears(client, monkeypatch):
     assert row["ok"] is False
     assert "192.168.88.0/24" in row["actual"]
     assert client.host == "192.168.1.123"   # nowhere else to point it
+
+
+def test_set_dhcp_follows_a_camera_that_is_not_serving_yet(client, monkeypatch):
+    """The bench-run failure this guards against: the camera took an address but
+    its web server wasn't up before the window closed. Reporting the failure is
+    right; leaving the client pointed at the address the camera LEFT is not —
+    verification would then be skipped on an address that is dead by definition."""
+    monkeypatch.setattr(mod, "find_ip_by_mac", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "arp_table",
+                        lambda: {mod.canonical_mac(CAMERA_MAC):
+                                 ["192.168.1.123", "192.168.88.57"]})
+
+    row = client.set_dhcp(mac=CAMERA_MAC, subnets=["192.168.88.0/24"], wait=0)
+
+    assert row["ok"] is False
+    assert "192.168.88.57" in row["actual"]
+    # The address it left is not offered as where the camera is.
+    assert "192.168.1.123" not in row["actual"]
+    assert client.host == "192.168.88.57"
+
+
+def test_set_dhcp_explains_a_camera_it_never_saw(client, monkeypatch):
+    """The other failure mode looks identical from the outside but needs a
+    different fix, so the message has to distinguish them."""
+    monkeypatch.setattr(mod, "find_ip_by_mac", lambda *a, **k: None)
+
+    row = client.set_dhcp(mac=CAMERA_MAC, subnets=["192.168.88.0/24"], wait=0)
+
+    assert "no sign of" in row["actual"]
+    assert "DHCP server" in row["actual"]
 
 
 def test_set_dhcp_without_a_mac_still_switches_but_fails_the_check(client, monkeypatch):

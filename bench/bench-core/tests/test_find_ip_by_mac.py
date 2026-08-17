@@ -52,9 +52,15 @@ def fake_arp(monkeypatch, output, *, fail_first=False):
 
 
 def only_open(monkeypatch, *ips):
-    """Only `ips` answer the TCP probe."""
-    monkeypatch.setattr(bench_core, "tcp_port_open",
-                        lambda ip, port, timeout=0.3: ip in ips)
+    """Only `ips` answer the TCP probe. Returns the list of probed addresses."""
+    probed = []
+
+    def probe(ip, port, timeout=0.3):
+        probed.append((ip, timeout))
+        return ip in ips
+
+    monkeypatch.setattr(bench_core, "tcp_port_open", probe)
+    return probed
 
 
 # ── arp_table parsing ────────────────────────────────────────────────────────
@@ -64,13 +70,13 @@ def test_arp_table_parses_macos_format(monkeypatch):
     table = arp_table()
     # macOS prints un-padded octets ('0:1e:...'), which must still match a
     # device's own zero-padded MAC.
-    assert table[canonical_mac(CAMERA_MAC)] == "192.168.88.57"
+    assert table[canonical_mac(CAMERA_MAC)] == ["192.168.88.57"]
 
 
 def test_arp_table_parses_windows_format(monkeypatch):
     fake_arp(monkeypatch, WINDOWS_ARP)
     table = arp_table()
-    assert table[canonical_mac(CAMERA_MAC)] == "192.168.88.57"
+    assert table[canonical_mac(CAMERA_MAC)] == ["192.168.88.57"]
     # The interface header line carries an IP but no MAC, and broadcast is not
     # a device.
     assert canonical_mac("ff:ff:ff:ff:ff:ff") not in table
@@ -80,14 +86,22 @@ def test_arp_table_parses_ip_neigh_format(monkeypatch):
     # 'dev eth0' sits between the IP and the MAC — digits in the gap must not
     # break the row match.
     fake_arp(monkeypatch, IP_NEIGH)
-    assert arp_table()[canonical_mac(CAMERA_MAC)] == "192.168.88.57"
+    assert arp_table()[canonical_mac(CAMERA_MAC)] == ["192.168.88.57"]
+
+
+def test_arp_table_keeps_every_address_a_mac_appears_at(monkeypatch):
+    """A device that just moved is often cached at its old address as well as
+    its new one; dropping either is how you end up chasing the one it left."""
+    fake_arp(monkeypatch, "? (192.168.1.123) at 0:1e:42:aa:bb:1 on en0 [ethernet]\n"
+                          "? (192.168.88.57) at 0:1e:42:aa:bb:1 on en0 [ethernet]\n")
+    assert arp_table()[canonical_mac(CAMERA_MAC)] == ["192.168.1.123", "192.168.88.57"]
 
 
 @pytest.mark.skipif(sys.platform == "win32",
                     reason="only the POSIX branch has a fallback command")
 def test_arp_table_falls_back_to_the_second_command(monkeypatch):
     calls = fake_arp(monkeypatch, IP_NEIGH, fail_first=True)
-    assert arp_table()[canonical_mac(CAMERA_MAC)] == "192.168.88.57"
+    assert arp_table()[canonical_mac(CAMERA_MAC)] == ["192.168.88.57"]
     assert len(calls) == 2
 
 
@@ -113,6 +127,47 @@ def test_ignores_a_stale_entry_that_no_longer_answers(monkeypatch):
     fake_arp(monkeypatch, MACOS_ARP)
     only_open(monkeypatch, "192.168.88.1")   # a different device answers
     assert find_ip_by_mac(CAMERA_MAC, ["192.168.88.0/24"], port=80) is None
+
+
+def test_skips_a_stale_entry_to_reach_the_live_one(monkeypatch):
+    """The regression that broke a real bench run: the device was cached at BOTH
+    the address it had left and its new one. Taking the first cached address
+    blind means probing the dead one and reporting 'not found' — every cached
+    address has to be tried."""
+    fake_arp(monkeypatch, "? (192.168.1.123) at 0:1e:42:aa:bb:1 on en0 [ethernet]\n"
+                          "? (192.168.88.57) at 0:1e:42:aa:bb:1 on en0 [ethernet]\n")
+    only_open(monkeypatch, "192.168.88.57")
+    found = find_ip_by_mac(CAMERA_MAC, ["192.168.88.0/24"], port=80)
+    assert found == "192.168.88.57"
+
+
+def test_confirmation_is_patient_even_though_the_sweep_is_not(monkeypatch):
+    """The sweep is deliberately impatient (it only has to provoke ARP), but the
+    'is it answering?' check must not be — a camera that just rebooted needs
+    more than 0.3s to accept a connection."""
+    fake_arp(monkeypatch, MACOS_ARP)
+    probed = only_open(monkeypatch, "192.168.88.57")
+
+    find_ip_by_mac(CAMERA_MAC, ["192.168.88.0/24"], port=80,
+                   confirm_timeout=2.0, timeout=0.3)
+
+    sweep = [t for ip, t in probed if ip != "192.168.88.57"]
+    confirm = [t for ip, t in probed if ip == "192.168.88.57"]
+    assert set(sweep) == {0.3}
+    assert 2.0 in confirm
+
+
+def test_finds_a_device_that_is_not_serving_yet_on_the_next_call(monkeypatch):
+    """A device mid-boot answers ARP but not TCP. The sweep must still refresh
+    the cache (address resolution happens before the connection attempt), so the
+    caller's next attempt finds it once its web server is up."""
+    fake_arp(monkeypatch, MACOS_ARP)
+    booting = only_open(monkeypatch)          # nothing answers yet
+    assert find_ip_by_mac(CAMERA_MAC, ["192.168.88.0/24"], port=80) is None
+    assert booting, "the sweep must still run so the ARP cache is refreshed"
+
+    only_open(monkeypatch, "192.168.88.57")   # web server now up
+    assert find_ip_by_mac(CAMERA_MAC, ["192.168.88.0/24"], port=80) == "192.168.88.57"
 
 
 def test_none_when_nothing_answers(monkeypatch):

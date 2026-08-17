@@ -23,9 +23,9 @@
   },
 
   "dhcp": {
-    "_comment": "Used by the UI's DHCP mode, where the camera keeps the address its own DHCP server hands out instead of a bench-assigned static one. Because nothing here chose that address, the tool finds the camera again by MAC: it sweeps scan_subnets (CIDR) for up to lease_timeout seconds, then verifies on whatever it landed on. List the subnet(s) the lease can come from — the bench subnet first, then the factory one (a camera that never gets a lease falls back to its previous static address).",
+    "_comment": "Used by the UI's DHCP mode, where the camera keeps the address its own DHCP server hands out instead of a bench-assigned static one. Because nothing here chose that address, the tool finds the camera again by MAC: it sweeps scan_subnets (CIDR) for up to lease_timeout seconds, then verifies on whatever it landed on. List the subnet(s) the lease can come from — the bench subnet first, then the factory one (a camera that never gets a lease falls back to its previous static address). This PC must hold an address on the subnet the camera lands on: ARP is link-local, so a device is only findable by MAC on a subnet you are on. lease_timeout must cover the camera rebooting, taking a lease AND starting its web server — much longer than a static move, where only the address changes.",
     "scan_subnets": ["192.168.88.0/24", "192.168.1.0/24", "192.168.2.0/24"],
-    "lease_timeout": 180
+    "lease_timeout": 300
   },
 
   "_comment_profiles": "Each profile is a config JSON exported from a reference camera (Setup > System > Export), stored under config/profiles/ (paths are relative to config/). Import replays each config table via setConfig. The profile exports ship committed (no secrets). Keep the device's Network/IP table OUT of these files — the tool sets the address (static or DHCP) and NTP itself, after the import.",

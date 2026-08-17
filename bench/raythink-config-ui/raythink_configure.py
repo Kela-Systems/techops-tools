@@ -65,7 +65,10 @@ DEFAULT_OCTET_MAX = 50
 # lease most likely comes from, then the factory one (a camera that got no
 # lease falls back to its previous static address).
 DEFAULT_SCAN_SUBNETS = ["192.168.88.0/24", "192.168.1.0/24", "192.168.2.0/24"]
-DEFAULT_LEASE_TIMEOUT = 180
+# Generous on purpose: unlike a static move, this has to cover the camera
+# rebooting, taking a lease AND starting its web server. Giving up early gets a
+# camera that is actually fine reported as unverifiable.
+DEFAULT_LEASE_TIMEOUT = 300
 
 DHCP_DEVICE_NAME = "raythink-dhcp"
 

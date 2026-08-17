@@ -49,6 +49,8 @@ except ImportError:
     sys.exit("This script needs 'requests'.  Install it with:  pip install requests")
 
 from bench_core import (
+    arp_table,
+    canonical_mac,
     find_ip_by_mac,
     format_verification,
     host_iface_for,
@@ -72,6 +74,11 @@ DEFAULT_SCHEME = "http"
 DEFAULT_INITIAL_PASSWORD = "admin"
 DEFAULT_NEW_PASSWORD = "Kelafield123!"
 DEFAULT_NTP_SERVER = "192.168.88.10"
+
+# Pacing of the hunt for a camera that was just switched to DHCP (set_dhcp).
+DHCP_SETTLE_SEC = 10        # before looking: let it drop its old address
+DHCP_HOST_RENEW_SEC = 45    # re-renew this PC's own lease while waiting
+DHCP_PROGRESS_SEC = 20      # how often to log that we are still looking
 
 # Login error codes from the web's interfaceLogin.js.
 ERR_USER_INVALID = 268632070
@@ -526,7 +533,7 @@ class RaythinkCameraClient:
         return {"item": "static IP", "expected": ip,
                 "actual": f"no answer on {ip} after {wait}s (laptop subnet?)", "ok": False}
 
-    def set_dhcp(self, *, mac: str, subnets: list[str], wait: int = 180) -> dict:
+    def set_dhcp(self, *, mac: str, subnets: list[str], wait: int = 300) -> dict:
         """Switch the camera to DHCP — the alternative last step to
         set_static_ip, for a site where the camera is meant to take its address
         from the local DHCP server rather than a bench-assigned one.
@@ -535,15 +542,21 @@ class RaythinkCameraClient:
         setConfig, expect the connection to drop), with one difference that
         drives everything else: we don't know where the camera reappears. So
         instead of following it to an address we chose, we sweep `subnets` for
-        its `mac` until its lease is up, then repoint the client at whatever it
-        got. The static IP/mask/gateway fields are left untouched on purpose —
-        the camera falls back to them if no lease ever arrives, which is a more
+        its `mac` until it turns up, then repoint the client at whatever it got.
+        The static IP/mask/gateway fields are left untouched on purpose — the
+        camera falls back to them if no lease ever arrives, which is a more
         useful failure than an unreachable camera with no address at all.
+
+        `wait` has to cover the camera rebooting, requesting a lease AND
+        starting its web server, which is a lot longer than a static move where
+        only the address changes. The wait is not silent — progress is logged, so
+        an operator watching the step log can see it is still looking.
 
         Returns a verification-style check; never raises after the write."""
         table, eth = self._network_table()
         self._set_dhcp_flags(eth, True)
 
+        left_behind = self.host
         iface_host = host_iface_for(self.host)  # resolve while still reachable
         log.info("Switching the camera at %s to DHCP — the connection will drop ...",
                  self.host)
@@ -558,30 +571,62 @@ class RaythinkCameraClient:
             return {**row, "actual": "switched to DHCP, but no MAC was known to "
                                      "find the camera again", "ok": False}
 
-        log.info("Looking for the camera's DHCP lease by MAC %s on %s ...",
-                 mac, ", ".join(subnets) or "(no subnets configured)")
-        deadline = time.time() + wait
-        time.sleep(5)
+        log.info("Looking for the camera by MAC %s on %s (up to %ds — it has to "
+                 "reboot, take a lease and start serving) ...",
+                 mac, ", ".join(subnets) or "(no subnets configured)", wait)
+        # Let it actually leave first: probed too early it can still be answering
+        # on the address it is about to drop, which would look like "found it".
+        time.sleep(DHCP_SETTLE_SEC)
         renew_host_dhcp(iface_host)
-        renewed_again = False
+
+        deadline = time.time() + wait
+        next_renew = time.time() + DHCP_HOST_RENEW_SEC
+        next_note = time.time() + DHCP_PROGRESS_SEC
         while time.time() < deadline:
             found = find_ip_by_mac(mac, subnets, port=self._port())
             if found:
-                log.info("Camera took the DHCP lease %s.", found)
+                log.info("Camera is answering on %s.", found)
                 self.host = found
                 self.base = f"{self.scheme}://{found}"
                 return {**row, "actual": f"answering on {found}", "ok": True}
-            if not renewed_again and time.time() > deadline - wait / 2:
+            now = time.time()
+            if now >= next_renew:
+                # The laptop may need a lease on the camera's new subnet before
+                # it can see the camera there at all, so keep asking.
                 renew_host_dhcp(iface_host)
-                renewed_again = True
+                next_renew = now + DHCP_HOST_RENEW_SEC
+            if now >= next_note:
+                seen_at = arp_table().get(canonical_mac(mac), [])
+                log.info("...still looking for the camera (%ds left)%s",
+                         int(deadline - now),
+                         f"; its MAC is cached at {', '.join(seen_at)} but nothing "
+                         f"answers there yet" if seen_at else "")
+                next_note = now + DHCP_PROGRESS_SEC
             time.sleep(3)
-        log.warning("No lease found for MAC %s on %s within %ds — the camera is on "
-                    "DHCP, but nothing could be verified on it.",
-                    mac, ", ".join(subnets), wait)
-        return {**row, "actual": f"no host with MAC {mac} answering on "
-                                 f"{', '.join(subnets)} after {wait}s (is there a "
-                                 f"DHCP server on the bench subnet, and is the "
-                                 f"laptop on it?)", "ok": False}
+
+        # Out of time. Say precisely what the bench could and couldn't see — the
+        # two failures need different fixes and look identical from the outside.
+        seen_at = [ip for ip in arp_table().get(canonical_mac(mac), [])
+                   if ip != left_behind]
+        if seen_at:
+            log.warning("Camera's MAC %s is cached at %s but it never answered on "
+                        "port %d within %ds.", mac, ", ".join(seen_at), self._port(), wait)
+            # Point at it anyway: it is where the camera is, so verification gets
+            # one more chance (it may have come up in the last few seconds) and
+            # the operator gets an address to go and look at instead of a dead
+            # end on the address the camera left.
+            self.host = seen_at[0]
+            self.base = f"{self.scheme}://{seen_at[0]}"
+            return {**row, "actual": f"took {', '.join(seen_at)} but never answered "
+                                     f"on port {self._port()} within {wait}s",
+                    "ok": False}
+        log.warning("Never saw MAC %s on %s within %ds — the camera is on DHCP, but "
+                    "nothing could be verified on it.", mac, ", ".join(subnets), wait)
+        return {**row, "actual": f"no sign of MAC {mac} on {', '.join(subnets)} within "
+                                 f"{wait}s — is there a DHCP server on those subnets, "
+                                 f"and does this PC hold an address on the one the "
+                                 f"camera landed on? (a device is only findable by MAC "
+                                 f"on a subnet this PC is itself on)", "ok": False}
 
     # --- ONVIF (a SEPARATE credential store from the system user) -----------
     # IMPORTANT: ONVIF keeps its own credential, distinct from the system/web
