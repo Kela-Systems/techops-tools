@@ -3,22 +3,30 @@
 Provision a single Raythink thermal camera over its RPC2 JSON API.
 
 A fresh camera ships on the static IP 192.168.1.123 with admin/admin. Pipeline
-for one camera (one at a time — the profile and the final IP octet are chosen in
+for one camera (one at a time — the profile and the addressing are chosen in
 the UI / on the CLI):
 
   login(admin/admin) -> set password "Kelafield123!" -> import config profile
     (LAN or Cellular) -> set NTP 192.168.88.10 + sync clock to PC time -> set
-    the ONVIF user password (separate credential, via ONVIF SetUser) -> set
-    static IP 192.168.88.XX (LAST — drops the connection; confirmed by reaching
-    the camera on the new address) -> verify
+    the ONVIF user password (separate credential, via ONVIF SetUser) -> address
+    the camera (LAST — drops the connection) -> verify
 
-The IP move runs last for the same reason as the RUTM08 LAN move: the moment it
-applies, the camera leaves 192.168.1.123. Because a full config import can reset
-the session (or reboot the camera), we re-login after importing and re-assert the
-target password before continuing.
+The addressing step runs last for the same reason as the RUTM08 LAN move: the
+moment it applies, the camera leaves 192.168.1.123. It comes in two flavours,
+picked by `octet`:
+
+  * a static 192.168.88.XX (octet=XX), confirmed by reaching the camera on that
+    exact address;
+  * DHCP (octet=None), for a site whose own DHCP server addresses the cameras —
+    confirmed by finding the camera again by MAC on the bench subnets, since
+    nothing on the bench chose where it would land.
+
+Because a full config import can reset the session (or reboot the camera), we
+re-login after importing and re-assert the target password before continuing.
 
 CLI (single camera):
   python3 raythink_configure.py --profile lan --ip 30
+  python3 raythink_configure.py --profile lan --dhcp
 """
 from __future__ import annotations
 
@@ -26,6 +34,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -52,9 +61,19 @@ DEFAULT_SUBNET_PREFIX = "192.168.88"
 DEFAULT_OCTET_MIN = 30
 DEFAULT_OCTET_MAX = 50
 
+# Where to look for a camera that was just put on DHCP: the bench subnet a
+# lease most likely comes from, then the factory one (a camera that got no
+# lease falls back to its previous static address).
+DEFAULT_SCAN_SUBNETS = ["192.168.88.0/24", "192.168.1.0/24", "192.168.2.0/24"]
+DEFAULT_LEASE_TIMEOUT = 180
 
-def device_name(octet: int) -> str:
-    return f"raythink-{octet}"
+DHCP_DEVICE_NAME = "raythink-dhcp"
+
+
+def device_name(octet: Optional[int]) -> str:
+    """raythink-<octet>, or raythink-dhcp for a camera left on DHCP — there is
+    no assigned octet to name that one after."""
+    return DHCP_DEVICE_NAME if octet is None else f"raythink-{octet}"
 
 
 CONFIG_DIR = BASE_DIR / "config"
@@ -81,17 +100,28 @@ def target_ip_for(settings: dict, octet: int) -> str:
 # --- pipeline (shared by CLI + web UI) ----------------------------------------
 
 def configure_camera(client: RaythinkCameraClient, *, profile_name: str,
-                     profile_path: str, octet: int, settings: dict) -> dict:
+                     profile_path: str, octet: Optional[int], settings: dict,
+                     mac: str = "") -> dict:
     """Run the full provisioning pipeline for ONE camera. Logs every step through
     the 'raythink' logger. Returns identity + per-step failures + verification.
-    Raises CameraError on a hard failure (login, password change)."""
+    Raises CameraError on a hard failure (login, password change).
+
+    `octet` picks the addressing: an int gives the camera that static
+    192.168.88.<octet>, None leaves it on DHCP. `mac` is a fallback used only to
+    find the camera again after a DHCP switch, for the rare unit that doesn't
+    report its own MAC (the bench reads it over ARP while the camera is still on
+    its factory address)."""
+    dhcp_mode = octet is None
     static = settings.get("static", {}) or {}
     gateway = static.get("gateway", DEFAULT_GATEWAY)
     netmask = static.get("netmask", DEFAULT_NETMASK)
+    dhcp_cfg = settings.get("dhcp", {}) or {}
+    scan_subnets = dhcp_cfg.get("scan_subnets", DEFAULT_SCAN_SUBNETS)
+    lease_timeout = int(dhcp_cfg.get("lease_timeout", DEFAULT_LEASE_TIMEOUT))
     ntp_server = settings.get("ntp_server", DEFAULT_NTP_SERVER)
     initial_pw = settings.get("initial_password", DEFAULT_INITIAL_PASSWORD)
     new_pw = settings.get("new_password", DEFAULT_NEW_PASSWORD)
-    target_ip = target_ip_for(settings, octet)
+    target_ip = "" if dhcp_mode else target_ip_for(settings, octet)
     name = device_name(octet)
 
     set_log_serial(None)
@@ -140,52 +170,71 @@ def configure_camera(client: RaythinkCameraClient, *, profile_name: str,
     _step("onvif-user",
           lambda: client.set_onvif_password(new_pw, [initial_pw, "admin", new_pw]))
 
-    # 5. Static IP — LAST. After this the camera answers on target_ip, not
-    # 192.168.1.123. set_static_ip never raises after the write; it returns a
-    # verification row.
+    # 5. Addressing — LAST. After this the camera has left 192.168.1.123, either
+    # for target_ip or for wherever DHCP put it. Neither call raises after the
+    # write; both return a verification row and repoint the client.
     verification: list[dict] = []
+    step_label = "dhcp" if dhcp_mode else "static-ip"
     try:
-        verification.append(client.set_static_ip(
-            target_ip, netmask, gateway, wait=int(settings.get("ip_move_timeout", 120))))
+        if dhcp_mode:
+            # Prefer the MAC the camera reports about itself; fall back to the
+            # one the bench read over ARP.
+            device_mac = next((m for m in (identity.get("mac"), mac)
+                               if m and m != "unknown"), "")
+            verification.append(client.set_dhcp(mac=device_mac, subnets=scan_subnets,
+                                                wait=lease_timeout))
+        else:
+            verification.append(client.set_static_ip(
+                target_ip, netmask, gateway,
+                wait=int(settings.get("ip_move_timeout", 120))))
     except CameraError as e:
-        failures.append(f"static-ip: {e}")
-        log.error("Step 'static-ip' FAILED: %s", e)
+        failures.append(f"{step_label}: {e}")
+        log.error("Step '%s' FAILED: %s", step_label, e)
 
-    # 6. Verify on the new address (re-login there first, if it answers).
+    # 6. Verify wherever the camera ended up (re-login there first, if it
+    # answers). client.host is that address — the step above followed it.
     if client.port_open():
         try:
             client.relogin([new_pw], settle=2)
         except CameraError as e:
-            log.warning("Could not re-login on the new IP for verification: %s", e)
+            log.warning("Could not re-login on %s for verification: %s", client.host, e)
         try:
             verification += client.verify_configuration(
                 new_password=new_pw, ntp_server=ntp_server, ip=target_ip,
-                netmask=netmask, gateway=gateway, profile_name=profile_name,
-                imported=imported)
+                netmask=netmask, gateway=gateway, dhcp=dhcp_mode,
+                profile_name=profile_name, imported=imported)
             for line in format_verification(verification).splitlines():
                 log.info("%s", line)
         except CameraError as e:
             log.error("Verification could not run: %s", e)
     else:
-        log.warning("Camera is not answering on %s — skipping read-back verification.", target_ip)
+        log.warning("Camera is not answering on %s — skipping read-back verification.",
+                    client.host)
 
     verify_failed = [c["item"] for c in verification if c["ok"] is False]
     ok = not failures and not verify_failed
+    where = f"DHCP: {client.host}" if dhcp_mode else target_ip
     if ok:
-        log.info("Provisioning complete for %s (%s) — all steps verified.", name, target_ip)
+        log.info("Provisioning complete for %s (%s) — all steps verified.", name, where)
     else:
         problems = failures + [f"verify:{i}" for i in verify_failed]
         log.error("Provisioning of %s finished with problems: %s", name, " | ".join(problems))
+    # ip is the address the bench ASSIGNED, so a DHCP run carries none — the
+    # lease is the DHCP server's to change, and it is in the verification rows.
     return {"name": name, "hostname": name, "identity": identity, "warnings": [],
             "failures": failures, "verification": verification, "ok": ok,
-            "profile": profile_name, "ip": target_ip}
+            "profile": profile_name, "ip": target_ip,
+            "ip_mode": "dhcp" if dhcp_mode else "static"}
 
 
 def main():
     p = argparse.ArgumentParser(description="Provision a single Raythink camera.")
     p.add_argument("--profile", required=True, help="config profile key (e.g. lan, cellular)")
-    p.add_argument("--ip", required=True, type=int,
-                   help="last octet of the static IP (e.g. 30 -> 192.168.88.30)")
+    addressing = p.add_mutually_exclusive_group(required=True)
+    addressing.add_argument("--ip", type=int,
+                            help="last octet of the static IP (e.g. 30 -> 192.168.88.30)")
+    addressing.add_argument("--dhcp", action="store_true",
+                            help="leave the camera on DHCP instead of assigning a static IP")
     p.add_argument("--config", default=str(BASE_DIR / "config" / "raythink.config.json"),
                    help="shared settings JSON (default: config/raythink.config.json)")
     args = p.parse_args()
@@ -196,11 +245,13 @@ def main():
     log.setLevel(logging.INFO)
 
     settings = load_settings(args.config)
-    static = settings.get("static", {}) or {}
-    lo = int(static.get("octet_min", DEFAULT_OCTET_MIN))
-    hi = int(static.get("octet_max", DEFAULT_OCTET_MAX))
-    if not (lo <= args.ip <= hi):
-        sys.exit(f"--ip {args.ip} is out of the allowed range {lo}-{hi}.")
+    octet = None if args.dhcp else args.ip
+    if octet is not None:
+        static = settings.get("static", {}) or {}
+        lo = int(static.get("octet_min", DEFAULT_OCTET_MIN))
+        hi = int(static.get("octet_max", DEFAULT_OCTET_MAX))
+        if not (lo <= octet <= hi):
+            sys.exit(f"--ip {octet} is out of the allowed range {lo}-{hi}.")
 
     try:
         profile_path = resolve_profile(settings, args.profile)
@@ -215,7 +266,7 @@ def main():
     )
     try:
         result = configure_camera(client, profile_name=args.profile,
-                                  profile_path=str(profile_path), octet=args.ip,
+                                  profile_path=str(profile_path), octet=octet,
                                   settings=settings)
     except CameraError as e:
         log.error("Provisioning FAILED: %s", e)

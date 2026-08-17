@@ -36,7 +36,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from bench_core import LOG_LINE_FORMAT, normalize_mac
+from bench_core import LOG_LINE_FORMAT, mac_from_arp_output
 from bench_core.central import spool_run_record, start_central_uploader
 from bench_core.config_check import check_config, config_fingerprint
 
@@ -247,29 +247,9 @@ class OperatorBody(BaseModel):
 
 
 # ── MAC reading (ARP) ───────────────────────────────────────────────────────
-
-def canonical_mac(mac: str) -> str:
-    """Zero-pad each octet then strip separators, so macOS's '0:1e:42:aa:bb:1',
-    Windows's '20-97-27-2f-df-f0' and a manifest's '00:1E:42:AA:BB:01' all
-    compare equal."""
-    parts = re.split(r"[:-]", mac)
-    if len(parts) == 6:
-        mac = ":".join(p.zfill(2) for p in parts)
-    return normalize_mac(mac)
-
-
-_MAC_RE = re.compile(r"([0-9a-fA-F]{1,2}(?:[:-][0-9a-fA-F]{1,2}){5})")
-
-
-def mac_from_arp_output(text: str) -> Optional[str]:
-    """First usable MAC in arp/ip-neigh output. Skips entries that mean 'no
-    answer' rather than a device: all-zero (unresolved) and broadcast."""
-    for m in _MAC_RE.finditer(text or ""):
-        mac = canonical_mac(m.group(1))
-        if mac not in ("000000000000", "ffffffffffff"):
-            return mac
-    return None
-
+# canonical_mac / mac_from_arp_output (and the whole-cache arp_table +
+# find_ip_by_mac) live in bench_core next to the other host-side network
+# helpers, so a device client can use them without importing this web shell.
 
 def read_device_mac(ip: str) -> Optional[str]:
     """LAN MAC of `ip` via the ARP table (pinging first to populate it).

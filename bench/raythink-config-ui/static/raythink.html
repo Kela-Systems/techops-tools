@@ -12,7 +12,7 @@
   <header style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;">
     <div class="brand">
       <img class="brand-logo" src="/shared/favicon.png" alt="Kela Bench">
-      <h1>Raythink Camera Configurator<span class="sub">Connect a camera (192.168.1.123) &rarr; pick profile + IP &rarr; configured &rarr; next.</span></h1>
+      <h1>Raythink Camera Configurator<span class="sub">Connect a camera (192.168.1.123) &rarr; pick profile + address &rarr; configured &rarr; next.</span></h1>
     </div>
     <span id="conn" class="conn">connecting…</span>
   </header>
@@ -32,6 +32,7 @@
     <div class="seg" id="ipModeSeg">
       <button type="button" data-mode="manual" onclick="setMode('manual')">Manual</button>
       <button type="button" data-mode="cycle" onclick="setMode('cycle')">Cycle 30&rarr;50&rarr;30</button>
+      <button type="button" data-mode="dhcp" onclick="setMode('dhcp')">DHCP</button>
     </div>
     <div class="preview" id="ipModeHint">&nbsp;</div>
   </div>
@@ -129,9 +130,14 @@ async function submitConfigure(){
 function updatePreview(){
   const s = curState;
   const prefix = s.subnet_prefix || '192.168.88';
-  const cycle = s.ip_mode === 'cycle';
-  const octet = cycle ? s.cycle_next : parseInt($('octet').value, 10);
+  const mode = s.ip_mode || 'manual';
   $('octetHint').textContent = `allowed ${s.octet_min}–${s.octet_max}`;
+  if (mode === 'dhcp'){
+    $('namePreview').innerHTML = `Will switch the camera to <b>DHCP</b>, set NTP `
+      + `<b>${esc(s.ntp_server||'—')}</b>, and change the password.`;
+    return;
+  }
+  const octet = mode === 'cycle' ? s.cycle_next : parseInt($('octet').value, 10);
   const ipOk = octet != null && !isNaN(octet) && octet >= s.octet_min && octet <= s.octet_max;
   const ip = ipOk ? `${prefix}.${octet}` : '—';
   $('namePreview').innerHTML = `Will set IP <b>${esc(ip)}</b>, NTP <b>${esc(s.ntp_server||'—')}</b>, `
@@ -143,9 +149,19 @@ function renderIpMode(s){
   const prefix = s.subnet_prefix || '192.168.88';
   document.querySelectorAll('#ipModeSeg button').forEach(b =>
     b.classList.toggle('active', b.dataset.mode === mode));
-  $('ipModeHint').innerHTML = mode === 'cycle'
-    ? `Next camera gets <b>${prefix}.${s.cycle_next}</b>, then auto-advances on each success (wraps ${s.octet_max}&rarr;${s.octet_min}).`
-    : `Enter the last octet (${s.octet_min}&ndash;${s.octet_max}) for each camera.`;
+  const hints = {
+    cycle: `Next camera gets <b>${prefix}.${s.cycle_next}</b>, then auto-advances on each success (wraps ${s.octet_max}&rarr;${s.octet_min}).`,
+    dhcp: `Camera keeps the address its own DHCP server gives it. Nothing here picks it, so the bench finds the camera again by MAC on <b>${esc((s.dhcp_subnets||[]).join(', ')||'—')}</b> to verify it.`,
+    manual: `Enter the last octet (${s.octet_min}&ndash;${s.octet_max}) for each camera.`,
+  };
+  $('ipModeHint').innerHTML = hints[mode] || hints.manual;
+}
+
+// A DHCP run records no IP (the lease is the DHCP server's to change), so show
+// how it was addressed rather than an empty cell.
+function addrLabel(device){
+  const d = device || {};
+  return d.ip || (d.ip_mode === 'dhcp' ? 'DHCP' : '—');
 }
 
 function fillProfiles(s){
@@ -184,7 +200,7 @@ function render(s){
   if (showForm){
     fillProfiles(s);
     fc.style.display = '';
-    $('octetField').style.display = (s.ip_mode === 'cycle') ? 'none' : '';
+    $('octetField').style.display = (s.ip_mode === 'manual') ? '' : 'none';
     if (s.active_mac && s.active_mac !== lastFormMac){
       lastFormMac = s.active_mac;
       if (s.ip_mode === 'manual' && !$('octet').value) $('octet').value = s.cycle_next || s.octet_min || '';
@@ -215,7 +231,7 @@ function render(s){
     body.innerHTML = rows.map(r=>`<tr>
       <td>${badge(r.status)}</td><td>${esc((r.device||{}).hostname||'')}</td>
       <td>${esc((r.device||{}).profile||'—')}</td>
-      <td class="mono">${esc((r.device||{}).ip||'—')}</td>
+      <td class="mono">${esc(addrLabel(r.device))}</td>
       <td class="mono">${esc(r.serial||'—')}</td><td>${esc(r.firmware||'—')}</td>
       <td>${r.duration_s!=null?fmtDur(r.duration_s):'—'}</td>
       <td class="muted">${esc(r.time||'')}</td></tr>`).join('');
@@ -228,7 +244,7 @@ function render(s){
     $('identity').innerHTML = `
       <span>camera <b>${esc((lr.device||{}).hostname||'—')}</b></span>
       <span>profile <b>${esc((lr.device||{}).profile||'—')}</b></span>
-      <span>IP <b class="mono">${esc((lr.device||{}).ip||'—')}</b></span>
+      <span>IP <b class="mono">${esc(addrLabel(lr.device))}</b></span>
       <span>serial <b class="mono">${esc(lr.serial||'—')}</b></span>
       <span>fw <b class="mono">${esc(lr.firmware||'—')}</b></span>` +
       (lr.duration_s != null ? `<span>took <b>${fmtDur(lr.duration_s)}</b></span>` : '');
@@ -247,6 +263,7 @@ function render(s){
       <span>IP range <b>${esc(s.subnet_prefix||'192.168.88')}.${esc(s.octet_min)}–${esc(s.octet_max)}</b></span>
       <span>gateway <b>${esc(s.gateway||'—')}</b></span>
       <span>netmask <b>${esc(s.netmask||'—')}</b></span>
+      <span>DHCP scan <b>${esc((s.dhcp_subnets||[]).join(', ')||'—')}</b></span>
       <span>NTP <b>${esc(s.ntp_server||'—')}</b></span>
       <span>password <b>${esc(cfg.new_password||'(unset)')}</b></span>
       <span>profiles <b>${esc((s.profiles||[]).join(', ')||'—')}</b></span>`;

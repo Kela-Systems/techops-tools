@@ -53,12 +53,33 @@ def poll():
     asyncio.run(run())
 
 
-def run_inputs(octet=30, advance_cycle=False, ok=True, monkeypatch=None):
-    monkeypatch.setattr(cfg, "_do_configure", lambda inputs: fake_result(ok=ok))
+def run_inputs(octet=30, advance_cycle=False, ok=True, monkeypatch=None,
+               ip_mode="manual", result=None):
+    monkeypatch.setattr(cfg, "_do_configure",
+                        lambda inputs: result or fake_result(ok=ok))
     inputs = {"profile": "lan", "profile_path": "x", "octet": octet,
-              "target_ip": f"192.168.88.{octet}", "advance_cycle": advance_cycle,
+              "ip_mode": ip_mode,
+              "target_ip": "" if octet is None else f"192.168.88.{octet}",
+              "advance_cycle": advance_cycle,
               "host": HOST, "mac": "aa:bb:cc:dd:ee:03"}
     asyncio.run(cfg.execute_run(inputs, "test"))
+
+
+def configure(monkeypatch, **body):
+    """POST /api/configure through the real route, with the pipeline stubbed."""
+    monkeypatch.setattr(cfg, "_do_configure", lambda inputs: fake_result())
+    captured = {}
+    real_execute = cfg.execute_run
+
+    async def execute_run(inputs, label):
+        captured["inputs"] = inputs
+        captured["label"] = label
+        return await real_execute(inputs, label)
+
+    monkeypatch.setattr(cfg, "execute_run", execute_run)
+    handler = next(r.endpoint for r in mod.app.routes
+                   if getattr(r, "path", "") == "/api/configure")
+    return asyncio.run(handler(mod.ConfigureBody(**body))), captured
 
 
 def test_waiting_to_detected_and_back(monkeypatch):
@@ -111,3 +132,81 @@ def test_advance_cycle_wraps_at_max():
 
 def test_hostname_uses_octet():
     assert cfg.hostname_for({"octet": 30}) == "raythink-30"
+
+
+# ── DHCP mode ────────────────────────────────────────────────────────────────
+
+def test_hostname_for_a_dhcp_run():
+    assert cfg.hostname_for({"octet": None}) == "raythink-dhcp"
+
+
+def test_dhcp_run_records_no_ip(monkeypatch):
+    """The bench assigns no address on a DHCP run, so the record carries none —
+    only how the camera was addressed."""
+    result = fake_result(hostname="raythink-dhcp")
+    result["ip_mode"] = "dhcp"
+    run_inputs(octet=None, ip_mode="dhcp", monkeypatch=monkeypatch, result=result)
+
+    entry = cfg.state["history"][0]
+    assert entry["status"] == "ok"
+    assert entry["device"]["hostname"] == "raythink-dhcp"
+    assert entry["device"]["ip"] == ""
+    assert entry["device"]["ip_mode"] == "dhcp"
+
+
+def test_static_run_records_the_mode_too(monkeypatch):
+    run_inputs(octet=35, monkeypatch=monkeypatch)
+    assert cfg.state["history"][0]["device"]["ip_mode"] == "static"
+
+
+def test_dhcp_run_never_burns_a_cycle_number(monkeypatch):
+    cfg.state["cycle_next"] = 30
+    run_inputs(octet=None, ip_mode="dhcp", monkeypatch=monkeypatch)
+    assert cfg.state["cycle_next"] == 30
+
+
+# ── the configure route's mode handling ──────────────────────────────────────
+
+def test_configure_dhcp_needs_no_octet(monkeypatch):
+    set_detection(monkeypatch, True)
+    poll()
+    _out, captured = configure(monkeypatch, profile="lan", ip_mode="dhcp")
+
+    assert captured["inputs"]["octet"] is None
+    assert captured["inputs"]["target_ip"] == ""
+    assert "DHCP" in captured["label"]
+
+
+def test_configure_dhcp_refused_without_a_mac(monkeypatch):
+    """DHCP is verified by finding the camera again by MAC — without one there
+    is nothing to find it by, so the run is refused up front."""
+    set_detection(monkeypatch, True, mac=None)
+    poll()
+    out, captured = configure(monkeypatch, profile="lan", ip_mode="dhcp")
+
+    assert "MAC" in out["error"]
+    assert "inputs" not in captured
+
+
+def test_configure_manual_still_requires_an_octet_in_range(monkeypatch):
+    set_detection(monkeypatch, True)
+    poll()
+    out, _ = configure(monkeypatch, profile="lan", ip_mode="manual")
+    assert "octet" in out["error"]
+
+    out, _ = configure(monkeypatch, profile="lan", ip_mode="manual", octet=99)
+    assert "out of range" in out["error"]
+
+
+def test_configure_persists_the_chosen_mode(monkeypatch):
+    set_detection(monkeypatch, True)
+    poll()
+    configure(monkeypatch, profile="lan", ip_mode="dhcp")
+    assert cfg.state["ip_mode"] == "dhcp"
+
+
+def test_unknown_mode_falls_back_to_manual():
+    assert mod.norm_ip_mode("dhcp") == "dhcp"
+    assert mod.norm_ip_mode("cycle") == "cycle"
+    for junk in ("", "static", "nonsense", None):
+        assert mod.norm_ip_mode(junk) == "manual"

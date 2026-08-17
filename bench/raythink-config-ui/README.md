@@ -3,7 +3,7 @@
 Bench tool for provisioning Raythink thermal cameras, one at a time. Same
 connect → configure → next flow as the other bench tools, with **no manifest
 CSV** — when a camera is detected, you pick a config **profile** (LAN or
-Cellular) and the **static IP**.
+Cellular) and how it should be **addressed** (a static IP, or DHCP).
 
 A fresh camera ships on the static IP `192.168.1.123` with `admin/admin` and
 speaks the Dahua-OEM **RPC2 JSON API** (the same protocol its own web UI uses).
@@ -24,25 +24,49 @@ speaks the Dahua-OEM **RPC2 JSON API** (the same protocol its own web UI uses).
    isn't), so the step 2 password change does **not** touch it. The tool sets it
    over the standard ONVIF `SetUser` op, authenticating with the factory ONVIF
    password (the same default as the web login, `admin`). Idempotent.
-6. **Last step:** move the camera to a static `192.168.88.XX`
-  (gateway `192.168.88.1`, mask `255.255.255.0`). The connection drops by
-   design; success is confirmed by reaching the camera on the new address (the
-   laptop's DHCP lease is renewed so it can follow).
+6. **Last step:** address the camera — either move it to a static
+  `192.168.88.XX` (gateway `192.168.88.1`, mask `255.255.255.0`) or switch it to
+   **DHCP**. Either way the connection drops by design; see below for how each
+   one is confirmed.
 7. Verify every setting by reading it back off the camera — including an
    authenticated **ONVIF `GetUsers`** call to confirm the ONVIF login is
    `admin/Kelafield123!`.
 
-The IP move runs last because the camera leaves `192.168.1.123` the moment it
-applies.
+The addressing step runs last because the camera leaves `192.168.1.123` the
+moment it applies.
 
-### Choosing the static IP
+### Choosing how the camera is addressed
 
-`XX` is in the range `30-50` (configurable). Two modes in the UI:
+Three modes in the UI, chosen any time (even before a camera is plugged in) and
+persisted to `ip_state.json` so the choice survives a restart:
 
-- **Manual** — type the last octet.
+- **Manual** — type the last octet of the static IP. `XX` is in the range
+`30-50` (configurable).
 - **Cycle** — the tool auto-assigns `30`, then `31`, … `50`, then wraps back to
-`30`. The counter is persisted to `ip_state.json` so it survives restarts, and
-only advances on a successful run (a failed camera keeps its slot for a retry).
+`30`. The counter only advances on a successful run (a failed camera keeps its
+slot for a retry).
+- **DHCP** — the camera keeps whatever address its own DHCP server gives it, for
+a site that addresses its cameras that way. No octet to choose.
+
+Both static modes are confirmed the obvious way: the tool reconnects on the
+address it chose (renewing the laptop's DHCP lease so it can follow). **DHCP has
+nothing to reconnect to** — nothing on the bench picked the address — so the
+tool finds the camera again by the one thing that didn't change, its **MAC**: it
+sweeps `dhcp.scan_subnets` for a host answering on the camera's web port whose
+MAC matches, for up to `dhcp.lease_timeout` seconds, then verifies everything on
+whatever address it landed on. Consequences worth knowing:
+
+- The bench PC must be on a subnet listed in `dhcp.scan_subnets`, and that
+subnet needs a **DHCP server** — otherwise the camera is switched to DHCP but
+the run reports the lease as not found and can verify nothing on it. (The
+camera's previous static address is deliberately left in place as its fallback,
+so it does not end up unreachable.)
+- A camera whose MAC the bench never read over ARP is **refused** for DHCP up
+front, with a message saying so — there would be no way to check the result.
+- A DHCP run is named `raythink-dhcp` and its run record carries **no IP**: the
+lease is the DHCP server's to change, so recording it as "the address we
+assigned" would be a lie. The address it actually landed on is in the run's
+verification rows and in the log.
 
 ## Setup
 
@@ -56,33 +80,39 @@ On the bench PC you don't run this by hand — the top-level launcher
 every tool together.
 
 The laptop's adapter must be on the `192.168.1.x` subnet to reach the camera at
-`192.168.1.123`; after the run the camera moves to `192.168.88.x`, so be able to
-reach that subnet (DHCP or a `192.168.88.x` address) to confirm the move.
+`192.168.1.123`; after the run the camera is on `192.168.88.x` (or on a DHCP
+lease), so be able to reach that subnet (DHCP or a `192.168.88.x` address) to
+confirm the move.
 
 ### Config profiles
 
 Each profile is a config JSON exported from a reference camera
 (*Setup > System > Export*), stored under `config/profiles/` (the paths in the
 config are relative to `config/`). Keep the camera's **Network/IP table out** of
-these files — the tool sets the static IP (and NTP) itself, after the import. The
-profile exports ship committed (no secrets); only the real `raythink.config.json`
-(copied from the example) is gitignored.
+these files — the tool sets the address (static or DHCP) and NTP itself, after
+the import. The profile exports ship committed (no secrets); only the real
+`raythink.config.json` (copied from the example) is gitignored.
 
-There is also a single-camera CLI:
+There is also a single-camera CLI (`--ip` and `--dhcp` are the two ways to
+address it, exactly one required):
 
 ```
 python3 raythink_configure.py --profile lan --ip 30
+python3 raythink_configure.py --profile lan --dhcp
 ```
 
 ## Shared code
 
 This folder must sit next to `bench-core`, the shared local package it installs
 (`-e ./bench-core[ui]` from the bench root). That package provides the bench-UI base (`bench_ui` —
-detection loop, run machinery, routes, WebSocket, step logging) and the host
-DHCP-renew helpers. `raythink_camera.py` adds the camera client (RPC2 login,
-config import, NTP, static-IP move, verification); `raythink_configure.py` adds
-the pipeline + CLI; `raythink_app.py` is the `BenchConfigurator` subclass (the
-profile/IP-mode form and the persisted cycle counter).
+detection loop, run machinery, routes, WebSocket, step logging) and the host-side
+network helpers: the DHCP-renew ones, plus `find_ip_by_mac` (sweep a subnet, read
+the ARP cache, match a MAC) which is what finds a camera again after it is put on
+DHCP. `raythink_camera.py` adds the camera client (RPC2 login, config import,
+NTP, the static-IP move and the DHCP switch, verification);
+`raythink_configure.py` adds the pipeline + CLI; `raythink_app.py` is the
+`BenchConfigurator` subclass (the profile/IP-mode form and the persisted cycle
+counter).
 
 Per-camera logs land in `logs/` (one JSON per camera + a rolling
 `raythink-config.log`).

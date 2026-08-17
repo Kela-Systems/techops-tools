@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to raythink.config.json (gitignored) and adjust as needed. Shared settings applied to every Raythink camera; the config profile (LAN/Cellular) and the static-IP octet are chosen in the UI per camera (one camera at a time).",
+  "_comment": "Copy to raythink.config.json (gitignored) and adjust as needed. Shared settings applied to every Raythink camera; the config profile (LAN/Cellular) and the addressing (static octet, or DHCP) are chosen in the UI per camera (one camera at a time).",
 
   "host": "192.168.1.123",
   "username": "admin",
@@ -13,7 +13,7 @@
   "ntp_server": "192.168.88.10",
 
   "static": {
-    "_comment": "The camera moves to subnet_prefix.<octet> as the LAST step (the connection drops; the tool reconnects on the new address and renews the laptop's DHCP lease). octet is chosen in the UI: 'manual' = type it, 'cycle' = auto 30 -> 31 -> ... -> 50 -> 30. default_mode sets which the UI opens on.",
+    "_comment": "The camera moves to subnet_prefix.<octet> as the LAST step (the connection drops; the tool reconnects on the new address and renews the laptop's DHCP lease). octet is chosen in the UI: 'manual' = type it, 'cycle' = auto 30 -> 31 -> ... -> 50 -> 30. default_mode sets which mode the UI opens on ('manual', 'cycle' or 'dhcp').",
     "subnet_prefix": "192.168.88",
     "gateway": "192.168.88.1",
     "netmask": "255.255.255.0",
@@ -22,7 +22,13 @@
     "default_mode": "manual"
   },
 
-  "_comment_profiles": "Each profile is a config JSON exported from a reference camera (Setup > System > Export), stored under config/profiles/ (paths are relative to config/). Import replays each config table via setConfig. The profile exports ship committed (no secrets). Keep the device's Network/IP table OUT of these files — the tool sets the static IP and NTP itself, after the import.",
+  "dhcp": {
+    "_comment": "Used by the UI's DHCP mode, where the camera keeps the address its own DHCP server hands out instead of a bench-assigned static one. Because nothing here chose that address, the tool finds the camera again by MAC: it sweeps scan_subnets (CIDR) for up to lease_timeout seconds, then verifies on whatever it landed on. List the subnet(s) the lease can come from — the bench subnet first, then the factory one (a camera that never gets a lease falls back to its previous static address).",
+    "scan_subnets": ["192.168.88.0/24", "192.168.1.0/24", "192.168.2.0/24"],
+    "lease_timeout": 180
+  },
+
+  "_comment_profiles": "Each profile is a config JSON exported from a reference camera (Setup > System > Export), stored under config/profiles/ (paths are relative to config/). Import replays each config table via setConfig. The profile exports ship committed (no secrets). Keep the device's Network/IP table OUT of these files — the tool sets the address (static or DHCP) and NTP itself, after the import.",
   "profiles": {
     "lan": "profiles/lan.json",
     "cellular": "profiles/cellular.json"

@@ -49,6 +49,7 @@ except ImportError:
     sys.exit("This script needs 'requests'.  Install it with:  pip install requests")
 
 from bench_core import (
+    find_ip_by_mac,
     format_verification,
     host_iface_for,
     install_log_context,
@@ -437,14 +438,11 @@ class RaythinkCameraClient:
                               f"{err.get('code')} {err.get('message', '')}".strip())
         log.info("Camera clock set to %s.", now)
 
-    # --- static IP (LAST: drops the connection) -----------------------------
-    def set_static_ip(self, ip: str, netmask: str, gateway: str, wait: int = 120) -> dict:
-        """Move the camera to a static IP. We are talking to it over that very
-        interface, so the change drops the connection by design: we read-modify-
-        write the Network table, fire setConfig, then confirm the device answers
-        on the NEW address (renewing the host's DHCP lease so the laptop can
-        follow). Returns a verification-style check; never raises after the write
-        (the device is moving whether we can still see it or not)."""
+    # --- addressing (LAST: drops the connection) ----------------------------
+    def _network_table(self) -> tuple[dict, dict]:
+        """The device's Network config table and the default interface's section
+        inside it — both mutable, ready to hand back to setConfig. The interface
+        section is created if the device didn't report one."""
         table = self._rpc("configManager.getConfig", {"name": "Network"}).get(
             "params", {}).get("table", {})
         if not isinstance(table, dict):
@@ -454,12 +452,40 @@ class RaythinkCameraClient:
         if not isinstance(eth, dict):
             eth = {}
             table[iface] = eth
+        return table, eth
+
+    @staticmethod
+    def _set_dhcp_flags(eth: dict, enabled: bool) -> None:
+        """Flip DHCP on the interface section. Firmwares disagree on the field
+        name, so write DhcpEnable always and EnableDhcp only when the device
+        actually uses it."""
+        eth["DhcpEnable"] = enabled
+        if "EnableDhcp" in eth:
+            eth["EnableDhcp"] = enabled
+
+    def _apply_network(self, table: dict, what: str) -> None:
+        """Write the Network table back. The reply may never arrive — the address
+        changes mid-request — so a transport error means 'the move started', not
+        a failure."""
+        try:
+            self._rpc("configManager.setConfig",
+                      {"name": "Network", "table": table, "options": []},
+                      raise_on_error=False)
+        except CameraError as e:
+            log.info("Connection dropped applying %s (expected): %s", what, e)
+
+    def set_static_ip(self, ip: str, netmask: str, gateway: str, wait: int = 120) -> dict:
+        """Move the camera to a static IP. We are talking to it over that very
+        interface, so the change drops the connection by design: we read-modify-
+        write the Network table, fire setConfig, then confirm the device answers
+        on the NEW address (renewing the host's DHCP lease so the laptop can
+        follow). Returns a verification-style check; never raises after the write
+        (the device is moving whether we can still see it or not)."""
+        table, eth = self._network_table()
 
         # Two known schemas: a nested IPAddress object, or flat fields. Support
         # both by writing whichever the device already uses.
-        eth["DhcpEnable"] = False
-        if "EnableDhcp" in eth:
-            eth["EnableDhcp"] = False
+        self._set_dhcp_flags(eth, False)
         if isinstance(eth.get("IPAddress"), dict):
             addr = eth["IPAddress"]
             # nested keys also vary: IPAddress vs Address
@@ -477,14 +503,7 @@ class RaythinkCameraClient:
         iface_host = host_iface_for(self.host)  # resolve while still reachable
         log.info("Moving the camera from %s to %s — the connection will drop ...",
                  self.host, ip)
-        # The reply may never arrive (the IP changes mid-request); treat a
-        # transport error as "the move started".
-        try:
-            self._rpc("configManager.setConfig",
-                      {"name": "Network", "table": table, "options": []},
-                      raise_on_error=False)
-        except CameraError as e:
-            log.info("Connection dropped applying the IP (expected): %s", e)
+        self._apply_network(table, "the IP")
 
         # Follow the device to its new address.
         self.host = ip
@@ -506,6 +525,63 @@ class RaythinkCameraClient:
                     "check the laptop has an address in that subnet.", ip, wait)
         return {"item": "static IP", "expected": ip,
                 "actual": f"no answer on {ip} after {wait}s (laptop subnet?)", "ok": False}
+
+    def set_dhcp(self, *, mac: str, subnets: list[str], wait: int = 180) -> dict:
+        """Switch the camera to DHCP — the alternative last step to
+        set_static_ip, for a site where the camera is meant to take its address
+        from the local DHCP server rather than a bench-assigned one.
+
+        Same shape as the static move (read-modify-write the Network table, fire
+        setConfig, expect the connection to drop), with one difference that
+        drives everything else: we don't know where the camera reappears. So
+        instead of following it to an address we chose, we sweep `subnets` for
+        its `mac` until its lease is up, then repoint the client at whatever it
+        got. The static IP/mask/gateway fields are left untouched on purpose —
+        the camera falls back to them if no lease ever arrives, which is a more
+        useful failure than an unreachable camera with no address at all.
+
+        Returns a verification-style check; never raises after the write."""
+        table, eth = self._network_table()
+        self._set_dhcp_flags(eth, True)
+
+        iface_host = host_iface_for(self.host)  # resolve while still reachable
+        log.info("Switching the camera at %s to DHCP — the connection will drop ...",
+                 self.host)
+        self._apply_network(table, "DHCP")
+
+        row = {"item": "DHCP lease", "expected": "an address from the DHCP server"}
+        if not mac:
+            # Without a MAC there is nothing stable to search for: the camera is
+            # on DHCP now, but this run can't say where or verify anything on it.
+            log.error("No MAC known for this camera — cannot find it again after "
+                      "the switch to DHCP.")
+            return {**row, "actual": "switched to DHCP, but no MAC was known to "
+                                     "find the camera again", "ok": False}
+
+        log.info("Looking for the camera's DHCP lease by MAC %s on %s ...",
+                 mac, ", ".join(subnets) or "(no subnets configured)")
+        deadline = time.time() + wait
+        time.sleep(5)
+        renew_host_dhcp(iface_host)
+        renewed_again = False
+        while time.time() < deadline:
+            found = find_ip_by_mac(mac, subnets, port=self._port())
+            if found:
+                log.info("Camera took the DHCP lease %s.", found)
+                self.host = found
+                self.base = f"{self.scheme}://{found}"
+                return {**row, "actual": f"answering on {found}", "ok": True}
+            if not renewed_again and time.time() > deadline - wait / 2:
+                renew_host_dhcp(iface_host)
+                renewed_again = True
+            time.sleep(3)
+        log.warning("No lease found for MAC %s on %s within %ds — the camera is on "
+                    "DHCP, but nothing could be verified on it.",
+                    mac, ", ".join(subnets), wait)
+        return {**row, "actual": f"no host with MAC {mac} answering on "
+                                 f"{', '.join(subnets)} after {wait}s (is there a "
+                                 f"DHCP server on the bench subnet, and is the "
+                                 f"laptop on it?)", "ok": False}
 
     # --- ONVIF (a SEPARATE credential store from the system user) -----------
     # IMPORTANT: ONVIF keeps its own credential, distinct from the system/web
@@ -604,12 +680,18 @@ class RaythinkCameraClient:
 
     # --- verification -------------------------------------------------------
     def verify_configuration(self, *, new_password: str, ntp_server: str,
-                             ip: str, netmask: str, gateway: str,
+                             ip: str = "", netmask: str = "", gateway: str = "",
+                             dhcp: bool = False,
                              profile_name: str = "", imported: Optional[dict] = None,
                              check_onvif: bool = True) -> list[dict]:
         """Re-read the settings we changed and confirm they took. Runs AFTER the
-        IP move, so it talks to the device on its new address (we are already
-        re-pointed there). Returns {item, expected, actual, ok} rows."""
+        addressing change, so it talks to the device on its new address (we are
+        already re-pointed there). Returns {item, expected, actual, ok} rows.
+
+        With `dhcp`, the address checks confirm the camera is on DHCP and holds a
+        lease; the mask and gateway are reported but not asserted (the DHCP
+        server chose them, so there is nothing of ours to compare against) —
+        `ip`/`netmask`/`gateway` are then unused."""
         checks: list[dict] = []
 
         def add(item, expected, actual, ok):
@@ -656,12 +738,20 @@ class RaythinkCameraClient:
                 got_ip = addr or ""
                 got_mask = eth.get("SubnetMask", "")
                 got_gw = eth.get("DefaultGateway", "")
-            dhcp = eth.get("DhcpEnable", eth.get("EnableDhcp"))
-            add("static IP", ip, f"{got_ip} (dhcp={dhcp})", got_ip == ip)
-            add("subnet mask", netmask, got_mask or "?", got_mask == netmask)
-            add("gateway", gateway, got_gw or "?", got_gw == gateway)
+            got_dhcp = eth.get("DhcpEnable", eth.get("EnableDhcp"))
+            if dhcp:
+                add("DHCP", "enabled, with a lease",
+                    f"{got_ip or 'no address'} (dhcp={got_dhcp})",
+                    bool(got_dhcp) and bool(got_ip))
+                add("subnet mask", "(from DHCP)", got_mask or "?", None)
+                add("gateway", "(from DHCP)", got_gw or "?", None)
+            else:
+                add("static IP", ip, f"{got_ip} (dhcp={got_dhcp})", got_ip == ip)
+                add("subnet mask", netmask, got_mask or "?", got_mask == netmask)
+                add("gateway", gateway, got_gw or "?", got_gw == gateway)
         except CameraError as e:
-            add("static IP", ip, f"read failed: {e}", False)
+            add("DHCP" if dhcp else "static IP", "enabled, with a lease" if dhcp else ip,
+                f"read failed: {e}", False)
 
         return checks
 

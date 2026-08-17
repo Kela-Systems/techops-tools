@@ -101,7 +101,7 @@ window (Windows) or press Ctrl+C in the terminal (macOS/Linux).
 | `magos-config-ui/`    | Magos **APU**                | 8002 | factory IP `192.168.40.60`                             |
 | `otd-config-ui/`      | Teltonika **OTD500**         | 8003 | one device at a time, factory `192.168.1.1`            |
 | `rutm-config-ui/`     | Teltonika **RUTM08**         | 8004 | one device at a time, factory `192.168.1.1`            |
-| `raythink-config-ui/` | Raythink **thermal camera**  | 8005 | factory `192.168.1.123`, RPC2 API                      |
+| `raythink-config-ui/` | Raythink **thermal camera**  | 8005 | factory `192.168.1.123`, RPC2 API; static IP or DHCP    |
 | `speaker-config-ui/`  | Provision-ISR **IP speaker** | 8006 | arrives on **DHCP** — auto-scans `192.168.1/2/88.0/24` |
 
 
@@ -114,7 +114,9 @@ the one launcher.
 bench-UI base (`bench_core.bench_ui.BenchConfigurator` — the FastAPI shell,
 detection-loop wrapper, WebSocket state feed, step logging), the Teltonika
 RutOS device client, and the small shared helpers (`load_settings`,
-`make_step_runner`, `tcp_port_open`, the logging context, `format_verification`).
+`make_step_runner`, `tcp_port_open`, the host-side network helpers —
+DHCP renew, `arp_table`, `find_ip_by_mac` for locating a device that moved to
+an address nothing here chose — the logging context, `format_verification`).
 Every tool installs it editable (`-e ./bench-core[ui]`), which is why the tool
 folders must stay siblings inside `bench/`. The Raythink camera and
 Provision-ISR speaker tools reuse the same bench-UI base but ship their own

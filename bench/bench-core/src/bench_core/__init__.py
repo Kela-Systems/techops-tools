@@ -33,6 +33,7 @@ the Teltonika dev portal (https://developers.teltonika-networks.com/).
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
@@ -42,6 +43,7 @@ import socket
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
 try:
@@ -462,6 +464,41 @@ def mac_with_colons(mac: Optional[str]) -> str:
     return ":".join(h[i:i + 2] for i in range(0, 12, 2))
 
 
+def canonical_mac(mac: str) -> str:
+    """Zero-pad each octet then strip separators, so macOS's '0:1e:42:aa:bb:1',
+    Windows's '20-97-27-2f-df-f0' and a manifest's '00:1E:42:AA:BB:01' all
+    compare equal."""
+    parts = re.split(r"[:-]", mac)
+    if len(parts) == 6:
+        mac = ":".join(p.zfill(2) for p in parts)
+    return normalize_mac(mac)
+
+
+_MAC_RE = re.compile(r"([0-9a-fA-F]{1,2}(?:[:-][0-9a-fA-F]{1,2}){5})")
+
+# One "<ip> ... <mac>" row of an ARP/neighbour listing. The gap between the two
+# is deliberately loose (but never crosses a line): the three formats we read
+# put different words in it — macOS '? (10.0.0.5) at 0:1e:42:aa:bb:1 on en0',
+# Windows '10.0.0.5   00-1e-42-aa-bb-01  dynamic', and Linux's `ip neigh`
+# '10.0.0.5 dev eth0 lladdr 00:1e:42:aa:bb:01 REACHABLE' (whose 'eth0' is why
+# the gap can't be restricted to non-digits).
+_ARP_ROW_RE = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})[^\n]*?"
+                         r"([0-9a-fA-F]{1,2}(?:[:-][0-9a-fA-F]{1,2}){5})")
+
+# MACs that mean "nothing answered", not a device.
+_NON_MACS = ("000000000000", "ffffffffffff")
+
+
+def mac_from_arp_output(text: str) -> Optional[str]:
+    """First usable MAC in arp/ip-neigh output. Skips entries that mean 'no
+    answer' rather than a device: all-zero (unresolved) and broadcast."""
+    for m in _MAC_RE.finditer(text or ""):
+        mac = canonical_mac(m.group(1))
+        if mac not in _NON_MACS:
+            return mac
+    return None
+
+
 def rms_status_connected(raw: str) -> bool:
     """True if a `ubus call rms* status` payload indicates the device is connected
     to RMS. The exact schema varies by firmware, so we (1) check common string
@@ -616,6 +653,75 @@ def renew_host_dhcp(iface: Optional[str]) -> None:
             _DHCP_RENEW_UNAVAILABLE = True
     except Exception:  # noqa: BLE001 — never let a host-side nicety kill a run
         _DHCP_RENEW_UNAVAILABLE = True
+
+
+# How wide/fast to sweep a bench subnet looking for one device. A /24 at these
+# settings costs ~1s, so a caller can afford to retry the whole sweep while a
+# device boots.
+SCAN_WORKERS = 128
+SCAN_TCP_TIMEOUT = 0.3
+
+
+def arp_table() -> dict[str, str]:
+    """{canonical MAC: IP} for every resolved entry in the host's ARP cache.
+
+    One listing covers the whole cache, so a caller looking for one device among
+    many candidate addresses reads it once instead of shelling out per address.
+    Best-effort: an empty dict when no listing command works."""
+    cmds = ([["arp", "-a"]] if sys.platform == "win32"
+            else [["arp", "-an"], ["ip", "neigh", "show"]])
+    for cmd in cmds:
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+        except Exception:  # noqa: BLE001 — try the next command / give up quietly
+            continue
+        table: dict[str, str] = {}
+        for ip, mac in _ARP_ROW_RE.findall(out or ""):
+            canon = canonical_mac(mac)
+            # First entry wins: a MAC listed on several interfaces (e.g. an
+            # alias route) resolves to the address the OS lists first.
+            if canon not in _NON_MACS:
+                table.setdefault(canon, ip)
+        if table:
+            return table
+    return {}
+
+
+def find_ip_by_mac(mac: str, subnets: list[str], *, port: int,
+                   timeout: float = SCAN_TCP_TIMEOUT,
+                   workers: int = SCAN_WORKERS) -> Optional[str]:
+    """The address of the host with `mac` on `subnets`, or None.
+
+    For a device that has moved somewhere we can't predict — it was just
+    switched to DHCP, say — so we have to find it by the one identifier that
+    doesn't change. TCP-probes every candidate address in parallel (which both
+    finds the live hosts and populates the host's ARP cache), then reads the
+    cache once and matches the MAC.
+
+    A hit must ALSO be answering on `port`, which is what makes this safe to
+    call repeatedly while a device boots: a stale cache entry still pointing at
+    the device's old address can't be mistaken for the new one."""
+    want = canonical_mac(mac or "")
+    if not want or want in _NON_MACS:
+        return None
+    candidates: list[str] = []
+    for subnet in subnets or []:
+        try:
+            candidates += [str(h) for h in
+                           ipaddress.ip_network(subnet, strict=False).hosts()]
+        except ValueError:
+            log.warning("Skipping invalid scan subnet %r.", subnet)
+    if not candidates:
+        return None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(tcp_port_open, ip, port, timeout): ip
+                   for ip in candidates}
+        open_hosts = {futures[f] for f in as_completed(futures) if f.result()}
+    if not open_hosts:
+        return None
+    found = arp_table().get(want)
+    return found if found in open_hosts else None
 
 
 class TeltonikaClient:
