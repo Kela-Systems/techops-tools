@@ -14,7 +14,8 @@
 #    --dir ~/kela-bench       (default: ~/kela-bench)
 #
 #  What it does (idempotent - safe to re-run over an existing install):
-#    1. checks for Python 3.10+ (the tools' floor)
+#    1. finds Python 3.10+ (the tools' floor), installing it via the
+#       platform package manager (brew / apt / dnf / yum / pacman) if missing
 #    2. downloads the release pinned on bench-central and extracts it
 #    3. writes .bench-station.json (station id + central URL) and seeds each
 #       tool's config from its committed *.example.* template
@@ -59,15 +60,70 @@ echo
 
 # ---- 1. Python 3.10+ (needed for extraction, the venv, and the tools) -------
 step 1 "Checking for Python 3.10+"
-PY=""
-for c in python3.13 python3.12 python3.11 python3.10 python3; do
-  command -v "$c" >/dev/null 2>&1 || continue
-  if "$c" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 10) else 1)' 2>/dev/null; then
-    PY="$(command -v "$c")"
-    break
-  fi
-done
-[ -n "$PY" ] || fail "Python 3.10+ was not found. Install it from https://www.python.org/downloads/ or 'brew install python@3.12', then re-run."
+
+# Echo the path of the newest available Python >= 3.10, or return 1.
+find_python() {
+  local c
+  for c in python3.13 python3.12 python3.11 python3.10 python3; do
+    command -v "$c" >/dev/null 2>&1 || continue
+    if "$c" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 10) else 1)' 2>/dev/null; then
+      command -v "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Best-effort install through the platform's package manager, mirroring the
+# winget fallback in setup-station.ps1. Never fatal on its own: the caller
+# re-runs find_python and falls back to the manual instructions, so an
+# unknown package manager or a distro whose python3 is older than 3.10 lands
+# on the same clear message as a machine with nothing installed at all.
+install_python() {
+  local sudo_cmd=""
+  case "$(uname -s)" in
+    Darwin)
+      command -v brew >/dev/null 2>&1 || return 1
+      brew install python@3.12 || return 1
+      # A Homebrew that was never added to the shell profile installs fine but
+      # leaves python3.12 off PATH; make it visible to the rest of this run.
+      PATH="$(brew --prefix)/bin:$PATH"
+      export PATH
+      ;;
+    Linux)
+      if [ "$(id -u)" -ne 0 ]; then
+        command -v sudo >/dev/null 2>&1 || return 1
+        sudo_cmd="sudo"
+      fi
+      # python3-venv is packaged separately on Debian/Ubuntu, and without it
+      # `python3 -m venv` fails later in step 4 rather than here.
+      if command -v apt-get >/dev/null 2>&1; then
+        $sudo_cmd apt-get update && \
+          $sudo_cmd apt-get install -y python3 python3-venv python3-pip || return 1
+      elif command -v dnf >/dev/null 2>&1; then
+        $sudo_cmd dnf install -y python3 python3-pip || return 1
+      elif command -v yum >/dev/null 2>&1; then
+        $sudo_cmd yum install -y python3 python3-pip || return 1
+      elif command -v pacman >/dev/null 2>&1; then
+        $sudo_cmd pacman -Sy --noconfirm python python-pip || return 1
+      else
+        return 1
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+PY="$(find_python)"
+if [ -z "$PY" ]; then
+  echo "    Python 3.10+ not found - installing it (this can take a few minutes)..."
+  install_python
+  PY="$(find_python)"
+fi
+[ -n "$PY" ] || fail "Python 3.10+ is required and could not be installed automatically.
+       macOS:         brew install python@3.12
+       Debian/Ubuntu: sudo apt-get install python3 python3-venv python3-pip
+       or from https://www.python.org/downloads/ — then re-run this script."
 echo "    using: $PY"
 
 # ---- 2. bench-central reachable + download the pinned bundle ----------------

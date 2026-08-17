@@ -80,16 +80,32 @@ function Find-Python {
 }
 $py = Find-Python
 if (-not $py) {
+    # Why the automatic install didn't produce a usable Python. Without it the
+    # only symptom of a blocked/absent winget source, a "no applicable
+    # installer" HRESULT or an interrupted download is the generic "install it
+    # by hand" message below, which sends the operator looking in the wrong place.
+    $reason = "winget is not available on this PC"
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host "    Python not found - installing via winget (this can take a few minutes)..."
-        winget install --id Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements
-        # winget updates PATH for NEW shells; pick up the install for this one.
-        $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                    [Environment]::GetEnvironmentVariable("Path", "User")
-        $py = Find-Python
+        $reason = $null
+        try {
+            winget install --id Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0) {
+                $reason = "winget exited with 0x$('{0:X8}' -f $LASTEXITCODE)"
+            }
+        } catch {
+            $reason = "winget failed: $($_.Exception.Message)"
+        }
+        if (-not $reason) {
+            # winget updates PATH for NEW shells; pick up the install for this one.
+            $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                        [Environment]::GetEnvironmentVariable("Path", "User")
+            $py = Find-Python
+            if (-not $py) { $reason = "winget reported success but no Python is on PATH" }
+        }
     }
     if (-not $py) {
-        Fail "Python 3.11+ is required. Install it from https://www.python.org/downloads/ (tick `"Add python.exe to PATH`") and re-run this script."
+        Fail "Python 3.11+ is required and could not be installed automatically ($reason). Install it from https://www.python.org/downloads/ (tick `"Add python.exe to PATH`") and re-run this script."
     }
 }
 Write-Host "    using: $($py.Exe) $($py.Args -join ' ')"
