@@ -1,0 +1,11 @@
+[Unit]
+Description=Kela bench fallback default route (no-op when LAN present)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kela-dummy-net.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
