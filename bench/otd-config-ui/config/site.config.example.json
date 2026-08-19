@@ -12,6 +12,28 @@
 
   "sim_4g_only": true,
 
+  "sim_switch": {
+    "_comment": "TEC-359 — automatic SIM failover. The device switches slot 1 <-> slot 2 on its own when the active SIM has no network, is denied/not inserted, fails the ICMP data check, drops below weak_signal_dbm, or hits its data limit. Sticky: it stays on whichever SIM works (no switch-back). Only the four values below are per-site; the rest of the rule set is fixed policy in bench_core.sim_switch_options().",
+    "_comment_firmware": "The sim_switch/quota_limit UCI option names are undocumented and were verified on FW 07.22.3 (bench_core.VERIFIED_SIM_SWITCH_FW). Provisioning a device on another firmware logs a warning — re-check with `uci export sim_switch` before trusting it.",
+    "enabled": true,
+    "check_interval": 30,
+    "check_count": 5,
+    "weak_signal_dbm": -105,
+    "icmp_host": "8.8.8.8",
+
+    "_comment_operators": "Per-operator data limits, applied on-device by /usr/bin/kela-quota-sync (deployed by the sim-switch steps, re-run at boot and every 10 min). SIMs are inserted in the field and swapped between slots, so the operator is detected per slot from the ICCID prefix and the limit follows the SIM, not the slot. data_limit_mb is in DEVICE MB, which are binary: 3000000 reads as 2.86 TB, so the values below keep ~7% real margin against a decimal-TB plan. reset_day is the operator's billing reset day. enabled=false means no limit at all (a practically-unlimited plan).",
+    "operators": [
+      {"name": "partner", "iccid_prefixes": ["8997201"], "mccmnc": "425-01",
+       "data_limit_mb": 3000000, "reset_day": 1, "enabled": false},
+      {"name": "cellcom", "iccid_prefixes": ["8997202"], "mccmnc": "425-02",
+       "data_limit_mb": 1330000, "reset_day": 15, "enabled": true},
+      {"name": "pelephone", "iccid_prefixes": ["8997250"], "mccmnc": "425-03",
+       "data_limit_mb": 2660000, "reset_day": 1, "enabled": true}
+    ],
+    "_comment_unknown": "A SIM whose ICCID matches no prefix above (including a roaming pay-per-MB SIM and an empty slot) gets these — deliberately the smallest plan's limit, so an unidentified SIM can't run up the biggest plan's worth of data. data_limit_mb on a disabled operator is inert; it is still a real value so that enabling one later can't hand a SIM a 0 MB limit.",
+    "unknown_operator": {"data_limit_mb": 1330000, "reset_day": 1, "enabled": true}
+  },
+
   "_comment_internet": "FOTA, Tailscale and eSIM need the SIM to have a data connection, which can take a minute+ to attach on a fresh SIM. wait_for_internet makes the tool poll the modem until it's online (up to internet_timeout seconds) before those steps. Local-.bin firmware and RMS-enable do NOT need internet.",
   "wait_for_internet": true,
   "internet_timeout": 180,
