@@ -1,0 +1,82 @@
+#cloud-config
+# ===========================================================================
+#  Ubuntu Server 24.04 autoinstall seed for the Kela offline installer.
+#  Rendered by lib/render.py — edit this template, never the copy on a stick.
+#  WARNING: wipes the smallest internal disk of the target box without asking.
+# ===========================================================================
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard: {layout: us}
+  source: {id: ubuntu-server, search_drivers: false}
+  # geoip off skips a pointless DNS wait; fallback offline-install makes a dead
+  # mirror revert to the ISO's squashfs rather than abort the install
+  apt: {geoip: false, fallback: offline-install}
+  refresh-installer: {update: false}
+  network:
+    version: 2
+    ethernets:
+      alleth:
+        match: {name: "en*"}
+        dhcp4: true
+        optional: true
+  storage:
+    layout:
+      name: direct
+      # the size and ssd matchers never return the install media, so the stick
+      # itself is safe; any *other* idle USB/SD card in the box is not
+      match: {size: smallest}
+  identity:
+    hostname: kela-fob
+    username: kela
+    password: "@@PASSWORD_HASH@@"
+  ssh: {install-server: true, allow-pw: true}
+  # Poweroff, not reboot: a cold power-on is what reliably re-enumerates the USB
+  # stick, and the RTC alarm armed in late-commands supplies it without a button
+  # press. kela-activate.sh still carries the software recovery ladder as backup,
+  # and the GRUB re-imaging guard means the cold boot lands in the installed
+  # system instead of the installer.
+  shutdown: poweroff
+  late-commands:
+    - |
+      @@INCLUDE:late-hostname.sh@@
+    - |
+      @@INCLUDE:late-nouveau.sh@@
+    # last, so the alarm window starts as close to the poweroff as possible
+    - |
+      @@INCLUDE:late-rtcwake.sh@@
+  # Cloud-config for the INSTALLED system. Subiquity inlines this into
+  # /etc/cloud/cloud.cfg.d/99-installer.cfg behind datasource None, so it is
+  # unaffected by the stick's own CIDATA seed still being plugged in.
+  user-data:
+    preserve_hostname: true
+    write_files:
+      - path: /etc/sysctl.d/20-kela-console.conf
+        content: |
+          kernel.printk = 3 4 1 3
+      - path: /usr/local/sbin/kela-dummy-net.sh
+        permissions: "0755"
+        content: |
+          @@INCLUDE:kela-dummy-net.sh@@
+      - path: /etc/systemd/system/kela-dummy-net.service
+        permissions: "0644"
+        content: |
+          @@INCLUDE:kela-dummy-net.service@@
+      - path: /etc/systemd/system/kela-firstboot.service
+        permissions: "0644"
+        content: |
+          @@INCLUDE:kela-firstboot.service@@
+      - path: /etc/udev/rules.d/99-kela-fob.rules
+        content: |
+          ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_LABEL}=="FOBDATA", RUN+="/usr/bin/systemctl start --no-block kela-firstboot.service"
+      - path: /usr/local/sbin/kela-activate.sh
+        permissions: "0755"
+        content: |
+          @@INCLUDE:kela-activate.sh@@
+    runcmd:
+      - mv /etc/apt/sources.list.d/ubuntu.sources /root/ubuntu.sources.bak || true
+      - sysctl --system || true
+      - systemctl daemon-reload
+      - udevadm control --reload || true
+      - systemctl enable --now kela-dummy-net.service
+      - systemctl enable --now kela-firstboot.service

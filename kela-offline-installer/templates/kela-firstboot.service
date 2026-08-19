@@ -1,0 +1,14 @@
+[Unit]
+Description=Kela offline first-boot activation (retries until the drive is present)
+ConditionPathExists=!/var/lib/kela/.firstboot-activated
+After=local-fs.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=/usr/local/sbin/kela-activate.sh
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=multi-user.target
