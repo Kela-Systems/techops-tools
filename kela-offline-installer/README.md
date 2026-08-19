@@ -75,7 +75,6 @@ it detects that mix-up and tells you which command you wanted.
 | `lib/`                | Rendering and verification helpers, shared by both builders and the runbook. `lib/mkpasswd.sh` generates the password hash on hosts where `openssl passwd -6` is unavailable (i.e. macOS). |
 | `extra-debs/`         | Sideloaded `.deb`s, for the rare bundle whose dependency closure is incomplete. Normally empty — see `extra-debs/README.md`.                                                               |
 | `OFFLINE-RUNBOOK.md`  | The same build, by hand, on an offline Linux box. Uses the same templates.                                                                                                                 |
-| `legacy/`             | Superseded builder, kept for reference only. Do not use.                                                                                                                                   |
 
 
 
