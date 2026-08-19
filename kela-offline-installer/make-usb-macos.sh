@@ -161,10 +161,11 @@ Done. Boot a FOB box from this stick over UEFI, ideally through the firmware's
 one-time boot menu rather than by reordering the boot devices.
 
 The default entry asks for a hostname, then WIPES the smallest internal disk and
-installs Ubuntu. The box POWERS ITSELF OFF and cold-starts about four minutes
-later — leave the stick in, and press the power button if it has not come back
-five minutes after the screen goes dark. It then boots the system it just
-installed and runs Kela activation.
+installs Ubuntu. The box POWERS ITSELF OFF on purpose and an RTC alarm cold-starts
+it about five minutes later. Leave the stick in. Pressing the power button
+once the screen has gone dark is always safe and skips the wait — either way the
+box boots the system it just installed, not the installer, and runs Kela
+activation.
 
 A box that already has an Ubuntu ESP boots that instead of being re-imaged — to
 re-image deliberately, pick the install entry from the GRUB menu.

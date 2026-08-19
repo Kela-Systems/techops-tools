@@ -5,16 +5,19 @@ Build a USB stick that takes a bare amd64 box to a converged Kela system with
 
 boot stick → GRUB asks hostname (Enter = `kela-fob`) → wipes the **smallest**
 internal disk → installs Ubuntu Server 24.04 → powers off and cold-starts itself
-about four minutes later → first boot installs the bundle debs and runs Kela
+about five minutes later → first boot installs the bundle debs and runs Kela
 activation → daemon converges.
 
-**Operator note:** leave the stick in, and if the box has not powered itself back
-on roughly five minutes after the screen goes dark, press the power button. The
-box shuts down on purpose (see below) and not every firmware honours the wake
-alarm that is supposed to restart it.
+**Operator note:** leave the stick in. The box shuts down on purpose (see below)
+and an RTC alarm is meant to restart it. **Pressing the power button once the
+screen has gone dark is always safe** and skips the wait — it boots the system
+just installed, not the installer. So there is no need to time anything: press it
+whenever you are ready, or leave the box to wake itself. The first-boot log states
+which of the two happened, and if the alarm failed, why.
 
 The outcome is printed at the console login prompt, so the operator never has to
-log in to find out whether it worked. Full log: `/var/log/kela-firstboot.log` on
+log in to find out whether it worked — and it reports the daemon's convergence,
+not merely that activation returned. Full log: `/var/log/kela-firstboot.log` on
 the box, copied to `99-install-logs/` on the stick.
 
 The FOB drive content lives byte-identical on its own exFAT partition
@@ -62,46 +65,53 @@ it detects that mix-up and tells you which command you wanted.
 
 ## Tools
 
-| Path | Purpose |
-|---|---|
-| `make-usb-macos.sh` | **Primary builder.** `sudo ./make-usb-macos.sh disk4 "/path/to/bundle"`. Erases the target; refuses to run if the source lives on that disk. Needs `brew install xorriso`; stick ≥ 24 GB. |
-| `stage-bundle.sh` | Copy a received drive to local storage and verify it, so that same stick can then be erased and rebuilt. No sudo; reads the drive only. |
-| `update-usb-macos.sh` | Re-apply the current boot machinery to an already-built stick **in place** (never touches the data partition — safe when the stick holds the only copy). |
-| `templates/` | The single source of truth: autoinstall seed, GRUB block, and every script the target runs. Edit here, never on a stick. |
-| `lib/` | Rendering and verification helpers, shared by both builders and the runbook. `lib/mkpasswd.sh` generates the password hash on hosts where `openssl passwd -6` is unavailable (i.e. macOS). |
-| `extra-debs/` | Sideloaded `.deb`s, for the rare bundle whose dependency closure is incomplete. Normally empty — see `extra-debs/README.md`. |
-| `OFFLINE-RUNBOOK.md` | The same build, by hand, on an offline Linux box. Uses the same templates. |
-| `legacy/` | Superseded builder, kept for reference only. Do not use. |
+
+| Path                  | Purpose                                                                                                                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `make-usb-macos.sh`   | **Primary builder.** `sudo ./make-usb-macos.sh disk4 "/path/to/bundle"`. Erases the target; refuses to run if the source lives on that disk. Needs `brew install xorriso`; stick ≥ 24 GB.  |
+| `stage-bundle.sh`     | Copy a received drive to local storage and verify it, so that same stick can then be erased and rebuilt. No sudo; reads the drive only.                                                    |
+| `update-usb-macos.sh` | Re-apply the current boot machinery to an already-built stick **in place** (never touches the data partition — safe when the stick holds the only copy).                                   |
+| `templates/`          | The single source of truth: autoinstall seed, GRUB block, and every script the target runs. Edit here, never on a stick.                                                                   |
+| `lib/`                | Rendering and verification helpers, shared by both builders and the runbook. `lib/mkpasswd.sh` generates the password hash on hosts where `openssl passwd -6` is unavailable (i.e. macOS). |
+| `extra-debs/`         | Sideloaded `.deb`s, for the rare bundle whose dependency closure is incomplete. Normally empty — see `extra-debs/README.md`.                                                               |
+| `OFFLINE-RUNBOOK.md`  | The same build, by hand, on an offline Linux box. Uses the same templates.                                                                                                                 |
+| `legacy/`             | Superseded builder, kept for reference only. Do not use.                                                                                                                                   |
+
+
+
 
 ## Before building for production
 
 - Set a real password. The builder prompts for one; pressing Enter alone keeps
-  the built-in default (`kela`/`kela`) and says so in the build output. To supply
-  it non-interactively:
+the built-in default (`kela`/`kela`) and says so in the build output. To supply
+it non-interactively:
 
 ```bash
 sudo KELA_PASSWORD_HASH="$(./lib/mkpasswd.sh)" ./make-usb-macos.sh disk4 "/path/to/FOB security drive"
 ```
 
-  **`openssl passwd -6` does not work on macOS.** `/usr/bin/openssl` is LibreSSL,
+  `openssl passwd -6` **does not work on macOS.** `/usr/bin/openssl` is LibreSSL,
   whose `passwd` supports only `-crypt`, `-1` and `-apr1`; the `-6` form errors
   out and leaves you with an empty string. `lib/mkpasswd.sh` probes for an
   OpenSSL that can do SHA-512 crypt (Homebrew's `openssl@3`, `$OPENSSL`, or one
   on `PATH`) and tells you how to get one if there is none. A
   `KELA_PASSWORD_HASH` that is set but not a `$6$` hash is now a hard error
   rather than a silent fall back to the default.
+
 - Dependencies come from the bundle itself; `extra-debs/` is normally empty.
-  Preflight prints which case the bundle is in — `apt repo: flat, N packages`
-  means first boot resolves dependencies off the drive, `apt repo: none` means
-  `02-kela/debs` must be self-contained against a stock Ubuntu 24.04 server
-  install. Only if activation later fails on an unmet dependency do you need
-  `extra-debs/`.
+Preflight prints which case the bundle is in — `apt repo: flat, N packages`
+means first boot resolves dependencies off the drive, `apt repo: none` means
+`02-kela/debs` must be self-contained against a stock Ubuntu 24.04 server
+install. Only if activation later fails on an unmet dependency do you need
+`extra-debs/`.
 - The disk-selection rule is `size: smallest`. Subiquity's `size` and `ssd`
-  matchers never return the install media, so the stick itself is safe, but any
-  **other** idle USB/SD card in the box is a candidate — boot with no other
-  removable media attached, or pin the disk by serial for known hardware.
+matchers never return the install media, so the stick itself is safe, but any
+**other** idle USB/SD card in the box is a candidate — boot with no other
+removable media attached, or pin the disk by serial for known hardware.
 - The stick carries live cluster-CA slot keys: same custody rules as the
-  original FOB drive. Each activation consumes one slot key on the stick.
+original FOB drive. Each activation consumes one slot key on the stick.
+
+
 
 ## How the unattended path is kept safe
 
@@ -126,12 +136,94 @@ while waiting for `FOBDATA` to appear. But `activate.sh` itself is fenced behind
 on the stick. A failure there stops and says so rather than looping and burning
 slots; clear the marker to retry.
 
+**A slot can be preserved, opt-in per stick.** Each `pki/slots/<n>/cluster-ca.key`
+on the drive is a distinct pre-minted cluster CA, and activation destroys the key
+it uses — that budget is what bounds how many clusters a lost drive could stand up,
+and the leftover certificate keeps the spend auditable. Running out is terminal:
+the controller's own message is "all *N* CA slots on this drive have been consumed
+— build a new bundle to provision another cluster."
+
+For lab boxes that get rebuilt, `kela-node-controller activate` accepts
+`--keep-slot-key`, which it documents as "Leave the consumed slot's key on the
+drive (e.g. a read-only medium). The drive then still holds a usable cluster-CA
+key." Activation is otherwise completely normal — the bundle stages, the daemon
+converges, the box is genuinely provisioned — so this is not a dry run, just one
+that costs nothing.
+
+Create an empty file named `kela-keep-slot-key` on the `CIDATA` partition to turn
+it on. `CIDATA` is FAT, so it can be added or removed on any laptop without
+rebuilding the stick. It is deliberately off by default: **a drive that travels to
+a site must spend its slot**, because a drive kept this way still carries live CA
+keys, and two boxes activated from one slot share a cluster CA — precisely what
+one-time-use prevents.
+
+Two guards around it. First boot asks the binary whether it really supports the
+flag (`activate --help`) rather than assuming; if it doesn't, activation *stops*
+before `activate.sh` runs — nothing is consumed, the one-shot marker is cleared so
+a retry stays possible, and the console says `STOPPED`, because silently spending a
+slot you asked to keep is the one unrecoverable outcome. Afterwards the key files
+are counted again, and the log reports `N before, M after`, so a flag that is
+accepted but ineffective shows up as a warning instead of a surprise.
+
+`kela-offline.list` **belongs to the node controller, not to us.**
+`kela-node-controller activate` stages the bundle under `/var/lib/kela/offline`
+and writes `/etc/apt/sources.list.d/kela-offline.list` pointing at it; its daemon
+installs from that source while converging (chrony for `time`, the NVIDIA
+container toolkit). This kit uses `kela-installer.list` for its own temporary
+source and must never create or delete the controller's. Sharing the name once
+meant our post-activation cleanup deleted it, and convergence then failed on
+exactly those two components while the console still read `COMPLETE`.
+
+**The console reports convergence, not activation.** `activate.sh` returns as
+soon as the bundle is staged and the slot is spent; the daemon converges
+afterwards, and that is where the outcome is really decided. `kela-activate.sh`
+therefore waits on the daemon's journal and reports what it finds there.
+`COMPLETE` means converged.
+
+**A `converge failed` line is not a verdict.** The daemon works in passes and
+retries forever, and a component can fail on one pass and succeed on the next —
+`time` did exactly that on two separate boxes. So only `system converged` ends the
+wait. Failures are counted and printed as progress (`converge attempt failed
+(1 so far)`), and nothing is called `FAILED` until `KELA_CONVERGE_TIMEOUT`
+(default 90 min) expires with no success; a run that stumbled and recovered
+reports `system converged, after 1 failed attempt(s)`. An earlier version returned
+on the first failure line and declared `FAILED` nine seconds into a convergence
+that was still running.
+
+Because that wait can legitimately last the better part of an hour, the log is
+copied to `99-install-logs/` on the stick as soon as activation finishes, again at
+the verdict, and once more if activation dies outright — pulling the drive early
+no longer takes away the only record.
+
 **Cold power cycle, then a recovery ladder.** The stick not being detected after
 the install is the failure mode this project has actually hit in the field, so it
 gets two independent answers. The install ends in `poweroff` with an RTC alarm
 armed as the very last late-command, because a cold start is what reliably
 re-enumerates the stick — a warm reboot has been seen to leave it invisible until
-physically replugged. Behind that, `kela-activate.sh` escalates through
+physically replugged.
+
+That alarm is *refreshed*, not set once. The window is measured from the
+late-command while the box powers off an unknown time later, and an alarm that
+fires before that is consumed for nothing. So `late-rtcwake.sh` leaves an orphaned
+loop pushing the alarm +300 s every 60 s, which dies with the poweroff — the box
+then wakes about five minutes after the *real* shutdown however long finalisation
+took, and the duration stops being something anyone has to know. If that loop is
+killed early the single alarm still stands, so the worst case is the fixed window
+it replaced, never less. `/var/lib/kela/rtc-armed` records which one you got.
+
+**Wait the full five minutes before deciding it failed.** Both wake failures
+reported so far were misreadings. This hardware honours the alarm: one run woke
+itself 74 s after it. The run reported as "didn't wake" had been powered on by hand
+69 s *before* its alarm was due, so the alarm never got the chance. Pressing power
+early is safe and skips the wait, but it also destroys the evidence — the log can
+tell you the button was pressed early (`rtc-armed` versus boot time) and does.
+
+What the log cannot tell you is why a box that genuinely never wakes did not:
+subiquity snapshots `/var/log/installer` into the target *before* the late-command
+runs, so nothing on the disk records when the box actually powered off, and an
+expired alarm cannot be told apart from firmware that ignores alarms.
+
+Behind all that, `kela-activate.sh` escalates through
 `udevadm trigger`, rebinding the `usb-storage`/`uas` drivers, and finally
 rebinding the xHCI host controllers, then keeps retrying every 20 s while a udev
 rule starts activation the instant a `FOBDATA` device appears. So: firmware
@@ -177,13 +269,14 @@ boot that touches no USB device at all.
 
 ## Still to verify on target hardware
 
-- **`read` under Secure Boot.** The hostname prompt needs GRUB's `read` module.
-  If a signed monolithic grub lacks it the command errors, `KELA_HOSTNAME` stays
-  empty, and every box silently installs as `kela-fob`. Check the prompt actually
-  appears on a Secure Boot machine; if not, swap the prompt for a set of
-  pre-defined hostname menu entries, which needs no module.
+- `read` **under Secure Boot.** The hostname prompt needs GRUB's `read` module.
+If a signed monolithic grub lacks it the command errors, `KELA_HOSTNAME` stays
+empty, and every box silently installs as `kela-fob`. Check the prompt actually
+appears on a Secure Boot machine; if not, swap the prompt for a set of
+pre-defined hostname menu entries, which needs no module.
 - **NVIDIA under Secure Boot.** If the bundle builds its driver via DKMS, the
-  module is unsigned and MOK enrolment is interactive — which breaks the
-  unattended flow. Confirm how the bundle ships the driver.
+module is unsigned and MOK enrolment is interactive — which breaks the
+unattended flow. Confirm how the bundle ships the driver.
 - **ESP selection.** Confirm which of the stick's two FAT partitions the target
-  firmware actually boots, so the ESP hand-off path gets exercised at least once.
+firmware actually boots, so the ESP hand-off path gets exercised at least once.
+
