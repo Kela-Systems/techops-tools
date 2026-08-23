@@ -21,7 +21,7 @@
     "weak_signal_dbm": -105,
     "icmp_host": "8.8.8.8",
 
-    "_comment_operators": "Per-operator data limits, applied on-device by /usr/bin/kela-quota-sync (deployed by the sim-switch steps, re-run at boot and every 10 min). SIMs are inserted in the field and swapped between slots, so the operator is detected per slot from the ICCID prefix and the limit follows the SIM, not the slot. data_limit_mb is in DEVICE MB, which are binary: 3000000 reads as 2.86 TB, so the values below keep ~7% real margin against a decimal-TB plan. reset_day is the operator's billing reset day. enabled=false means no limit at all (a practically-unlimited plan).",
+    "_comment_operators": "Per-operator data limits, applied on-device by /usr/local/bin/kela-quota-sync (deployed by the sim-switch steps, re-run at boot and every 10 min). SIMs are inserted in the field and swapped between slots, so the operator is detected per slot from the ICCID prefix and the limit follows the SIM, not the slot. data_limit_mb is in DEVICE MB, which are binary: 3000000 reads as 2.86 TB, so the values below keep ~7% real margin against a decimal-TB plan. reset_day is the operator's billing reset day. enabled=false means no limit at all (a practically-unlimited plan).",
     "operators": [
       {"name": "partner", "iccid_prefixes": ["8997201"], "mccmnc": "425-01",
        "data_limit_mb": 3000000, "reset_day": 1, "enabled": false},

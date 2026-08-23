@@ -15,8 +15,11 @@ from bench_core import (
     QUOTA_SYNC_CRON,
     QUOTA_SYNC_INIT_PATH,
     QUOTA_SYNC_PATH,
+    QUOTA_SYNC_RC_LINK,
+    SYSUPGRADE_CONF,
     TeltonikaClient,
     VERIFIED_SIM_SWITCH_FW,
+    icmp_host,
     render_quota_sync_script,
 )
 
@@ -60,13 +63,15 @@ class FakeDevice:
     a recording of every command for the writes."""
 
     def __init__(self, *, version=FW_VERIFIED, slots=(1, 2, 3), uci=None,
-                 installed="", cron=""):
+                 installed="", cron="", write_error="", keep=""):
         self.commands: list[str] = []
         self.version = version
         self.slots = slots            # slots the device already has a section for
         self.uci = {"simcard.@sim[0].modem": "2-1", **(uci or {})}
         self.installed = installed    # what the `test -x` probe reports
         self.cron = cron
+        self.write_error = write_error  # what a refused file write reports
+        self.keep = keep              # what /etc/sysupgrade.conf lists
 
     def section(self, slot: int) -> str:
         """How the device addresses that slot's (anonymous) sim_switch section."""
@@ -74,6 +79,8 @@ class FakeDevice:
 
     def __call__(self, command, check=True, exec_timeout=None):
         self.commands.append(command)
+        if command.endswith("2>&1 && echo __OK__"):    # a _put_file write
+            return self.write_error or "__OK__"
         if command.startswith("cat /etc/version"):
             return self.version
         if command.startswith("uci show sim_switch"):
@@ -96,6 +103,8 @@ class FakeDevice:
             return self.installed
         if command.startswith("grep -F kela-quota-sync"):
             return self.cron
+        if command.startswith("grep -v '^#' /etc/sysupgrade.conf"):
+            return self.keep
         return ""
 
 
@@ -156,6 +165,28 @@ def test_config_overrides_the_tunable_conditions():
         assert f".{option}={value}'" in command
     # Sticky failover is policy, not a per-site setting.
     assert ".enable_back=0'" in command
+
+
+@pytest.mark.parametrize("host", ["8.8.8.8", "10.8.0.1", "2001:4860:4860::8888",
+                                  "one.one.one.one", "ping.example.co.uk",
+                                  "  8.8.4.4  "])
+def test_a_usable_icmp_host_is_accepted(host):
+    assert icmp_host({"icmp_host": host}) == host.strip()
+
+
+@pytest.mark.parametrize("host", ["8.8.8.8,", "8.8.8.8.", "8.8.8", "999.999.999.999",
+                                  "8.8.8.8 8.8.4.4", "8.8.8.8/32", "-bad.example.com",
+                                  "exa mple.com", "8.8.8.8;reboot"])
+def test_a_mistyped_icmp_host_is_rejected(host):
+    # It lands in data_fail_host, the address the device pings to decide the
+    # active SIM has no data. A typo there is invisible on the device: the check
+    # just never succeeds, and the SIM is counted as failed on every interval.
+    with pytest.raises(SystemExit, match="icmp_host"):
+        icmp_host({"icmp_host": host})
+
+
+def test_an_unset_icmp_host_falls_back_to_the_default():
+    assert icmp_host({}) == icmp_host({"icmp_host": ""}) == "8.8.8.8"
 
 
 def test_missing_slot_section_is_added():
@@ -294,6 +325,125 @@ def test_install_deploys_the_script_boot_hook_and_cron(monkeypatch):
     assert device.commands[-1] == QUOTA_SYNC_PATH
 
 
+def test_boot_hook_and_cron_run_the_same_path():
+    from bench_core import QUOTA_SYNC_INIT
+    assert QUOTA_SYNC_PATH in QUOTA_SYNC_INIT
+    assert QUOTA_SYNC_PATH in QUOTA_SYNC_CRON
+
+
+def test_install_lists_the_files_in_the_upgrade_keep_list(monkeypatch):
+    # /etc/crontabs is in RutOS's own keep list but /usr/local and /etc/init.d
+    # are not, so without this a keep-settings upgrade leaves the cron entry
+    # calling a script that no longer exists — limits frozen, silently.
+    client, device = fake_client()
+    monkeypatch.setattr(client, "_put_file", lambda *a, **k: None)
+
+    client.install_quota_sync(SIM_SWITCH_CFG)
+
+    keep = next(c for c in device.commands if "sysupgrade.conf" in c)
+    for path in (QUOTA_SYNC_PATH, QUOTA_SYNC_INIT_PATH, QUOTA_SYNC_RC_LINK):
+        assert f"\n{path}\n" in keep
+    # sysupgrade.conf lists ITSELF: it is not in RutOS's keep list either, so
+    # otherwise the block would survive one upgrade and be gone for the next.
+    assert f"\n{SYSUPGRADE_CONF}\n" in keep
+    # Our previous block is dropped first, so re-running adds nothing.
+    assert "sed -i -e '\\,kela-quota-sync,d'" in keep
+    assert "-e '\\,^/etc/sysupgrade.conf$,d'" in keep
+
+
+def keep_block(command: str) -> list[str]:
+    """The lines the keep-list command appends, out of its heredoc."""
+    eof = TeltonikaClient.PUT_FILE_EOF
+    body = command.split(f"<<'{eof}'\n", 1)[1].split(f"\n{eof}", 1)[0]
+    return [line for line in body.splitlines() if line.strip()]
+
+
+def test_every_line_of_the_keep_block_is_one_the_cleanup_can_find_again(monkeypatch):
+    # The cleanup sed matches on the script's name, so a line written WITHOUT it
+    # in it is never removed: one orphan per re-provision, forever. Comment
+    # lines are the easy ones to get wrong.
+    client, device = fake_client()
+    monkeypatch.setattr(client, "_put_file", lambda *a, **k: None)
+    client.install_quota_sync(SIM_SWITCH_CFG)
+
+    command = next(c for c in device.commands if "sysupgrade.conf" in c)
+    patterns = re.findall(r"-e '\\,(.+?),d'", command)
+    assert patterns, "expected the command to delete its old lines first"
+    for line in keep_block(command):
+        assert any(re.search(p, line) for p in patterns), \
+            f"{line!r} would survive the cleanup and accumulate on re-runs"
+
+
+def test_re_provisioning_does_not_grow_the_keep_list(monkeypatch):
+    # The whole point of the pattern check above, end to end: applying the same
+    # command twice must leave the file exactly as one run does.
+    client, device = fake_client()
+    monkeypatch.setattr(client, "_put_file", lambda *a, **k: None)
+    client.install_quota_sync(SIM_SWITCH_CFG)
+    command = next(c for c in device.commands if "sysupgrade.conf" in c)
+    patterns = re.findall(r"-e '\\,(.+?),d'", command)
+    block = keep_block(command)
+
+    def install(conf: list[str]) -> list[str]:
+        return [ln for ln in conf
+                if not any(re.search(p, ln) for p in patterns)] + block
+
+    stock = ["## This file contains files and directories that should",
+             "## be preserved during an upgrade.", "# /etc/example.conf"]
+    once = install(stock)
+    assert install(once) == once
+    # ... and the operator's own lines are still there.
+    assert once[:len(stock)] == stock
+
+
+def test_the_rc_symlink_matches_the_boot_hooks_priority():
+    # The keep list names the rc.d symlink literally; if START ever changes,
+    # `enable` writes S<new> and the kept path would point at nothing.
+    from bench_core import QUOTA_SYNC_INIT, QUOTA_SYNC_START
+    assert f"START={QUOTA_SYNC_START}\n" in QUOTA_SYNC_INIT
+    assert QUOTA_SYNC_RC_LINK == f"/etc/rc.d/S{QUOTA_SYNC_START}kela-quota-sync"
+
+
+def test_files_go_over_the_exec_channel_and_land_atomically():
+    # NOT over SFTP: RutOS's sftp-server reports every refused open as a bare
+    # "Failure", so a read-only or full filesystem is indistinguishable — and
+    # some firmware ships no sftp subsystem at all.
+    client, device = fake_client()
+    client._put_file("/usr/local/bin/kela-quota-sync", "#!/bin/sh\nexit 0\n", mode="755")
+
+    write, move = device.commands
+    # A QUOTED delimiter: the script is almost entirely $variables, and the
+    # device's shell must expand none of them.
+    # The parent directory is created first: /usr/local/bin exists on stock
+    # firmware, but assuming it is one more way for this step to fail.
+    assert ("mkdir -p /usr/local/bin && "
+            "cat > /usr/local/bin/kela-quota-sync.new <<'__KELA_BENCH_EOF__'\n") in write
+    assert write.count("__KELA_BENCH_EOF__") == 2
+    assert "#!/bin/sh\nexit 0\n__KELA_BENCH_EOF__" in write
+    # Executable before it has the real name, so cron can never run a partial file.
+    assert ("chmod 755 /usr/local/bin/kela-quota-sync.new && "
+            "mv /usr/local/bin/kela-quota-sync.new /usr/local/bin/kela-quota-sync") in move
+
+
+def test_a_refused_write_reports_the_devices_own_error():
+    client, _ = fake_client(
+        write_error="cat: can't create '/usr/bin/x.new': Read-only file system")
+    with pytest.raises(SystemExit) as err:
+        client._put_file("/usr/bin/x", "hi")
+    # SystemExit is what the step runner catches, so a device that won't take the
+    # file fails THIS step instead of aborting the run — and says why, rather
+    # than passing paramiko's bare "Failure" on to the operator.
+    assert "Could not write /usr/bin/x on the device" in str(err.value)
+    assert "Read-only file system" in str(err.value)
+
+
+def test_content_carrying_the_delimiter_is_refused():
+    client, device = fake_client()
+    with pytest.raises(SystemExit, match="delimiter"):
+        client._put_file("/usr/bin/x", f"echo {TeltonikaClient.PUT_FILE_EOF}\n")
+    assert device.commands == []   # nothing half-written on the device
+
+
 # ── verification ─────────────────────────────────────────────────────────────
 
 VERIFIED_OPTIONS = ("enabled", "interval", "retry_count", "weak_signal",
@@ -314,9 +464,13 @@ def verify(**kwargs) -> dict:
     return {row["item"]: row for row in rows}
 
 
+ALL_KEPT = "\n".join((SYSUPGRADE_CONF, QUOTA_SYNC_PATH, QUOTA_SYNC_INIT_PATH,
+                      QUOTA_SYNC_RC_LINK))
+
+
 def test_verification_pairs_expected_with_what_the_device_reports():
     rows = verify(uci=device_uci({1: GOOD_SLOT, 2: {**GOOD_SLOT, "weak_signal": "-50"}}),
-                  installed="script\nboot-hook", cron=QUOTA_SYNC_CRON)
+                  installed="script\nboot-hook", cron=QUOTA_SYNC_CRON, keep=ALL_KEPT)
 
     expected = " ".join(f"{o}={GOOD_SLOT[o]}" for o in VERIFIED_OPTIONS)
     assert rows["SIM switch slot 1"]["expected"] == expected
@@ -330,6 +484,8 @@ def test_verification_pairs_expected_with_what_the_device_reports():
 
     assert rows["quota sync script"]["ok"] is True
     assert rows["quota sync cron"]["ok"] is True
+    assert rows["quota sync survives upgrade"]["ok"] is True
+    assert rows["quota sync survives upgrade"]["actual"] == "all listed"
 
 
 def test_verification_flags_a_missing_script_and_cron_entry():
@@ -338,6 +494,18 @@ def test_verification_flags_a_missing_script_and_cron_entry():
     assert rows["quota sync script"]["actual"] == "script"
     assert rows["quota sync cron"]["ok"] is False
     assert rows["quota sync cron"]["actual"] == "(no cron entry)"
+
+
+def test_verification_names_the_paths_an_upgrade_would_drop():
+    # A partial keep list is the case worth naming: the operator has to know
+    # WHICH file a firmware upgrade would take away.
+    rows = verify(uci=device_uci({1: GOOD_SLOT, 2: GOOD_SLOT}),
+                  installed="script\nboot-hook", cron=QUOTA_SYNC_CRON,
+                  keep=f"{SYSUPGRADE_CONF}\n{QUOTA_SYNC_PATH}")
+    row = rows["quota sync survives upgrade"]
+    assert row["ok"] is False
+    assert QUOTA_SYNC_INIT_PATH in row["actual"] and QUOTA_SYNC_RC_LINK in row["actual"]
+    assert QUOTA_SYNC_PATH not in row["actual"]
 
 
 def test_unset_options_read_as_absent_not_matching():
@@ -351,7 +519,8 @@ def test_disabled_sim_switch_is_skipped_not_failed():
     client, device = fake_client()
     rows = client._verify_sim_switch({"enabled": False})
     assert [r["item"] for r in rows] == ["SIM switch slot 1", "SIM switch slot 2",
-                                         "quota sync script", "quota sync cron"]
+                                         "quota sync script", "quota sync cron",
+                                         "quota sync survives upgrade"]
     assert all(r["ok"] is None for r in rows)
     assert device.commands == []   # a skipped feature asks the device nothing
 
@@ -429,6 +598,38 @@ def test_pipeline_rejects_a_bad_operator_table_before_touching_the_device():
         otd_configure.configure_device(client, label_password="pw",
                                        site_name="haifa", settings=settings)
     assert client.calls == []   # config validated before login, let alone UCI
+
+
+def test_pipeline_rejects_a_mistyped_icmp_host_before_touching_the_device():
+    import otd_configure
+    client = StubClient()
+    settings = {**SETTINGS,
+                "sim_switch": {**SIM_SWITCH_CFG, "icmp_host": "8.8.8.8,"}}
+    with pytest.raises(SystemExit, match="icmp_host"):
+        otd_configure.configure_device(client, label_password="pw",
+                                       site_name="haifa", settings=settings)
+    assert client.calls == []
+
+
+def test_a_device_that_refuses_the_file_fails_one_step_not_the_run():
+    import otd_configure
+
+    class Refusing(StubClient):
+        def install_quota_sync(self, cfg):
+            self.calls.append("install_quota_sync")
+            raise SystemExit("Could not write /usr/local/bin/kela-quota-sync on "
+                             "the device: Read-only file system")
+
+    client = Refusing()
+    result = otd_configure.configure_device(client, label_password="pw",
+                                            site_name="haifa", settings=SETTINGS)
+    assert result["ok"] is False
+    assert len(result["failures"]) == 1
+    assert result["failures"][0].startswith("quota-sync: Could not write")
+    # The run carried on: the operator gets the verification table and the other
+    # steps, not a run that stopped at the first file the device wouldn't take.
+    assert "set_sims_4g_only" in client.calls
+    assert client.verified_with["sim_switch"] == SIM_SWITCH_CFG
 
 
 def test_pipeline_skips_the_sim_steps_when_disabled():

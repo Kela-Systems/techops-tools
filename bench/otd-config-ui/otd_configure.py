@@ -121,11 +121,11 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
     elif mode == "rms":
         log.info("Firmware upgrade deferred to RMS (pending action on first connect).")
 
-    # The quota-sync files live OUTSIDE /etc/config (/usr/bin + /etc/init.d +
-    # the rc.d symlink), and a keep-settings sysupgrade preserves only UCI —
-    # so unlike the sim-switch step above, this must run AFTER the firmware
-    # step or a fresh device would flash away the script right after
-    # installing it.
+    # The quota-sync files live OUTSIDE /etc/config (/usr/local/bin +
+    # /etc/init.d + the rc.d symlink). install_quota_sync adds them to
+    # /etc/sysupgrade.conf so a LATER upgrade keeps them, but that can't help a
+    # device being flashed right now — it has nothing to preserve yet. So unlike
+    # the sim-switch step above, this must run AFTER the firmware step.
     if sim_switch.get("enabled"):
         _step("quota-sync", lambda: client.install_quota_sync(sim_switch))
 
