@@ -2,6 +2,12 @@
 report.json
 report.md
 report.html
+quota_preflight.json
+quota_preflight.md
+quota_preflight_page.html
+quota_rollout_state.json
+quota_rollout_*.json
+.pytest_cache/
 __pycache__/
 *.pyc
 .venv/
