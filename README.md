@@ -30,6 +30,7 @@ techops-tools/
 │   ├── crop_raster.sh             Crop ortho + DTM around a lat/lon, optionally push to S3
 │   ├── crop_raster_bbox.sh        Crop ortho + DTM to an explicit bounding box
 │   ├── extract_map_features.sh    Dump the map_features table from a Kela HUB cluster to CSV
+│   ├── init_gotcha_server.sh      Provision a Gotcha NRU-230S: hostname, machine-id, kela user, data SSD, k3s, Tailscale
 │   ├── migrate_map_features.sh    Move map_features between old Platform and Kela HUB
 │   └── pg_query.sh                Run psql against a postgres pod via kubectl exec
 ├── hub-admin/                     CLI for hub device/integration management (Python package)
@@ -97,6 +98,49 @@ python3 raster_to_gpkg.py -i /path/to/tiffs -o out.gpkg --zoom 16
   KELA_REPO=~/dev/kela ./deployments_scripts/add_inventory.sh \
     --name acme-corp --tags "tag:configuration-management,tag:acme"
   ```
+
+- **`init_gotcha_server.sh`** — initial provisioning for a Gotcha **NRU-230S**
+  (Jetson AGX Orin 32GB, arm64). Sets the hostname, gives the box a unique
+  `machine-id`, creates `kela` with passwordless sudo, formats the SSD and mounts
+  it at `/mnt/data`, points `/var/lib/rancher` at it so k3s data lands off the
+  64GB eMMC, and joins the tailnet. Meant to be run over SSH on the LAN, and
+  safe to re-run: it only
+  formats a disk that has no `KELADATA` filesystem yet, and refuses outright if
+  the target disk backs `/`, `/boot` or `/boot/firmware`.
+
+  ```bash
+  scp deployments_scripts/init_gotcha_server.sh kela@192.168.88.20:/tmp/
+  ssh -t kela@192.168.88.20 'sudo bash /tmp/init_gotcha_server.sh \
+    --site kela-gotcha-01 --data-disk /dev/nvme0n1 \
+    --ts-authkey tskey-auth-XXXX --ts-tags tag:gotcha \
+    --static-ip 192.168.88.10/24'
+  ```
+
+  Install k3s afterwards; it follows the symlink, so no `--data-dir` is needed.
+
+  `--static-ip` is optional and off by default. It pins the address the rest of
+  the fleet expects the site server on (operator stations resolve `kela.local`
+  there; cameras, radars and APUs use it for NTP), so the box still answers on
+  `.10` if the router's DHCP reservation is ever lost. It is added as an
+  *additional* address on the existing DHCP profile — no gateway on the static,
+  the lease keeps providing the default route and DNS, and the interface is
+  never reactivated, so it won't drop the SSH session you're running it over.
+  It refuses to claim the address if something else already answers there.
+
+  Every Jetson flashed from the same JetPack image ships with an identical
+  `/etc/machine-id`, and systemd derives the DHCP DUID from it — so two
+  un-fixed boxes on one LAN present the same DHCP identity and fight over
+  leases, which is exactly what the `.10` reservation depends on. The script
+  regenerates it once, recording a stamp at
+  `/var/lib/kela/.machine-id-regenerated` so re-runs don't churn the box's DHCP
+  identity or journal lineage. Both `/etc/machine-id` and
+  `/var/lib/dbus/machine-id` have to be removed first: on JetPack the latter is a
+  regular file holding the same factory ID, and `systemd-machine-id-setup`
+  prefers it as a seed, so clearing only `/etc/machine-id` hands the duplicate
+  straight back (`Initializing machine ID from D-Bus machine ID`). It is then
+  restored as a symlink to `/etc/machine-id`, and the step fails loudly if the ID
+  comes back unchanged. The new ID becomes the DHCP identity on the next boot.
+  Use `--keep-machine-id` to opt out.
 
 - **`align_dtm_to_ortho.sh`** — reproject + crop a DTM to cover the exact bbox +
   CRS of a reference orthophoto, keeping the DTM's native pixel size.
