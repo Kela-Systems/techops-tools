@@ -3,8 +3,8 @@
 
 The device client (TeltonikaClient and the shared helpers) lives in the
 `bench_core` package; this module owns only the OTD500 step sequence
-(set password -> firmware -> hostname -> timezone -> 4G-only -> RMS ->
-Tailscale -> [optional] eSIM) and the single-device CLI.
+(set password -> hostname -> timezone -> SIM switch -> 4G-only -> firmware ->
+quota-sync -> RMS -> Tailscale -> [optional] eSIM) and the single-device CLI.
 
 CLI (single device):
   python3 otd_configure.py --site haifa-port --label-password 'Xy7Kp2Lm9Qa'
@@ -35,6 +35,7 @@ from bench_core import (
     make_step_runner,
     register_in_rms,
     set_log_serial,
+    validate_sim_switch_config,
 )
 
 
@@ -47,6 +48,14 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
     Raises SystemExit on a hard failure (login, password change, firmware)."""
     name = device_name(site_name, settings.get("name_prefix", DEFAULT_NAME_PREFIX))
     new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+
+    # Fail fast on a bad sim_switch block BEFORE touching the device: the
+    # sim-switch step commits UCI before the quota-sync step parses the
+    # operator table, so a typo caught only there would leave the device
+    # half-configured.
+    sim_switch = settings.get("sim_switch", {}) or {}
+    if sim_switch.get("enabled"):
+        validate_sim_switch_config(sim_switch)
 
     # Let SSH fall back to the shared password for the whole run, so a device
     # left half-changed by an earlier failed run (root already on the new
@@ -82,6 +91,13 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
     # data, and so settings survive a keep-settings firmware reboot.
     _step("hostname", lambda: client.set_hostname(name))
     _step("timezone", lambda: client.set_timezone(settings.get("timezone", DEFAULT_TIMEZONE)))
+    # SIM failover rules (TEC-359): pure UCI, needs no SIM inserted, and UCI
+    # survives a keep-settings firmware flash — so it runs here, before the
+    # 4G-only switch (the one step that bounces the modem). The quota-sync half
+    # of TEC-359 deploys FILES and must wait until after the firmware step —
+    # see below.
+    if sim_switch.get("enabled"):
+        _step("sim-switch", lambda: client.configure_sim_switch(sim_switch))
     if settings.get("sim_4g_only", True):
         _step("sim-4g-only", client.set_sims_4g_only)
 
@@ -104,6 +120,14 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
         client.get_identity()
     elif mode == "rms":
         log.info("Firmware upgrade deferred to RMS (pending action on first connect).")
+
+    # The quota-sync files live OUTSIDE /etc/config (/usr/local/bin +
+    # /etc/init.d + the rc.d symlink). install_quota_sync adds them to
+    # /etc/sysupgrade.conf so a LATER upgrade keeps them, but that can't help a
+    # device being flashed right now — it has nothing to preserve yet. So unlike
+    # the sim-switch step above, this must run AFTER the firmware step.
+    if sim_switch.get("enabled"):
+        _step("quota-sync", lambda: client.install_quota_sync(sim_switch))
 
     # RMS has two halves: (1) enable the on-device client (offline UCI) and
     # (2) register the unit in the RMS cloud by serial+MAC so it actually appears
@@ -165,6 +189,7 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
             zonename=settings.get("timezone", DEFAULT_TIMEZONE),
             new_password=new_password,
             sim_4g=bool(settings.get("sim_4g_only", True)),
+            sim_switch=sim_switch,
             rms=bool(rms.get("enabled")),
             tailscale=bool(ts.get("enabled")),
             esim=needs_esim,

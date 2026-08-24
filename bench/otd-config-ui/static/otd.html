@@ -206,12 +206,14 @@ function render(s){
   const cfg = s.config || {};
   if (Object.keys(cfg).length){
     const fw = cfg.firmware || {}; const rms = cfg.rms || {}; const ts = cfg.tailscale || {};
+    const ss = cfg.sim_switch || {};
     $('settingsSummary').innerHTML = `
       <span>host <b>${esc(cfg.host||'192.168.1.1')}</b></span>
       <span>timezone <b>${esc(cfg.timezone||'—')}</b></span>
       <span>password <b>${esc(cfg.new_password||'(unset)')}</b></span>
       <span>firmware <b>${esc(fw.mode||'none')}</b></span>
       <span>4G-only <b>${cfg.sim_4g_only?'yes':'no'}</b></span>
+      <span>SIM failover <b>${ss.enabled?'on':'off'}</b></span>
       <span>RMS <b>${rms.enabled?'on':'off'}</b></span>
       <span>Tailscale <b>${ts.enabled?'on':'off'}</b></span>`;
   }

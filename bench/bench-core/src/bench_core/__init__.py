@@ -10,7 +10,7 @@ A fresh RutOS device boots on 192.168.1.1 with a UNIQUE factory password printed
 on the device label and forces a password change on first login. TeltonikaClient
 exposes the building blocks the per-device pipelines compose (login,
 set_admin_password, set_hostname, set_timezone, upgrade_firmware, enable_rms,
-join_tailscale, verify_configuration, ssh_exec, ...).
+join_tailscale, configure_sim_switch, verify_configuration, ssh_exec, ...).
 
 Transport (the "both" model):
   * REST API   (https://<host>/api, firmware >= 07.06) is primary for auth,
@@ -37,6 +37,7 @@ import ipaddress
 import json
 import logging
 import os
+import posixpath
 import re
 import shlex
 import socket
@@ -173,6 +174,68 @@ SIM_SERVICE_4G = "lte"
 # `tailscale` package's `settings` section (verified on OTD5_R_00.07.20.3).
 TS_PACKAGE = "tailscale"
 UCI_TS_ENABLED = "tailscale.settings.enabled"
+
+# --- SIM switch + per-operator data limits (TEC-359) ------------------------
+# The `sim_switch` and `quota_limit` packages are NOT in Teltonika's public UCI
+# documentation: every option name below was read off a real OTD500 running
+# OTD5_R_00.07.22.3 (`uci export sim_switch` / `uci export quota_limit`), and
+# the policy was validated on that device. configure_sim_switch() therefore
+# warns when it meets a different firmware instead of trusting the names.
+VERIFIED_SIM_SWITCH_FW = "07.22.3"
+SIM_SWITCH_PACKAGE = "sim_switch"
+# The physical SIM slots we provision. Slot 3 is the eSIM: it has a section in
+# the config too, which we keep explicitly disabled.
+SIM_SLOTS = (1, 2)
+ESIM_SLOT = 3
+# `sim_switch`/`quota_limit` sections name the modem they belong to. '2-1' is
+# the OTD500's only modem — a last resort for a device whose own config names
+# none (we read it from the existing sections / `simcard` first).
+DEFAULT_MODEM_ID = "2-1"
+# data_fail: 2 == the ICMP (ping) check method, the one we use.
+SIM_SWITCH_DATA_FAIL_ICMP = "2"
+SIM_SWITCH_DATA_FAIL_TIMEOUT = "3"
+# quota_limit period: 3 == month.
+QUOTA_PERIOD_MONTH = "3"
+# The conditions that are policy, not per-site tuning (TEC-359): failover is
+# sticky (enable_back off — stay on whichever SIM works) and identical on both
+# slots. Only the four keys in SIM_SWITCH_TUNABLES come from the config.
+SIM_SWITCH_TUNABLES = {"check_interval": 30, "check_count": 5,
+                       "weak_signal_dbm": -105, "icmp_host": "8.8.8.8"}
+
+# The on-device operator→quota script (Phase 1b) and how it is scheduled.
+# NOT /usr/bin: the OTD500's rootfs is a read-only squashfs and the writable
+# UBI volume is overlaid onto /etc and /usr/local only, so /usr/bin can't take
+# a file at all ("Read-only file system"). /usr/local/bin is the writable,
+# FHS-correct home for a locally installed executable.
+QUOTA_SYNC_PATH = "/usr/local/bin/kela-quota-sync"
+QUOTA_SYNC_INIT_PATH = "/etc/init.d/kela-quota-sync"
+# Every line we add to a shared on-device file (the crontab, the upgrade keep
+# list) carries this name, and the "drop our old lines first" seds match on it —
+# so a re-run replaces our block instead of appending a second copy. A line we
+# write WITHOUT the name in it would never be cleaned up again.
+QUOTA_SYNC_NAME = posixpath.basename(QUOTA_SYNC_PATH)
+QUOTA_SYNC_CRON = f"*/10 * * * * {QUOTA_SYNC_PATH} >/dev/null 2>&1"
+CRONTAB_PATH = "/etc/crontabs/root"
+# Last in the boot order: nothing waits on us, and the modem is up by then.
+QUOTA_SYNC_START = "99"
+QUOTA_SYNC_RC_LINK = (f"/etc/rc.d/S{QUOTA_SYNC_START}"
+                      f"{posixpath.basename(QUOTA_SYNC_INIT_PATH)}")
+# A keep-settings firmware upgrade restores only what RutOS collects from
+# /etc/sysupgrade.conf + /lib/upgrade/keep.d/* (see add_uci_conffiles in
+# /usr/sbin/profile.sh). That covers /etc/config and /etc/crontabs, so the cron
+# entry would outlive the script it calls — the limits would silently freeze at
+# their last values. Listing our three files fixes that, and the list names
+# sysupgrade.conf ITSELF: it isn't in keep.d either, so without that line the
+# block would survive one upgrade and be gone for the next.
+SYSUPGRADE_CONF = "/etc/sysupgrade.conf"
+QUOTA_SYNC_KEEP = (SYSUPGRADE_CONF, QUOTA_SYNC_PATH, QUOTA_SYNC_INIT_PATH,
+                   QUOTA_SYNC_RC_LINK)
+# An unrecognised SIM (or an empty slot) gets the smallest plan's limit, so a
+# SIM we can't identify can never run up the biggest plan's worth of data.
+# NOTE: both site.config JSONs (example + live) carry the same values under
+# sim_switch.unknown_operator; this is only the fallback when that key is
+# absent — keep the three in step.
+QUOTA_UNKNOWN_OPERATOR = {"data_limit_mb": 1330000, "reset_day": 1, "enabled": True}
 
 # Teltonika RMS cloud API — used to REGISTER the device in your account (separate
 # from enabling the on-device client). https://developers.rms.teltonika-networks.com/
@@ -560,6 +623,321 @@ def fw_versions_match(a: str, b: str) -> bool:
     return bool(na) and bool(nb) and na == nb
 
 
+def fw_carries_version(device_fw: str, version: str) -> bool:
+    """True when `device_fw` is the release `version`, comparing only the parts
+    `version` actually names.
+
+    Unlike fw_versions_match (which demands the SAME dotted version), this
+    answers "is this the firmware feature X was verified on?" for a short
+    marker like '07.22.3' against what the device reports
+    ('OTD5_R_00.07.22.3' / '00.07.22.3') — the leading '00.' is release
+    packaging, not a version difference. A differing digit never matches.
+    """
+    a, b = _version_digits(device_fw), _version_digits(version)
+    if not a or not b:
+        return False
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    return longer[-len(shorter):] == shorter
+
+
+_HOSTNAME_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_HOSTNAME_RE = re.compile(rf"{_HOSTNAME_LABEL}(?:\.{_HOSTNAME_LABEL})*")
+
+
+def icmp_host(cfg: dict) -> str:
+    """`sim_switch.icmp_host` as an IP address or hostname, or SystemExit.
+
+    This ends up in `data_fail_host`, the address the device pings to decide the
+    active SIM has no working data. A typo there is invisible on the device — the
+    check simply never succeeds, which on our rules means the SIM keeps being
+    counted as failed — so a malformed value is a hard error, raised by
+    validate_sim_switch_config() before anything is written.
+    """
+    raw = str(cfg.get("icmp_host") or SIM_SWITCH_TUNABLES["icmp_host"]).strip()
+    if re.fullmatch(r"[0-9.]+", raw) or ":" in raw:
+        # Meant as an IP literal, so require it to parse as one: '8.8.8',
+        # '999.1.1.1' and a trailing '.' or ',' would all otherwise be accepted
+        # as perfectly good hostnames.
+        try:
+            ipaddress.ip_address(raw)
+            return raw
+        except ValueError:
+            pass
+    elif len(raw) <= 253 and _HOSTNAME_RE.fullmatch(raw):
+        return raw
+    raise SystemExit("sim_switch.icmp_host must be an IP address or hostname "
+                     f"(got {raw!r}).")
+
+
+def sim_switch_options(position: int, *, cfg: Optional[dict] = None,
+                       modem: str = "", enabled: bool = True) -> list[tuple[str, str]]:
+    """The `config sim` options for ONE sim_switch slot, in the order the device
+    itself writes them (TEC-359, verified on FW 07.22.3).
+
+    `enabled=False` renders the minimal "slot exists but never switched to"
+    section used for the eSIM slot. `modem=''` omits the modem option — for
+    building the expected values in verification, where only the conditions
+    matter. Everything except the four SIM_SWITCH_TUNABLES is fixed policy:
+    sticky failover (enable_back off), symmetric on both slots.
+    """
+    cfg = cfg or {}
+    opts: list[tuple[str, str]] = []
+    if modem:
+        opts.append(("modem", modem))
+    opts += [("position", str(position)),
+             # Priority is the slot number: slot 1 is tried first.
+             ("order", str(position)),
+             ("enabled", "1" if enabled else "0")]
+    if not enabled:
+        return opts
+
+    def tunable(key: str) -> str:
+        """A configured whole number, or the policy default when unset."""
+        raw = cfg.get(key)
+        if raw is None or str(raw).strip() == "":
+            raw = SIM_SWITCH_TUNABLES[key]
+        try:
+            return str(int(str(raw).strip()))
+        except ValueError:
+            raise SystemExit(f"sim_switch.{key} must be a whole number (got {raw!r}).")
+
+    host = icmp_host(cfg)
+    return opts + [
+        ("interval", tunable("check_interval")),           # check interval, seconds
+        ("retry_count", tunable("check_count")),           # consecutive checks
+        ("on_signal", "1"),                                # switch on weak signal
+        ("weak_signal", tunable("weak_signal_dbm")),       # RSSI dBm threshold
+        ("data_limit", "1"),                               # switch on data limit
+        ("sms_limit", "0"),
+        ("roaming", "0"),
+        ("no_network", "1"),
+        ("denied", "1"),                                   # network denied (barred SIM)
+        ("sim_not_ready", "1"),                            # SIM not inserted
+        ("data_fail", SIM_SWITCH_DATA_FAIL_ICMP),
+        ("data_fail_host", host),
+        ("data_fail_timeout", SIM_SWITCH_DATA_FAIL_TIMEOUT),
+        ("enable_back", "0"),                              # sticky: never switch back
+        # The WebUI writes fail_flag='1' on every save. Its purpose is not
+        # documented, so we mirror what the WebUI does rather than guess.
+        ("fail_flag", "1"),
+    ]
+
+
+def _whole_number(value, what: str) -> int:
+    """`value` as an int, or SystemExit naming the config key — NOT ValueError,
+    which would escape the step runner (it catches SystemExit only) and take
+    down the whole run instead of failing the one step."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        raise SystemExit(f"{what} must be a whole number (got {value!r}).")
+
+
+def quota_operators(cfg: dict) -> list[dict]:
+    """The operator table from a `sim_switch` config block, normalised to
+    {name, iccid_prefixes, mccmnc, data_limit_mb, reset_day, enabled}.
+
+    Config typos here become wrong data limits on field SIMs, so they are hard
+    errors rather than skipped rows: a non-numeric ICCID prefix (or an operator
+    with none at all), a non-numeric limit, or an enabled operator without a
+    positive data_limit_mb — which would write a 0 MB limit to the device and
+    cut the SIM's data on the first sync.
+    """
+    operators = []
+    for raw in cfg.get("operators") or []:
+        name = re.sub(r"[^a-z0-9_-]", "", str(raw.get("name", "")).lower()) or "operator"
+        prefixes = [str(p).strip() for p in (raw.get("iccid_prefixes") or [])]
+        if not prefixes or not all(p.isdigit() for p in prefixes):
+            raise SystemExit(f"sim_switch.operators['{name}']: iccid_prefixes must be "
+                             f"a list of digit strings (got {prefixes!r}).")
+        enabled = bool(raw.get("enabled", True))
+        limit = _whole_number(raw.get("data_limit_mb", 0),
+                              f"sim_switch.operators['{name}'].data_limit_mb")
+        if enabled and limit <= 0:
+            raise SystemExit(f"sim_switch.operators['{name}']: an enabled operator "
+                             f"needs data_limit_mb > 0 (got {limit}).")
+        operators.append({
+            "name": name,
+            "iccid_prefixes": prefixes,
+            # The mccmnc only ever lands in a generated-script comment, but a
+            # stray character (a newline, a quote) there would corrupt the
+            # script — keep the digits-and-dash shape and nothing else.
+            "mccmnc": re.sub(r"[^0-9-]", "", str(raw.get("mccmnc", ""))),
+            "data_limit_mb": limit,
+            "reset_day": _whole_number(raw.get("reset_day", 1),
+                                       f"sim_switch.operators['{name}'].reset_day"),
+            "enabled": enabled,
+        })
+    return operators
+
+
+def quota_unknown_operator(cfg: dict) -> dict:
+    """The fallback row for a SIM no ICCID prefix matches (or an empty slot),
+    normalised and validated like the quota_operators() rows."""
+    unknown = {**QUOTA_UNKNOWN_OPERATOR, **(cfg.get("unknown_operator") or {})}
+    enabled = bool(unknown.get("enabled", True))
+    limit = _whole_number(unknown.get("data_limit_mb"),
+                          "sim_switch.unknown_operator.data_limit_mb")
+    if enabled and limit <= 0:
+        raise SystemExit("sim_switch.unknown_operator: an enabled fallback needs "
+                         f"data_limit_mb > 0 (got {limit}).")
+    return {"data_limit_mb": limit, "enabled": enabled,
+            "reset_day": _whole_number(unknown.get("reset_day"),
+                                       "sim_switch.unknown_operator.reset_day")}
+
+
+def validate_sim_switch_config(cfg: dict) -> None:
+    """Fail fast on a bad `sim_switch` block. Meant to run BEFORE the pipeline
+    touches the device: configure_sim_switch() commits UCI before
+    install_quota_sync() parses the operator table, so a typo caught only there
+    would leave the device half-configured."""
+    sim_switch_options(SIM_SLOTS[0], cfg=cfg)   # validates the tunables
+    quota_operators(cfg)
+    quota_unknown_operator(cfg)
+
+
+# The generated script's constant halves. Kept as text (not f-strings) because
+# every other line contains shell `$`/`{}`; only the operator table and the
+# handful of values above it are rendered per site.
+_QUOTA_SYNC_PROLOGUE = """#!/bin/sh
+# kela-quota-sync — per-operator mobile data limits (TEC-359).
+#
+# GENERATED by the bench OTD500 configurator from the sim_switch.operators table
+# in its site.config.json. Change the bench config and re-provision the device
+# rather than editing this file.
+#
+# SIMs are inserted in the field and get swapped between slots, so a data limit
+# has to follow the SIM, not the slot. Each slot's operator is identified by the
+# ICCID prefix in `simcard.@sim[N].iccid` — RutOS keeps that for the INACTIVE
+# slots too, unlike the IMSI, which only the active SIM reports — and the
+# matching quota_limit section is rewritten when it differs.
+#
+# Runs at boot (/etc/init.d/kela-quota-sync) and every 10 minutes from cron.
+
+set -u
+
+"""
+
+_QUOTA_SYNC_BODY = """
+log() { logger -t kela-quota-sync "$1"; }
+
+# One run at a time: the boot hook (delayed 90 s) can land on the same second
+# as a 10-minute cron tick, and two interleaved `uci set/commit` sequences
+# would race. /tmp is wiped on boot, so a crashed run can't wedge the lock
+# past a reboot; within an uptime the script finishes in seconds.
+LOCK=/tmp/kela-quota-sync.lock
+mkdir "$LOCK" 2>/dev/null || exit 0
+trap 'rmdir "$LOCK"' EXIT
+
+changed=0
+detected=''
+
+# set_opt <section> <option> <wanted value>
+set_opt() {
+    cur=$(uci -q get "quota_limit.$1.$2")
+    [ "$cur" = "$3" ] && return 0
+    uci set "quota_limit.$1.$2=$3"
+    changed=1
+    log "$1.$2: '$cur' -> '$3'"
+}
+
+# index_for <slot> -> the simcard section index for that slot, matched by its
+# `position` option — file order is not trusted to equal slot order. Falls
+# back to slot-1 for a firmware whose simcard sections carry no position.
+index_for() {
+    idx=$(uci show simcard 2>/dev/null |
+        sed -n "s/^simcard\\.@sim\\[\\([0-9]*\\)\\]\\.position='$1'$/\\1/p" | head -n 1)
+    echo "${idx:-$(($1 - 1))}"
+}
+
+for slot in $SLOTS; do
+    section="mob1s${slot}a1"
+    index=$(index_for "$slot")
+    iccid=$(uci -q get "simcard.@sim[$index].iccid")
+    set -- $(operator_for "$iccid")
+    limit="$2" day="$3" on="$4"
+    detected="$detected slot$slot=$1"
+
+    if [ -z "$(uci -q get "quota_limit.$section")" ]; then
+        # No section yet (a device that never had a limit configured): create it
+        # with the fields the WebUI writes. 'interface' is the section type
+        # quota_limit uses on 07.22.3.
+        uci set "quota_limit.$section=interface"
+        uci set "quota_limit.$section.ifname=$section"
+        uci set "quota_limit.$section.sim=$slot"
+        modem=$(uci -q get "simcard.@sim[$index].modem")
+        [ -n "$modem" ] && uci set "quota_limit.$section.modem=$modem"
+        changed=1
+        log "$section: created"
+    fi
+
+    # event_sent is quota_limit's runtime state — deliberately never written.
+    set_opt "$section" enabled "$on"
+    set_opt "$section" data_limit "$limit"
+    set_opt "$section" period "$PERIOD"
+    set_opt "$section" reset_day "$day"
+done
+
+# The eSIM slot carries no plan of ours: keep its limit off if it has a section.
+[ -n "$(uci -q get "quota_limit.$ESIM_SECTION")" ] && set_opt "$ESIM_SECTION" enabled 0
+
+if [ "$changed" = 1 ]; then
+    uci commit quota_limit
+    /etc/init.d/quota_limit restart >/dev/null 2>&1
+    log "applied:$detected"
+fi
+exit 0
+"""
+
+# The boot hook, deployed verbatim (nothing in it is per-site): run
+# kela-quota-sync once per boot, so a SIM swapped while the device was powered
+# off is picked up without waiting for the 10-minute cron tick.
+QUOTA_SYNC_INIT = """#!/bin/sh /etc/rc.common
+# GENERATED by the bench OTD500 configurator (TEC-359): run kela-quota-sync once
+# per boot, so a SIM swapped while the device was powered off is picked up
+# without waiting for the 10-minute cron tick.
+START=""" + QUOTA_SYNC_START + """
+STOP=""" + QUOTA_SYNC_START + """
+
+start() {
+    # Backgrounded with a delay: never hold up boot, and give the modem time to
+    # publish the ICCID of a card it has not read yet.
+    (sleep 90; """ + QUOTA_SYNC_PATH + """) &
+}
+
+stop() {
+    return 0
+}
+"""
+
+
+def render_quota_sync_script(cfg: dict) -> str:
+    """The on-device operator→quota script, rendered from a `sim_switch` config
+    block (its `operators` table becomes the ICCID-prefix case arms)."""
+    unknown = quota_unknown_operator(cfg)
+    arms = []
+    for op in quota_operators(cfg):
+        pattern = "|".join(f"{p}*" for p in op["iccid_prefixes"])
+        arms.append(f"        {pattern}) echo '{op['name']} {op['data_limit_mb']} "
+                    f"{op['reset_day']} {1 if op['enabled'] else 0}' ;;"
+                    + (f"  # {op['mccmnc']}" if op["mccmnc"] else ""))
+    arms.append(f"        *) echo 'unknown {unknown['data_limit_mb']} "
+                f"{unknown['reset_day']} {1 if unknown['enabled'] else 0}' ;;"
+                "  # unrecognised SIM or empty slot")
+    return (
+        _QUOTA_SYNC_PROLOGUE
+        + f"SLOTS='{' '.join(str(s) for s in SIM_SLOTS)}'\n"
+        + f"PERIOD='{QUOTA_PERIOD_MONTH}'\n"
+        + f"ESIM_SECTION='mob1s{ESIM_SLOT}a1'\n"
+        + "\n# operator_for <iccid> -> '<name> <data_limit_mb> <reset_day> <enabled>'\n"
+        + "# Limits are DEVICE MB, which are binary: 3000000 MB reads as 2.86 TB.\n"
+        + 'operator_for() {\n    case "$1" in\n'
+        + "\n".join(arms)
+        + "\n    esac\n}\n"
+        + _QUOTA_SYNC_BODY
+    )
+
+
 def device_name(site_name: str, prefix: str = DEFAULT_NAME_PREFIX) -> str:
     """otd-<site_name>, sanitised to a valid hostname label."""
     slug = re.sub(r"[^A-Za-z0-9-]", "-", site_name.strip().lower()).strip("-")
@@ -864,6 +1242,64 @@ class TeltonikaClient:
         """uci set ...; uci commit <package> over SSH."""
         cmd = " && ".join([f"uci set {s}" for s in sets] + [f"uci commit {package}"])
         self.ssh_exec(cmd)
+
+    @staticmethod
+    def _uci_arg(path: str, value) -> str:
+        """A shell-safe `package.section.option=value` argument for `uci set`.
+
+        The WHOLE argument is quoted, not just the value: anonymous sections are
+        addressed as `@sim[0]`, and an unquoted `[0]` is a shell glob."""
+        return shlex.quote(f"{path}={value}")
+
+    def _uci_add(self, package: str, section_type: str) -> str:
+        """`uci add` an anonymous section, returning the id UCI assigned it (e.g.
+        'cfg0492bd'). The add is staged, so the caller's `uci commit` persists it."""
+        out = self.ssh_exec(f"uci add {package} {section_type}").strip()
+        section = out.splitlines()[-1].strip() if out else ""
+        if not section:
+            raise SystemExit(f"'uci add {package} {section_type}' returned no section id.")
+        return section
+
+    def _ssh_report(self, command: str, what: str) -> None:
+        """Run `command`, raising SystemExit("<what>: <the device's own error>").
+
+        ssh_exec's failure message quotes the whole command, which for a file
+        write means echoing the file back at the operator. This asks the shell
+        for its stderr instead and reports only that — the difference between
+        'Failure' and 'Read-only file system'."""
+        out = self.ssh_exec(f"{{ {command}\n}} 2>&1 && echo __OK__", check=False)
+        if "__OK__" in out.split():
+            return
+        detail = next((ln.strip() for ln in reversed(out.splitlines()) if ln.strip()),
+                      "no error output")
+        raise SystemExit(f"{what}: {detail}")
+
+    # Heredoc delimiter for _put_file: a line equal to it would end the write
+    # early, so it must not occur in anything we generate.
+    PUT_FILE_EOF = "__KELA_BENCH_EOF__"
+
+    def _put_file(self, path: str, content: str, *, mode: str = "644") -> None:
+        """Write `content` to `path` on the device, atomically.
+
+        Sent as a quoted heredoc over the same SSH exec channel every other step
+        uses, NOT over SFTP: RutOS's sftp-server answers a refused open with a
+        bare 'Failure', collapsing a read-only filesystem and a full one into the
+        same word, and a device whose firmware ships no sftp subsystem can't take
+        a file that way at all. The shell reports the real errno. (Firmware
+        images still go by SFTP — they're megabytes, not a 2 KB script.)
+
+        Written next to the target and moved into place, so neither cron nor the
+        init system can catch a half-written file."""
+        if self.PUT_FILE_EOF in content:
+            raise SystemExit(f"Refusing to write {path}: it contains the heredoc "
+                             f"delimiter {self.PUT_FILE_EOF}.")
+        tmp, body = shlex.quote(f"{path}.new"), content.rstrip("\n")
+        parent = shlex.quote(posixpath.dirname(path) or "/")
+        self._ssh_report(f"mkdir -p {parent} && cat > {tmp} <<'{self.PUT_FILE_EOF}'\n"
+                         f"{body}\n{self.PUT_FILE_EOF}",
+                         f"Could not write {path} on the device")
+        self._ssh_report(f"chmod {mode} {tmp} && mv {tmp} {shlex.quote(path)}",
+                         f"Could not install {path} on the device")
 
     def close(self) -> None:
         if self._ssh is not None:
@@ -1357,6 +1793,159 @@ class TeltonikaClient:
             "sed -n 's/^simcard\\.@sim\\[\\([0-9]*\\)\\]=sim$/\\1/p'", check=False)
         return [int(x) for x in out.split() if x.strip().isdigit()]
 
+    # --- SIM switch + per-operator data limits (TEC-359) --------------------
+    def _sim_switch_state(self) -> list[tuple[str, dict[str, str]]]:
+        """[(section id, {option: value})] for every `sim` section in the
+        sim_switch package, in file order — parsed from ONE `uci show`, so
+        configure/verify don't pay an SSH round trip per option read."""
+        out = self.ssh_exec(f"uci show {SIM_SWITCH_PACKAGE} 2>/dev/null", check=False)
+        state: list[tuple[str, dict[str, str]]] = []
+        by_id: dict[str, dict[str, str]] = {}
+        for line in out.splitlines():
+            m = re.match(rf"^{SIM_SWITCH_PACKAGE}\.([^.=]+)(?:\.([^.=]+))?=(.*)$",
+                         line.strip())
+            if not m:
+                continue
+            section_id, option, value = m.group(1), m.group(2), m.group(3).strip()
+            if option is None:
+                if value == "sim":
+                    by_id[section_id] = {}
+                    state.append((section_id, by_id[section_id]))
+            elif section_id in by_id:
+                by_id[section_id][option] = value.strip("'\"")
+        return state
+
+    @staticmethod
+    def _sim_switch_slots(state: list[tuple[str, dict[str, str]]]
+                          ) -> tuple[dict[int, str], list[str]]:
+        """({slot number: section id}, [orphan section ids]).
+
+        Sections are keyed by their `position` option, NOT by file order —
+        position is what ties a rule to a physical slot. A section without one
+        (a leftover from an interrupted run) falls back to its ordinal.
+        Whatever remains unclaimed — a duplicate position, a position beyond
+        the slots this device has — is an orphan: configure_sim_switch()
+        disables those, because a leftover section that stays enabled would
+        keep failing over with stale rules."""
+        sections: dict[int, str] = {}
+        orphans: list[str] = []
+        for ordinal, (section_id, options) in enumerate(state, start=1):
+            position = options.get("position", "")
+            slot = int(position) if position.isdigit() else ordinal
+            if sections.setdefault(slot, section_id) != section_id:
+                orphans.append(section_id)
+        managed = set(SIM_SLOTS) | {ESIM_SLOT}
+        orphans += [sid for slot, sid in sections.items() if slot not in managed]
+        return {slot: sid for slot, sid in sections.items() if slot in managed}, orphans
+
+    def _modem_id(self, state: list[tuple[str, dict[str, str]]]) -> str:
+        """The modem id sim_switch sections belong to ('2-1' on the OTD500).
+
+        Read from the device's CONFIG only (existing sim_switch sections first,
+        then `simcard`) — never from the modem — so it works with no SIM in."""
+        for _, options in state:
+            if options.get("modem"):
+                return options["modem"]
+        from_simcard = self.ssh_exec("uci -q get simcard.@sim[0].modem", check=False).strip()
+        return from_simcard or DEFAULT_MODEM_ID
+
+    def _warn_if_sim_switch_fw_unverified(self) -> None:
+        """The sim_switch option names are undocumented and were verified on one
+        firmware. Say so loudly on any other one — but don't fail: a warning that
+        the map may have drifted is useful, refusing to provision is not."""
+        fw = self.ssh_exec("cat /etc/version 2>/dev/null", check=False).strip()
+        if fw_carries_version(fw, VERIFIED_SIM_SWITCH_FW):
+            return
+        log.warning("sim_switch UCI names verified on %s — this device reports %s. "
+                    "Re-verify with `uci export sim_switch` on this firmware.",
+                    VERIFIED_SIM_SWITCH_FW, fw or "no version")
+
+    def configure_sim_switch(self, cfg: dict) -> None:
+        """Provision the RutOS `sim_switch` service: sticky, symmetric failover
+        between SIM slot 1 and slot 2 (TEC-359).
+
+        We only write the RULES — the device's own sim_switch service does the
+        switching. Pure UCI plus a service restart, so it needs NO SIM inserted
+        (the normal bench state), never reads modem state, and never touches
+        `simcard.@sim[].primary`. Restarting sim_switch does not bounce the modem
+        or drop back to the primary SIM (verified on 07.22.3)."""
+        self._warn_if_sim_switch_fw_unverified()
+        state = self._sim_switch_state()
+        sections, orphans = self._sim_switch_slots(state)
+        modem = self._modem_id(state)
+        rules = dict(sim_switch_options(SIM_SLOTS[0], cfg=cfg))
+        log.info("Configuring SIM switch on modem %s (check every %ss x%s, weak signal "
+                 "below %s dBm, ICMP %s, sticky) ...", modem, rules["interval"],
+                 rules["retry_count"], rules["weak_signal"], rules["data_fail_host"])
+        sets: list[str] = []
+        for slot in SIM_SLOTS + (ESIM_SLOT,):
+            section_id = sections.get(slot) or self._uci_add(SIM_SWITCH_PACKAGE, "sim")
+            for option, value in sim_switch_options(slot, cfg=cfg, modem=modem,
+                                                    enabled=slot in SIM_SLOTS):
+                sets.append(self._uci_arg(
+                    f"{SIM_SWITCH_PACKAGE}.{section_id}.{option}", value))
+        if orphans:
+            log.warning("sim_switch has %d leftover section(s) (%s) — disabling them; "
+                        "an enabled duplicate would keep failing over with stale rules.",
+                        len(orphans), ", ".join(orphans))
+            sets += [self._uci_arg(f"{SIM_SWITCH_PACKAGE}.{sid}.enabled", "0")
+                     for sid in orphans]
+        self._uci(*sets, package=SIM_SWITCH_PACKAGE)
+        self.ssh_exec(f"/etc/init.d/{SIM_SWITCH_PACKAGE} restart")
+        log.info("SIM switch configured on slot(s) %s; slot %d (eSIM) left disabled.",
+                 ", ".join(str(s) for s in SIM_SLOTS), ESIM_SLOT)
+
+    def _keep_across_upgrade(self) -> None:
+        """List the quota-sync files in /etc/sysupgrade.conf, so a keep-settings
+        firmware upgrade restores them instead of leaving the (preserved) cron
+        entry calling a script that is no longer there. See QUOTA_SYNC_KEEP.
+
+        Appends to whatever the operator already has in there, dropping only our
+        own previous block, so re-running is a no-op rather than four more
+        lines. Both comment lines name QUOTA_SYNC_NAME for that reason: the
+        cleanup sed matches on it, and a line without it would survive and
+        accumulate one copy per provisioning run."""
+        block = "\n".join((
+            f"# {QUOTA_SYNC_NAME} (TEC-359): keep the operator->quota script "
+            "and its boot hook.",
+            f"# This file is listed too, so {QUOTA_SYNC_NAME} survives the NEXT "
+            "upgrade as well.",
+            *QUOTA_SYNC_KEEP))
+        self._ssh_report(
+            f"touch {SYSUPGRADE_CONF} && "
+            f"sed -i -e '\\,{QUOTA_SYNC_NAME},d' "
+            f"-e '\\,^{SYSUPGRADE_CONF}$,d' {SYSUPGRADE_CONF} && "
+            f"cat >> {SYSUPGRADE_CONF} <<'{self.PUT_FILE_EOF}'\n"
+            f"{block}\n{self.PUT_FILE_EOF}",
+            f"Could not add the quota-sync files to {SYSUPGRADE_CONF}")
+
+    def install_quota_sync(self, cfg: dict) -> None:
+        """Deploy the on-device operator→quota script (TEC-359 Phase 1b).
+
+        Which data limit a slot needs depends on which operator's SIM is in it,
+        and the SIMs are inserted in the field — so the decision can't be made
+        here. The device re-derives it from each slot's ICCID at boot and every
+        10 minutes instead. Run once at the end, so a device leaves the bench
+        with its limits already written rather than up to 10 minutes later."""
+        operators = quota_operators(cfg)
+        log.info("Installing %s (%d operator(s): %s) ...", QUOTA_SYNC_PATH, len(operators),
+                 ", ".join(f"{o['name']} {o['iccid_prefixes'][0]}*" for o in operators)
+                 or "none — every SIM gets the fallback limit")
+        self._put_file(QUOTA_SYNC_PATH, render_quota_sync_script(cfg), mode="755")
+        self._put_file(QUOTA_SYNC_INIT_PATH, QUOTA_SYNC_INIT, mode="755")
+        self.ssh_exec(f"{QUOTA_SYNC_INIT_PATH} enable")
+        self._keep_across_upgrade()
+        # Rewrite rather than append-if-missing, so a changed schedule replaces
+        # the old entry instead of running alongside it.
+        self.ssh_exec(
+            f"mkdir -p $(dirname {CRONTAB_PATH}) && touch {CRONTAB_PATH} && "
+            f"sed -i '/{QUOTA_SYNC_NAME}/d' {CRONTAB_PATH} && "
+            f"echo {shlex.quote(QUOTA_SYNC_CRON)} >> {CRONTAB_PATH} && "
+            "{ /etc/init.d/cron enable >/dev/null 2>&1; /etc/init.d/cron restart; }")
+        self.ssh_exec(QUOTA_SYNC_PATH)
+        log.info("Quota sync installed: runs at boot and every 10 minutes "
+                 "(limits follow the SIM's operator, not the slot).")
+
     # --- RMS ----------------------------------------------------------------
     def enable_rms(self, auth_code: str = "") -> None:
         """Ensure RMS is enabled and force a connect attempt. On this firmware the
@@ -1532,10 +2121,70 @@ class TeltonikaClient:
         log.info("eSIM download output: %s", out[:300] or "(no output — verify on device)")
 
     # --- final verification -------------------------------------------------
+    # The sim_switch options worth reading back: the ones that decide WHETHER a
+    # slot fails over and on what, rather than every option we write.
+    SIM_SWITCH_VERIFIED_OPTIONS = ("enabled", "interval", "retry_count",
+                                   "weak_signal", "enable_back", "data_fail_host")
+
+    def _verify_sim_switch(self, cfg: dict) -> list[dict]:
+        """Verification rows for the sim_switch rules and the quota-sync script.
+        Every row is `ok=None` (skipped) when sim_switch isn't enabled in the
+        config, so the table shows the feature as out of scope, not as passing."""
+        rows: list[dict] = []
+
+        def add(item, expected, actual, ok):
+            rows.append({"item": item, "expected": expected, "actual": actual, "ok": ok})
+
+        if not (cfg or {}).get("enabled"):
+            for slot in SIM_SLOTS:
+                add(f"SIM switch slot {slot}", "(skipped)", "-", None)
+            add("quota sync script", "(skipped)", "-", None)
+            add("quota sync cron", "(skipped)", "-", None)
+            add("quota sync survives upgrade", "(skipped)", "-", None)
+            return rows
+
+        state = self._sim_switch_state()
+        sections, _ = self._sim_switch_slots(state)
+        options_by_id = dict(state)
+        for slot in SIM_SLOTS:
+            wanted = dict(sim_switch_options(slot, cfg=cfg))
+            expected = " ".join(f"{o}={wanted[o]}" for o in self.SIM_SWITCH_VERIFIED_OPTIONS)
+            section_id = sections.get(slot)
+            if not section_id:
+                add(f"SIM switch slot {slot}", expected, "(no sim_switch section)", False)
+                continue
+            device = options_by_id[section_id]
+            actual = " ".join(f"{o}={device.get(o) or '-'}"
+                              for o in self.SIM_SWITCH_VERIFIED_OPTIONS)
+            add(f"SIM switch slot {slot}", expected, actual, actual == expected)
+
+        installed = self.ssh_exec(
+            f"[ -x {QUOTA_SYNC_PATH} ] && echo script; "
+            f"[ -x {QUOTA_SYNC_INIT_PATH} ] && echo boot-hook", check=False).split()
+        add("quota sync script", "script + boot-hook",
+            " + ".join(installed) or "(not installed)",
+            "script" in installed and "boot-hook" in installed)
+
+        cron = self.ssh_exec(f"grep -F {QUOTA_SYNC_NAME} {CRONTAB_PATH} 2>/dev/null",
+                             check=False).strip()
+        add("quota sync cron", QUOTA_SYNC_CRON, cron or "(no cron entry)",
+            cron == QUOTA_SYNC_CRON)
+
+        # The cron entry survives a keep-settings upgrade on its own; the script
+        # only does if it is listed here.
+        kept = set(self.ssh_exec(f"grep -v '^#' {SYSUPGRADE_CONF} 2>/dev/null",
+                                 check=False).split())
+        missing = [p for p in QUOTA_SYNC_KEEP if p not in kept]
+        add("quota sync survives upgrade", f"{len(QUOTA_SYNC_KEEP)} paths kept",
+            "all listed" if not missing else f"missing {', '.join(missing)}",
+            not missing)
+        return rows
+
     def verify_configuration(self, *, hostname: str, zonename: str, new_password: str,
                              sim_4g: bool, rms: bool, tailscale: bool,
                              esim: bool = False, expected_firmware: str = "",
-                             rms_api_token: str = "", serial: str = "") -> list[dict]:
+                             rms_api_token: str = "", serial: str = "",
+                             sim_switch: Optional[dict] = None) -> list[dict]:
         """Re-read every setting back off the device and confirm it actually took.
         Returns a list of checks: {item, expected, actual, ok} where ok is True
         (passed), False (failed) or None (not in scope / skipped)."""
@@ -1564,6 +2213,11 @@ class TeltonikaClient:
                 bool(idxs) and all(v == SIM_SERVICE_4G for v in vals))
         else:
             add("SIM 4G-only", "(skipped)", "-", None)
+
+        # `sim_switch` is the whole config block: {} / disabled shows as skipped,
+        # None leaves the rows out entirely (a tool that has no SIM switch).
+        if sim_switch is not None:
+            checks += self._verify_sim_switch(sim_switch)
 
         if rms:
             en = self.ssh_exec(f"uci get {UCI_RMS_ENABLED} 2>/dev/null", check=False).strip()
