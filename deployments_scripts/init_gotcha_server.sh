@@ -8,7 +8,7 @@
 #
 # Steps: hostname -> unique machine-id -> kela user with passwordless sudo ->
 # format + mount the SSD at /mnt/data -> point /var/lib/rancher at the SSD ->
-# Tailscale -> optionally claim the site's fixed address.
+# Tailscale -> optionally claim the site's fixed address and pin k3s to it.
 #
 # Usage (over SSH on the LAN, as root):
 #   scp init_gotcha_server.sh kela@192.168.88.20:/tmp/
@@ -28,7 +28,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-08-24.4"
+SETUP_VERSION="2026-08-25.2"
 
 # ---------- config (flags override these env vars) --------------------------
 SITE_NAME="${SITE_NAME:-}"
@@ -40,6 +40,7 @@ KELA_PASSWORD_HASH="${KELA_PASSWORD_HASH:-}"
 KELA_SSH_PUBKEY="${KELA_SSH_PUBKEY:-}"
 STATIC_IP="${STATIC_IP:-}"
 KEEP_MACHINE_ID="${KEEP_MACHINE_ID:-0}"
+FORCE_MACHINE_ID="${FORCE_MACHINE_ID:-0}"
 ASSUME_YES="${ASSUME_YES:-0}"
 
 DATA_MOUNT=/mnt/data
@@ -49,8 +50,10 @@ DATA_UUID=""
 DATA_PART=""
 WILL_FORMAT=0
 STATIC_IP_CLAIMED=0
+STATIC_IP_IFACE=""
+STATIC_IP_CON=""
 MACHINE_ID_CHANGED=0
-TOTAL_STEPS=8
+TOTAL_STEPS=9
 
 log()  { echo "[$(date '+%Y-%m-%dT%H:%M:%S')] $*"; }
 step() { echo; echo "==> [$1/${TOTAL_STEPS}] $2"; }
@@ -80,7 +83,11 @@ Options:
   --keep-machine-id        Don't regenerate /etc/machine-id. By default it is
                            regenerated once, because every Jetson flashed from
                            the same image ships with an identical one, which
-                           collides DHCP identities and journals across a fleet.
+                           collides DHCP identities, journals and k3s node names
+                           across a fleet.
+  --force-machine-id       Regenerate even though k3s has already registered a
+                           node under the current ID. The node re-registers
+                           under the new name and the old object is orphaned.
   --static-ip <cidr>       Additional fixed address to claim, e.g.
                            192.168.88.10/24 — the address the rest of the fleet
                            expects the site server on. Added *alongside* DHCP,
@@ -110,6 +117,7 @@ parse_args() {
       --ssh-pubkey)    KELA_SSH_PUBKEY="$2"; shift 2 ;;
       --static-ip)     STATIC_IP="$2"; shift 2 ;;
       --keep-machine-id) KEEP_MACHINE_ID=1; shift ;;
+      --force-machine-id) FORCE_MACHINE_ID=1; shift ;;
       --yes|-y)        ASSUME_YES=1; shift ;;
       -h|--help)       usage ;;
       *)               die "Unknown option: $1" ;;
@@ -208,6 +216,13 @@ regenerate_machine_id() {
   if [[ -e "$stamp" ]]; then
     log "already regenerated ($(cat /etc/machine-id 2>/dev/null)) — leaving it alone"
     return 0
+  fi
+
+  # kela-node-controller derives the k3s node-name from /etc/machine-id, so on a
+  # box where k3s has already registered, changing the ID renames the node and
+  # orphans the old object. A fresh box has no k3s yet and sails past this.
+  if [[ "$FORCE_MACHINE_ID" != 1 ]] && command -v k3s >/dev/null 2>&1; then
+    die "k3s has already registered this box, and its node-name comes from /etc/machine-id — regenerating would orphan that node. Use --keep-machine-id if the ID is already unique, or --force-machine-id to accept the re-registration"
   fi
 
   local before after
@@ -519,6 +534,10 @@ claim_static_ip() {
     return 0
   fi
 
+  # Recorded before the NetworkManager section below, which can bail out early:
+  # pinning the k3s node IP depends on the address, not on NM being present.
+  STATIC_IP_IFACE="$iface"
+
   # Persist it on the NetworkManager profile so it comes back after a reboot.
   # `nmcli connection modify` only rewrites the stored profile; without a
   # matching `connection up` nothing is torn down now.
@@ -540,15 +559,76 @@ claim_static_ip() {
     nmcli connection modify "$con" +ipv4.addresses "$STATIC_IP"
     log "profile '$con' now carries $STATIC_IP alongside its DHCP lease"
   fi
+
+  STATIC_IP_CON="$con"
+
+  # With ipv4.method=auto plus a manual address, NetworkManager fails the whole
+  # profile when no lease arrives and tears the manual address down with it —
+  # losing this address in exactly the case it exists for. An unbounded DHCP
+  # timeout keeps the profile up and the static applied while DHCP retries in
+  # the background.
+  nmcli connection modify "$con" ipv4.dhcp-timeout infinity
+  # ...but that alone leaves the device 'activating' until a lease shows up,
+  # which NetworkManager-wait-online blocks boot on. required-timeout bounds
+  # that wait; it needs NM 1.34+, so treat it as best-effort.
+  if nmcli connection modify "$con" ipv4.required-timeout 20000 2>/dev/null; then
+    log "profile '$con' keeps $addr through a DHCP outage (20s activation wait)"
+  else
+    warn "this NetworkManager has no ipv4.required-timeout — boot may wait on DHCP"
+  fi
 }
 
-# ---------- 8. record + verify ---------------------------------------------
+# k3s picks its node IP by taking the first global address on the default-route
+# interface, so on a box holding both a lease and this static it depends on
+# which one NetworkManager applied first. Pin it, or the node registers under a
+# DHCP address that moves. Written as a config.yaml.d drop-in because
+# kela-node-controller owns config.yaml and rewrites it.
+#
+# node-ip does not affect node-name, so pinning it never re-registers the node.
+# tls-san uses the '+' suffix since k3s replaces lists rather than merging them;
+# for the same reason this file must never mention kubelet-arg or the *-arg keys
+# the controller sets, or their values would be silently dropped.
+pin_k3s_node_ip() {
+  step 8 "Pinning the k3s node IP"
+
+  if [[ "$STATIC_IP_CLAIMED" != 1 || -z "$STATIC_IP_IFACE" ]]; then
+    log "no static address claimed — leaving k3s to detect its own node IP"
+    return 0
+  fi
+
+  local dropin=/etc/rancher/k3s/config.yaml.d/90-kela-node-ip.yaml
+  local addr="${STATIC_IP%%/*}"
+  local desired
+  desired="$(printf 'node-ip: %s\nflannel-iface: %s\ntls-san+:\n  - %s\n' \
+    "$addr" "$STATIC_IP_IFACE" "$addr")"
+
+  if [[ -f "$dropin" ]] && [[ "$(cat "$dropin")" == "$desired" ]]; then
+    # Converge the mode too: a drop-in written by hand arrives 0644.
+    chmod 0600 "$dropin"
+    log "$dropin already pins node-ip to $addr"
+    return 0
+  fi
+
+  install -d -m 0755 /etc/rancher/k3s/config.yaml.d
+  printf '%s' "$desired" > "$dropin"
+  chmod 0600 "$dropin"
+  log "$dropin pins node-ip and flannel-iface to $addr on $STATIC_IP_IFACE"
+
+  # Harmless before k3s exists, which is the normal case. If k3s is already
+  # running it keeps its current node IP until restarted, so say so rather than
+  # bouncing the cluster from a provisioning script.
+  if systemctl is-active --quiet k3s 2>/dev/null; then
+    warn "k3s is running with its previously detected node IP — 'systemctl restart k3s' to apply this"
+  fi
+}
+
+# ---------- 9. record + verify ---------------------------------------------
 PASS=0; FAIL=0; WARNED=0
 req() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then echo "PASS  $d"; PASS=$((PASS+1)); else echo "FAIL  $d"; FAIL=$((FAIL+1)); fi; }
 opt() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then echo "PASS  $d"; PASS=$((PASS+1)); else echo "WARN  $d"; WARNED=$((WARNED+1)); fi; }
 
 record_and_verify() {
-  step 8 "Recording build info and verifying"
+  step 9 "Recording build info and verifying"
 
   local ts_ip
   ts_ip="$(tailscale ip -4 2>/dev/null | head -1 || true)"
@@ -596,10 +676,30 @@ EOF
       opt "${STATIC_IP%%/*} is live"  bash -c "ip -4 -o addr show | grep -qw '${STATIC_IP%%/*}'"
     fi
     req "default route still present" bash -c "ip -4 route show default | grep -q ."
+    if [[ "$STATIC_IP_CLAIMED" == 1 ]]; then
+      req "k3s node-ip pinned to ${STATIC_IP%%/*}" \
+        grep -qx "node-ip: ${STATIC_IP%%/*}" /etc/rancher/k3s/config.yaml.d/90-kela-node-ip.yaml
+      # NM renders an unbounded timeout as either 'infinity' or its int maximum.
+      opt "static address survives a DHCP outage" \
+        bash -c "nmcli -t -g ipv4.dhcp-timeout connection show '$STATIC_IP_CON' 2>/dev/null | grep -qE '^(infinity|2147483647)$'"
+    fi
   fi
 
   echo
   echo "${PASS} pass, ${FAIL} fail, ${WARNED} warn"
+}
+
+# The closing advice differs on a re-run: telling someone to install k3s when it
+# is already serving the cluster is just misleading.
+k3s_next_step() {
+  if ! command -v k3s >/dev/null 2>&1; then
+    printf '  Next: install k3s. It picks up %s through the symlink, so no\n  --data-dir flag is needed.\n' "$RANCHER_DIR"
+    return 0
+  fi
+  printf '  k3s is already installed and keeps its data in %s.\n' "$RANCHER_DIR"
+  if [[ "$STATIC_IP_CLAIMED" == 1 ]]; then
+    printf "  Run 'systemctl restart k3s' to pick up the pinned node-ip.\n"
+  fi
 }
 
 main() {
@@ -624,6 +724,7 @@ main() {
   # Last of the mutating steps: everything above needs working internet, and
   # this is the only one that touches the live network configuration.
   claim_static_ip
+  pin_k3s_node_ip
   record_and_verify
   [[ "$FAIL" -eq 0 ]] || die "$FAIL check(s) failed — see the list above"
 
@@ -637,8 +738,7 @@ main() {
   Addresses:     $(ip -4 -o addr show scope global | awk '{print $4}' | paste -sd ' ' -)
   Station info:  cat /etc/kela/build-info
 
-  Next: install k3s. It picks up $RANCHER_DIR through the symlink, so no
-  --data-dir flag is needed.
+$(k3s_next_step)
 ============================================================================
 EOF
 

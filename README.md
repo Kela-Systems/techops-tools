@@ -127,6 +127,20 @@ python3 raster_to_gpkg.py -i /path/to/tiffs -o out.gpkg --zoom 16
   never reactivated, so it won't drop the SSH session you're running it over.
   It refuses to claim the address if something else already answers there.
 
+  The same step sets `ipv4.dhcp-timeout infinity` on the profile, because
+  NetworkManager otherwise fails a `method=auto` profile outright when no lease
+  arrives and tears the manual address down with it — losing the address in
+  exactly the case it exists for. `ipv4.required-timeout` bounds how long boot
+  waits on a lease (needs NM 1.34+, skipped with a warning below that).
+
+  It then pins the k3s node IP to that address via a
+  `/etc/rancher/k3s/config.yaml.d/` drop-in. k3s otherwise takes the first
+  global address on the default-route interface, so on a box holding both a
+  lease and the static it depends on which one NetworkManager applied first. A
+  drop-in is used because `kela-node-controller` owns `config.yaml` and rewrites
+  it; the drop-in deliberately never mentions the `*-arg` keys, since k3s
+  replaces lists rather than merging them.
+
   Every Jetson flashed from the same JetPack image ships with an identical
   `/etc/machine-id`, and systemd derives the DHCP DUID from it — so two
   un-fixed boxes on one LAN present the same DHCP identity and fight over
@@ -141,6 +155,13 @@ python3 raster_to_gpkg.py -i /path/to/tiffs -o out.gpkg --zoom 16
   restored as a symlink to `/etc/machine-id`, and the step fails loudly if the ID
   comes back unchanged. The new ID becomes the DHCP identity on the next boot.
   Use `--keep-machine-id` to opt out.
+
+  `kela-node-controller` also derives the k3s `node-name` from the machine-id,
+  which is the strongest reason to make it unique — a fleet sharing one ID would
+  share one k3s node name. It equally means regenerating it on a box where k3s
+  has already registered renames the node and orphans the old object, so the
+  step refuses outright when k3s is installed. Pass `--keep-machine-id` if the
+  ID is already unique, or `--force-machine-id` to accept the re-registration.
 
 - **`align_dtm_to_ortho.sh`** — reproject + crop a DTM to cover the exact bbox +
   CRS of a reference orthophoto, keeping the DTM's native pixel size.
