@@ -44,13 +44,11 @@ from bench_core import (
     assert_device_model,
     device_name,
     format_verification,
-    host_iface_for,
     load_settings,
     log,
     assign_rms_pack,
     make_step_runner,
     register_in_rms,
-    renew_host_dhcp,
     set_log_serial,
 )
 
@@ -60,10 +58,13 @@ DEFAULT_RUTM_LAN_IP = "192.168.88.1"
 
 
 class RutmClient(TeltonikaClient):
-    """TeltonikaClient with the RUTM08 specifics: wired-WAN internet wait and the
-    LAN-move step. (Model no longer needs fixing up here: the shared client reads
-    the real model from mnfinfo/REST and returns 'unknown' when it can't, so the
-    guard refuses to guess rather than defaulting to a family name.)"""
+    """TeltonikaClient with the one RUTM08 specific left: the wired-WAN internet
+    wait. (Model no longer needs fixing up here: the shared client reads the real
+    model from mnfinfo/REST and returns 'unknown' when it can't, so the guard
+    refuses to guess rather than defaulting to a family name. `move_lan` moved to
+    the shared client when the TSW202 tool needed it too — the RUTM08 call is
+    unchanged, since a router needs neither netmask/gateway stated nor the host
+    DHCP renew turned off.)"""
 
     def wait_for_internet(self, timeout: int = 180, target: str = "8.8.8.8") -> bool:
         """Same stability probe as the OTD's mobile wait (ICMP, HTTP fallback,
@@ -94,57 +95,6 @@ class RutmClient(TeltonikaClient):
         log.warning("No internet after %ds — check the WAN cable/uplink.", timeout)
         self._online = False
         return False
-
-    # --- LAN move (must run LAST) --------------------------------------------
-    def current_lan_ip(self) -> str:
-        return self.ssh_exec("uci get network.lan.ipaddr 2>/dev/null", check=False).strip()
-
-    def move_lan(self, new_ip: str, wait: int = 120) -> dict:
-        """Point the LAN interface at `new_ip`. We are talking to the device OVER
-        that LAN, so the network restart drops the connection by design: commit
-        synchronously, restart fire-and-forget, then confirm by reaching the
-        device on the new address (renewing the host's DHCP lease so the laptop
-        follows it into the new subnet). The DHCP pool follows the interface
-        subnet automatically, so only ipaddr needs changing.
-
-        Returns a verification-style check dict; never raises after the commit
-        (past that point the device is moving whether we can see it or not)."""
-        cur = self.current_lan_ip()
-        if cur == new_ip:
-            log.info("LAN IP is already %s; skipping the move.", new_ip)
-            return {"item": "LAN IP", "expected": new_ip,
-                    "actual": f"{new_ip} (already set)", "ok": True}
-
-        # Resolve the host-side interface while the device is still reachable.
-        iface = host_iface_for(self.host)
-        log.info("Moving the LAN from %s to %s — the connection will drop ...",
-                 cur or self.host, new_ip)
-        self.ssh_exec(f"uci set network.lan.ipaddr='{new_ip}' && uci commit network")
-        self._fire_and_forget("sleep 1; /etc/init.d/network restart")
-        self.close()
-        self.host = new_ip
-        self.base = f"{self.scheme}://{new_ip}/api"
-
-        port = 443 if self.scheme == "https" else 80
-        deadline = time.time() + wait
-        time.sleep(5)
-        renew_host_dhcp(iface)
-        renewed_again = False
-        while time.time() < deadline:
-            if self._port_open(port):
-                log.info("Device is answering on %s.", new_ip)
-                return {"item": "LAN IP", "expected": new_ip,
-                        "actual": f"answering on {new_ip}", "ok": True}
-            if not renewed_again and time.time() > deadline - wait / 2:
-                renew_host_dhcp(iface)
-                renewed_again = True
-            time.sleep(3)
-        log.warning("Device did not answer on %s within %ds — it may still be fine; "
-                    "check that the laptop picked up a lease in the new subnet.",
-                    new_ip, wait)
-        return {"item": "LAN IP", "expected": new_ip,
-                "actual": f"no answer on {new_ip} after {wait}s "
-                          "(laptop lease may be stale)", "ok": False}
 
 
 # --- pipeline (shared by CLI + web UI) ----------------------------------------

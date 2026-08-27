@@ -72,6 +72,7 @@ double-click launcher  →  dashboard  ┌────────────�
                                      │  ● Teltonika RUTM08  :8004   192.168.1.x  │
                                      │  ● Raythink Camera   :8005   192.168.1.x  │
                                      │  ● ISR Speaker       :8006   DHCP (scan)  │
+                                     │  ● Teltonika TSW202  :8007   192.168.1.x  │
                                      └───────────────────────────────────────────┘
 ```
 
@@ -103,17 +104,28 @@ window (Windows) or press Ctrl+C in the terminal (macOS/Linux).
 | `rutm-config-ui/`     | Teltonika **RUTM08**         | 8004 | one device at a time, factory `192.168.1.1`; label scan |
 | `raythink-config-ui/` | Raythink **thermal camera**  | 8005 | factory `192.168.1.123`, RPC2 API; static IP or DHCP    |
 | `speaker-config-ui/`  | Provision-ISR **IP speaker** | 8006 | arrives on **DHCP** — auto-scans `192.168.1/2/88.0/24` |
+| `tsw-config-ui/`      | Teltonika **TSW202** switch  | 8007 | factory `192.168.1.**2**`; label scan; ends on `192.168.88.2` |
 
 
 The ports are fixed and don't collide, so all the tools run side by side under
-the one launcher.
+the one launcher. The Teltonika subnet is shared without conflict: the OTD500 and
+RUTM08 arrive on `192.168.1.1`, the TSW202 on `192.168.1.2`.
+
+> **Devices that end up on `192.168.88.x`.** The RUTM08 (`.1`), TSW202 (`.2`) and
+> speaker (`.70`) all move to that subnet as their last step, and the tool
+> confirms the move by reaching the device on its new address. The RUTM08 case
+> works anywhere because the router *serves* DHCP there and the tool renews the
+> station's lease. **A switch and a speaker do not**, so the bench adapter has to
+> carry an address on `192.168.88.x` itself (a second static IP, or a /16 over
+> both `192.168.1.x` and `192.168.88.x`). Without it the device still moves
+> correctly, but the run reports its final-address check as failed.
 
 ### Scanning the label instead of typing the password
 
-On the two Teltonika tools, the factory password can be read off the device's QR
+On the three Teltonika tools, the factory password can be read off the device's QR
 label with a barcode scanner rather than retyped from the sticker. Plug in the
-device, scan its label, and the password field fills itself — the site name and
-Configure are unchanged.
+device, scan its label, and the password field fills itself — the site name (where
+the tool asks for one) and Configure are unchanged.
 
 The label also carries the device's MAC, so the tool checks it against the MAC it
 read off the plugged-in device itself: **scanning the wrong box is refused rather
@@ -154,7 +166,7 @@ run the second one):
   timing, and a character-by-character diff against an expected payload. This is
   what you reach for when a station mangles passwords.
   - `scripts/scan-smoke.py` — drives the whole scan flow over real HTTP against
-  both Teltonika tools with simulated devices, including the deliberate
+  all three Teltonika tools with simulated devices, including the deliberate
   wrong-device case. Run it after touching the scan path.
 - **Updates are pushed from bench-central** (`bench-central/README.md`,
 "Fleet"): an admin pins a release (any git ref, resolved to a SHA) and every

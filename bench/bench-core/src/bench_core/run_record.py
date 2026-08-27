@@ -14,7 +14,7 @@ Schema `bench-run-record/1` — the common core, identical for every tool:
     schema        "bench-run-record/1"
     run_id        unique id of this run (uuid4 string), minted when the entry
                   is built — the idempotency key for central upload (TEC-347)
-    tool          which app produced it: "otd" | "rutm" | "raythink" |
+    tool          which app produced it: "otd" | "rutm" | "tsw" | "raythink" |
                   "speaker" | "magos-radar" | "magos-apu"
     timestamp     run end, full ISO-8601 UTC datetime
     time          run end, UTC "HH:MM:SS" (kept for the UI history column)
@@ -46,6 +46,11 @@ only by the per-run JSON writer — `parse_run_record()` still accepts those.)
 
     otd           hostname, site_name, imei, password_source
     rutm          hostname, site_name, password_source
+    tsw           ip (the management address the switch was moved to),
+                  password_source, firmware_note (why the firmware step did
+                  what it did — the config names a floor, not a pin, so a unit
+                  that arrives NEWER is passed through and says so here). No
+                  hostname: the switch baseline does not name the device.
     raythink      hostname, profile, ip
     speaker       hostname, ip, from_host
     magos-radar   channel, ip, from_host, ntp, timezone
@@ -66,7 +71,7 @@ from typing import Optional
 
 RUN_RECORD_SCHEMA = "bench-run-record/1"
 
-TOOLS = ("otd", "rutm", "raythink", "speaker", "magos-radar", "magos-apu")
+TOOLS = ("otd", "rutm", "tsw", "raythink", "speaker", "magos-radar", "magos-apu")
 
 # Per-family keys that legacy (pre-schema) records carried at the top level;
 # parse_run_record() lifts them into the `device` block.

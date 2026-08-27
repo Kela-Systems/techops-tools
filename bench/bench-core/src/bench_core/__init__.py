@@ -623,6 +623,25 @@ def fw_versions_match(a: str, b: str) -> bool:
     return bool(na) and bool(nb) and na == nb
 
 
+def fw_version_at_least(device_fw: str, minimum: str) -> bool:
+    """True when `device_fw` is `minimum` or newer.
+
+    The ordered counterpart to fw_versions_match, for a tool whose firmware
+    setting is a FLOOR rather than a pin (the TSW202: flash a unit that is
+    older, leave a newer one alone). Ordering the numeric tuples rather than
+    the strings is what makes that safe across the three shapes a real compare
+    hits: a release name against a bare version ('TSW2_R_00.01.10' vs
+    '00.01.10'), differing segment counts ('00.01.07' predates '00.01.07.1'),
+    and a segment that outgrows its zero padding ('00.01.100' follows
+    '00.01.99'). Get it wrong and the step flashes a switch backwards.
+
+    False when either side carries no dotted version: "we could not tell" must
+    not read as "new enough" and silently skip an upgrade.
+    """
+    a, b = _version_digits(device_fw), _version_digits(minimum)
+    return bool(a) and bool(b) and a >= b
+
+
 def fw_carries_version(device_fw: str, version: str) -> bool:
     """True when `device_fw` is the release `version`, comparing only the parts
     `version` actually names.
@@ -1762,6 +1781,75 @@ class TeltonikaClient:
                   package="system")
         self.ssh_exec("/etc/init.d/sysntpd restart", check=False)
         log.info("Timezone set.")
+
+    # --- LAN address (must run LAST) ----------------------------------------
+    def current_lan_ip(self) -> str:
+        return self.ssh_exec("uci get network.lan.ipaddr 2>/dev/null", check=False).strip()
+
+    def move_lan(self, new_ip: str, wait: int = 120, *, netmask: str = "",
+                 gateway: str = "", renew_dhcp: bool = True) -> dict:
+        """Point the LAN interface at `new_ip`. We are talking to the device OVER
+        that LAN, so the network restart drops the connection by design: commit
+        synchronously, restart fire-and-forget, then confirm by reaching the
+        device on the new address.
+
+        `netmask`/`gateway` are for devices that need them stated. A router
+        (RUTM08) needs neither — its DHCP pool follows the interface subnet, and
+        it IS the gateway — so only `ipaddr` changes there. A switch's
+        management interface has to be told both.
+
+        `renew_dhcp` renews the HOST's lease so the laptop follows the device
+        into the new subnet. Only correct when the device serves DHCP there: on
+        macOS the renew is `ipconfig set <iface> DHCP`, which would throw away a
+        statically-configured bench adapter. Devices that don't serve DHCP
+        (switches) must pass False and rely on the station already having an
+        address in the target subnet.
+
+        Returns a verification-style check dict; never raises after the commit
+        (past that point the device is moving whether we can see it or not)."""
+        cur = self.current_lan_ip()
+        if cur == new_ip:
+            log.info("LAN IP is already %s; skipping the move.", new_ip)
+            return {"item": "LAN IP", "expected": new_ip,
+                    "actual": f"{new_ip} (already set)", "ok": True}
+
+        # Resolve the host-side interface while the device is still reachable.
+        iface = host_iface_for(self.host)
+        log.info("Moving the LAN from %s to %s — the connection will drop ...",
+                 cur or self.host, new_ip)
+        sets = [f"network.lan.ipaddr='{new_ip}'"]
+        if netmask:
+            sets.append(f"network.lan.netmask='{netmask}'")
+        if gateway:
+            sets.append(f"network.lan.gateway='{gateway}'")
+        self.ssh_exec(" && ".join([f"uci set {s}" for s in sets]
+                                  + ["uci commit network"]))
+        self._fire_and_forget("sleep 1; /etc/init.d/network restart")
+        self.close()
+        self.host = new_ip
+        self.base = f"{self.scheme}://{new_ip}/api"
+
+        port = 443 if self.scheme == "https" else 80
+        deadline = time.time() + wait
+        time.sleep(5)
+        if renew_dhcp:
+            renew_host_dhcp(iface)
+        renewed_again = False
+        while time.time() < deadline:
+            if self._port_open(port):
+                log.info("Device is answering on %s.", new_ip)
+                return {"item": "LAN IP", "expected": new_ip,
+                        "actual": f"answering on {new_ip}", "ok": True}
+            if renew_dhcp and not renewed_again and time.time() > deadline - wait / 2:
+                renew_host_dhcp(iface)
+                renewed_again = True
+            time.sleep(3)
+        hint = ("laptop lease may be stale" if renew_dhcp else
+                f"is this station on the {new_ip.rsplit('.', 1)[0]}.x subnet?")
+        log.warning("Device did not answer on %s within %ds — it may still be fine; "
+                    "%s", new_ip, wait, hint)
+        return {"item": "LAN IP", "expected": new_ip,
+                "actual": f"no answer on {new_ip} after {wait}s ({hint})", "ok": False}
 
     # --- SIM / mobile -------------------------------------------------------
     def set_sims_4g_only(self) -> None:
