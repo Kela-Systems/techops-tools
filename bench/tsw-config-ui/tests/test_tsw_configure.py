@@ -12,7 +12,7 @@ import pytest
 import requests
 
 import bench_core
-from bench_core import DEFAULT_NEW_PASSWORD
+from bench_core import DEFAULT_NEW_PASSWORD, expected_utc_offset
 
 import tsw_configure as mod
 from tsw_configure import TswClient, apply_firmware_floor, configure_tsw
@@ -24,6 +24,10 @@ OLDER = "TSW2_R_00.01.05"
 NTP = "192.168.88.10"
 ZONE = "Asia/Jerusalem"
 POSIX_ZONE = "IST-2IDT,M3.4.4/26,M10.5.0"
+# What a switch that really is on ZONE reports for `date +%z`, today. Falls back
+# to a non-UTC offset on a machine with no tz database, which is the same thing
+# the fallback branch of the check settles for.
+CORRECT_OFFSET = expected_utc_offset(ZONE) or "+0300"
 
 
 class FakeSwitch:
@@ -31,13 +35,27 @@ class FakeSwitch:
     recording of every command for the writes."""
 
     def __init__(self, *, version=FLOOR, uci=None, model="TSW202",
-                 mnfinfo=True, board="", network=None):
+                 mnfinfo=True, board="", network=None, offset=None,
+                 system_show=None, polling=None):
         self.commands: list[str] = []
         self.version = version
         self.model = model
         self.mnfinfo = mnfinfo
         self.board = board
         self.uci = dict(uci or {})
+        # `date +%z` — the clock's real offset, deliberately settable
+        # independently of the UCI options, because that is the failure mode:
+        # the options were written and the clock stayed on UTC. The default is
+        # computed rather than fixed, so the suite doesn't start failing in
+        # winter when Asia/Jerusalem leaves IDT for +0200.
+        self.offset = CORRECT_OFFSET if offset is None else offset
+        # `uci show system`. None => derive it from self.uci so the common case
+        # stays a one-dict setup.
+        self.system_show = system_show
+        # What the live ntpd is polling, per its command line. Separate from the
+        # config for the same reason as the clock: the daemon not having picked
+        # a committed config up is its own failure mode.
+        self.polling = [NTP] if polling is None else polling
         # {section: ip} as `uci show network` would report it. Defaults to what
         # the first real TSW202 had: an addressed section that is NOT `lan`.
         self.network = {"lan_mgmt": "192.0.2.2"} if network is None else network
@@ -45,9 +63,26 @@ class FakeSwitch:
     def __call__(self, command, check=True, exec_timeout=None):
         self.commands.append(command)
 
+        # Writes land in the same dict the reads come out of, so a pipeline run
+        # verifies against what it actually set rather than against a fixture.
+        # `_uci` chains several sets into one shell line, hence findall.
+        for path, value in re.findall(r"uci set (\S+?)=('[^']*'|\S+)", command):
+            self.uci[path] = value.strip("'")
+
         if "uci show network" in command:
             return "\n".join(f"network.{s}=interface\nnetwork.{s}.ipaddr='{ip}'"
                              for s, ip in self.network.items())
+        if "uci show system" in command:
+            if self.system_show is not None:
+                return self.system_show
+            return "\n".join(f"{path}='{value}'"
+                             for path, value in self.uci.items())
+        if command.startswith("date +%z"):
+            return self.offset
+        if "grep '[n]tpd'" in command:
+            return "\n".join(
+                f" 6055 root  1680 S<  /usr/sbin/ntpd -n -N -p {s}"
+                for s in self.polling)
         if "cat /etc/version" in command:
             return self.version
         if "mnfinfo" in command:
@@ -124,13 +159,53 @@ def test_ntp_creates_the_section_when_it_is_absent():
     assert c.switch.wrote("uci set system.ntp=timeserver")
 
 
-def test_ntp_servers_reads_the_list_back():
+# ── the timezone has to reach the CLOCK, not just the config ─────────────────
+#
+# The first real TSW202 committed both `system.system.timezone` and
+# `system.ntp.zoneName` exactly right and ran on a +0000 clock: libc reads
+# /etc/TZ, and nothing writes it until the system config is reloaded.
+
+def test_the_timezone_is_applied_and_not_only_committed():
+    c = client()
+    c.set_timezone(ZONE)
+    assert c.switch.wrote(f"uci set system.system.timezone='{POSIX_ZONE}'")
+    assert c.switch.wrote("uci commit system")
+    assert c.switch.wrote("/etc/init.d/system reload")
+
+
+@pytest.mark.skipif(not expected_utc_offset(ZONE),
+                    reason="the fallback only triggers when this machine can "
+                           "say what the zone means today (needs tzdata)")
+def test_a_clock_that_reloading_did_not_move_gets_the_tz_file_written():
+    c = client(offset="+0000")          # the reload didn't take on this build
+    c.set_timezone(ZONE)
+    assert c.switch.wrote("/etc/init.d/system reload")
+    assert c.switch.wrote("> /tmp/TZ")
+    assert c.switch.wrote("> /etc/TZ")
+
+
+def test_a_clock_the_reload_did_move_is_left_alone():
+    c = client()                        # offset already correct for ZONE
+    c.set_timezone(ZONE)
+    assert not c.switch.wrote("> /etc/TZ")
+
+
+def test_configured_ntp_servers_reads_a_list_option():
     c = client(uci={"system.ntp.server": f"{NTP} 1.pool.ntp.org"})
-    assert c.ntp_servers() == [NTP, "1.pool.ntp.org"]
+    assert c.configured_ntp_servers() == [NTP, "1.pool.ntp.org"]
 
 
-def test_ntp_servers_is_empty_when_unset():
-    assert client().ntp_servers() == []
+def test_configured_ntp_servers_reads_one_section_per_server_too():
+    # The shape the TSW202 WebUI's "Hostname" column implies. A reader that only
+    # knows `list server` reports an empty, clean-looking config here.
+    show = ("system.@ntpserver[0].hostname='time1.google.com'\n"
+            "system.@ntpserver[1].hostname='time2.google.com'\n")
+    assert client(system_show=show).configured_ntp_servers() == [
+        "time1.google.com", "time2.google.com"]
+
+
+def test_configured_ntp_servers_is_empty_when_unset():
+    assert client(system_show="").configured_ntp_servers() == []
 
 
 # ── identity: the model must be readable or the run is refused ────────────────
@@ -307,7 +382,10 @@ def row(checks, item):
 
 
 def configured_uci():
-    return {"system.ntp.zoneName": ZONE, "system.system.timezone": POSIX_ZONE,
+    # system.system.zoneName is the one the WebUI dropdown renders; a switch
+    # missing it shows UTC on a correct clock.
+    return {"system.system.zoneName": ZONE, "system.ntp.zoneName": ZONE,
+            "system.system.timezone": POSIX_ZONE,
             "system.ntp.server": NTP, "system.ntp.enabled": "1"}
 
 
@@ -348,9 +426,85 @@ def test_the_firmware_check_is_out_of_scope_without_a_floor():
     assert row(verify(c, minimum_firmware=""), "firmware")["ok"] is None
 
 
-def test_a_wrong_timezone_fails():
-    uci = {**configured_uci(), "system.ntp.zoneName": "UTC"}
-    assert row(verify(client(uci=uci)), "timezone")["ok"] is False
+# ── the checks must observe EFFECT, not read back our own writes ─────────────
+#
+# The first real TSW202 passed both of these while sitting on UTC with four
+# Google servers: the old checks read the same UCI paths set_timezone and
+# set_ntp_server had just written, and `uci set` creates an option whether or
+# not the device consumes it. Both regressions are pinned here.
+
+def test_a_clock_still_on_utc_fails_the_timezone_check_despite_the_uci_option():
+    # zoneName reads back perfectly. The clock never moved. That is a FAIL.
+    c = client(uci=configured_uci(), offset="+0000")
+    check = row(verify(c), "timezone")
+    assert check["ok"] is False
+    assert "+0000" in check["actual"]
+
+
+def test_a_clock_on_the_zone_passes_the_timezone_check():
+    assert row(verify(client(uci=configured_uci())), "timezone")["ok"] is True
+
+
+def test_an_unreadable_clock_fails_rather_than_passes():
+    assert row(verify(client(uci=configured_uci(), offset="")),
+               "timezone")["ok"] is False
+
+
+def test_ntp_servers_the_device_keeps_elsewhere_still_fail_the_check():
+    # The shape the TSW202 WebUI shows: one section per server, under
+    # `hostname`, with our own untouched `system.ntp.server` write sitting
+    # alongside it. Reading our write back said PASS; the switch was still
+    # asking Google.
+    show = (f"system.ntp.server='{NTP}'\n"
+            "system.ntp.enabled='1'\n"
+            "system.@ntpserver[0].hostname='time1.google.com'\n"
+            "system.@ntpserver[1].hostname='time2.google.com'\n")
+    check = row(verify(client(uci=configured_uci(), system_show=show)),
+                "NTP server")
+    assert check["ok"] is False
+    assert "time1.google.com" in check["actual"]
+
+
+def test_a_config_the_ntp_daemon_never_picked_up_fails_the_check():
+    # Committed, enabled, correct — and the live daemon still polling the pool
+    # it was started with. The same "written but not applied" failure the
+    # timezone had.
+    c = client(uci=configured_uci(), polling=["1.pool.ntp.org"])
+    check = row(verify(c), "NTP server")
+    assert check["ok"] is False
+    assert "1.pool.ntp.org" in check["actual"]
+
+
+def test_no_ntp_daemon_at_all_fails_the_check():
+    check = row(verify(client(uci=configured_uci(), polling=[])), "NTP server")
+    assert check["ok"] is False
+    assert "polling nothing" in check["actual"]
+
+
+def test_the_first_real_units_ntp_state_passes():
+    # Exactly what `uci show system` and `ps` reported off the bench unit: this
+    # switch's NTP was CORRECT, and the WebUI screenshot that looked like four
+    # Google servers was not the device's state.
+    show = ("system.system.hostname='TSW202'\n"
+            "system.system.devicename='TSW202'\n"
+            f"system.system.timezone='{POSIX_ZONE}'\n"
+            "system.ntp=timeserver\n"
+            "system.ntp.enabled='1'\n"
+            "system.ntp.enable_server='0'\n"
+            f"system.ntp.zoneName='{ZONE}'\n"
+            f"system.ntp.server='{NTP}'\n")
+    c = client(uci=configured_uci(), system_show=show)
+    assert row(verify(c), "NTP server")["ok"] is True
+
+
+def test_the_device_hostname_is_not_mistaken_for_a_time_server():
+    show = (f"system.ntp.server='{NTP}'\n"
+            "system.ntp.enabled='1'\n"
+            "system.system.hostname='TSW202'\n")
+    check = row(verify(client(uci=configured_uci(), system_show=show)),
+                "NTP server")
+    assert check["ok"] is True
+    assert "TSW202" not in check["actual"]
 
 
 # ── no check may carry a password (TEC-349) ──────────────────────────────────

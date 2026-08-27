@@ -9,6 +9,10 @@ requires-python = ">=3.10"
 dependencies = [
     "requests~=2.32",
     "paramiko~=4.0",
+    # Windows ships no system tz database, and zoneinfo has nothing to fall back
+    # on there. expected_utc_offset() needs it to say what "Asia/Jerusalem"
+    # means right now, and the bench stations are Windows.
+    "tzdata; sys_platform == 'win32'",
 ]
 
 # The bench-UI base (bench_core.bench_ui) needs a web stack. CLI/library

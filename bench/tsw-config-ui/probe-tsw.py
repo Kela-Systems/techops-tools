@@ -38,6 +38,7 @@ def main() -> int:
     p.add_argument("--password", help="admin password (default: the shared one)")
     args = p.parse_args()
 
+    system_show = ""
     settings = {}
     config = BASE_DIR / "config" / "tsw.config.json"
     if config.exists():
@@ -66,19 +67,40 @@ def main() -> int:
                          f"resolved model -> {identity['model']} "
                          f"(serial {identity['serial']}, MAC {identity['mac']})"))
 
-        # 2. Is NTP at system.ntp, or a separate ntpclient package?
+        # 2. Is NTP at system.ntp, or a separate ntpclient package? The first
+        #    real unit accepted our writes to system.ntp.* and went on using
+        #    four Google servers on UTC, so the whole `system` package is dumped
+        #    below: whichever section the WebUI's "Time servers" table really
+        #    reads is in there, and guessing it again is how we got here.
         ntp_section = client.ssh_exec("uci -q get system.ntp", check=False).strip()
-        servers = client.ntp_servers()
+        servers = client.configured_ntp_servers()
         configs = client.ssh_exec("ls /etc/config", check=False).split()
         findings.append((bool(ntp_section),
                          f"system.ntp section -> {ntp_section or '(absent — it gets created)'}"))
-        findings.append((None, f"system.ntp.server -> {', '.join(servers) or '(unset)'}"))
+        findings.append((None, "every server/hostname option in `system` -> "
+                               f"{', '.join(servers) or '(none)'}"))
         findings.append(("ntpclient" not in configs,
                          f"/etc/config -> {' '.join(configs) or '(unreadable)'}"
                          + ("  <-- an ntpclient package would mean the NTP paths "
                             "are wrong" if "ntpclient" in configs else "")))
 
-        # 3. Which network section carries the management address? On a RutOS
+        # 3. Did the timezone actually reach the clock? `date +%z` is the only
+        #    answer that doesn't just echo the option we wrote.
+        offset = client.effective_utc_offset()
+        findings.append((offset not in ("", "+0000"),
+                         f"clock offset (date +%z) -> {offset or '(unreadable)'}"
+                         + ("   <-- still on UTC" if offset == "+0000" else "")))
+        findings.append((None, "device clock -> "
+                         + client.ssh_exec("date", check=False).strip()))
+        # The WebUI's Date & Time dropdown renders this one, not the timeserver
+        # section's copy. A blank here is a switch that shows UTC on a correct
+        # clock, one Save & Apply away from losing the clock too.
+        shown = client.ssh_exec("uci -q get system.system.zoneName",
+                                check=False).strip()
+        findings.append((bool(shown), "zone the WebUI renders "
+                         f"(system.system.zoneName) -> {shown or '(unset)'}"))
+
+        # 4. Which network section carries the management address? On a RutOS
         #    router it is `lan`; the first TSW202 on the bench answered
         #    `uci: Invalid argument` to network.lan, so this is discovered.
         addresses = client.network_addresses()
@@ -99,6 +121,7 @@ def main() -> int:
                                  f"{f'.{option}=' in shown}"))
 
         print(f"version: {client.ssh_exec('cat /etc/version', check=False).strip()}\n")
+        system_show = client.ssh_exec("uci show system 2>/dev/null", check=False)
     except SystemExit as e:
         print(f"Could not probe: {e}", file=sys.stderr)
         return 1
@@ -107,6 +130,12 @@ def main() -> int:
 
     for ok, line in findings:
         print(f"[{VERDICTS[ok]}] {line}")
+
+    if system_show:
+        print("\n── uci show system ─────────────────────────────────────────")
+        print(system_show.strip())
+        print("── end ────────────────────────────────────────────────────")
+
     failures = [line for ok, line in findings if ok is False]
     print(f"\n{len(findings) - len(failures)} of {len(findings)} assumptions hold.")
     if failures:

@@ -14,7 +14,9 @@ baseline is named after a site, so asking would be a field filled in for nothing
 5. Timezone → `Asia/Jerusalem`.
 6. Verify every setting by reading it back off the switch.
 7. **Last step:** move the management IP to `192.168.88.2`. The connection drops
-   by design; success is confirmed by reaching the switch on the new address.
+  by design; success is confirmed by reaching the switch on the new address.
+
+
 
 ## Two things that differ from the router tools next door
 
@@ -27,7 +29,7 @@ arriving *newer* than our pin is routine rather than an edge case — and
 it backwards. `bench_core.fw_version_at_least` is the ordered compare that makes
 the floor correct.
 
-**The station needs an address on `192.168.88.x`.** The RUTM08 renews the
+**The station needs an address on** `192.168.88.x`**.** The RUTM08 renews the
 laptop's DHCP lease after its LAN move, because the router *serves* DHCP on the
 new subnet. A switch does not, so this tool passes `renew_dhcp=False` — on macOS
 the renew is `ipconfig set <iface> DHCP`, which would throw away a statically
@@ -64,24 +66,47 @@ There is also a single-device CLI:
 python3 tsw_configure.py --label-password 'Xy7Kp2Lm9Qa'
 ```
 
+
+
 ## What the first unit on the bench settled
 
 Three device assumptions were taken from Teltonika's docs rather than hardware,
 because the TSW2 firmware line is a thinner build than the RUTM/OTD RutOS.
 Verified on a real TSW202 (SN 6010620710, `TSW2_R_00.01.07.1`):
 
-- **`ubus call mnfinfo get` is there.** Model, serial and MAC come straight off
-  it, so the board-info fallback in `TswClient.get_identity` is belt-and-braces
-  rather than the main path. The model string is `TSW20200XXXX`, which the
-  prefix match in `assert_device_model` handles.
-- **NTP is at `system.ntp.*`**, the same section `set_timezone` writes into.
-- **The management address is NOT on `network.lan`.** This one was wrong. The
-  switch answers `uci: Invalid argument` to `uci set network.lan.ipaddr` —
-  what UCI says when a section doesn't resolve. `move_lan` now asks the device
-  which `network` section holds the address it was reached on
-  (`TeltonikaClient.mgmt_section`) instead of hard-coding `lan`, so this is
-  fixed for the whole family rather than special-cased here. Where `lan` *is*
-  the section, as on every RutOS router, nothing changes.
+- `ubus call mnfinfo get` **is there.** Model, serial and MAC come straight off
+it, so the board-info fallback in `TswClient.get_identity` is belt-and-braces
+rather than the main path. The model string is `TSW20200XXXX`, which the
+prefix match in `assert_device_model` handles.
+- **NTP is at** `system.ntp.`*, the same section `set_timezone` writes into.
+Confirmed end to end on the bench unit: `system.ntp.server='192.168.88.10'` was
+the only server configured, and `ps` showed `/usr/sbin/ntpd -n -N -p
+192.168.88.10`, i.e. the daemon really was polling it and nothing else. The
+WebUI's *Time servers* table showed four `time*.google.com` rows on a page
+loaded around the same time; `uci show system` and the live process are the
+ground truth, so treat that table as stale unless a hard refresh still shows it.
+- **A committed timezone is not an applied timezone.** The same unit held
+`system.system.timezone` and `system.ntp.zoneName` exactly right and ran on a
+`+0000` clock. libc reads `/etc/TZ`, and nothing writes it until the system
+config is reloaded, so `set_timezone` now runs `/etc/init.d/system reload` and
+falls back to writing the TZ file itself if the clock still hasn't moved. This
+was never TSW-specific — the routers were missing the same step.
+- **The zone name lives in two places, and the WebUI reads the one we weren't
+writing.** With the clock fixed and on `+0300`, the Date & Time page still
+displayed `UTC`. Setting the zone in the UI and diffing `uci show system`
+produced a third key: `system.system.zoneName`. So `set_timezone` now writes all
+three — the POSIX string for libc, `system.system.zoneName` for the WebUI, and
+`system.ntp.zoneName` for the timeserver section. This matters beyond cosmetics:
+an operator opening that page and pressing **Save & Apply** while it displayed
+`UTC` would have written UTC straight back over the correct clock, long after
+the bench stopped watching.
+- **The management address is NOT on** `network.lan`**.** This one was wrong. The
+switch answers `uci: Invalid argument` to `uci set network.lan.ipaddr` —
+what UCI says when a section doesn't resolve. `move_lan` now asks the device
+which `network` section holds the address it was reached on
+(`TeltonikaClient.mgmt_section`) instead of hard-coding `lan`, so this is
+fixed for the whole family rather than special-cased here. Where `lan` *is*
+the section, as on every RutOS router, nothing changes.
 
 Also confirmed: `set_admin_password` works, i.e. this firmware does serve the
 RutOS `change_password_firstlogin` endpoint. That was the assumption with no

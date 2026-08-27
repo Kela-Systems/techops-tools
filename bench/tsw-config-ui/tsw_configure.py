@@ -50,8 +50,6 @@ from bench_core import (
     DEFAULT_USERNAME,
     LOG_LINE_FORMAT,
     POSIX_TZ,
-    UCI_TIMEZONE,
-    UCI_ZONENAME,
     TeltonikaClient,
     assert_device_model,
     format_verification,
@@ -149,12 +147,6 @@ class TswClient(TeltonikaClient):
         self.ssh_exec("/etc/init.d/sysntpd restart", check=False)
         log.info("NTP server set.")
 
-    def ntp_servers(self) -> list[str]:
-        """The configured NTP servers, in order. UCI prints a list as one
-        space-separated line."""
-        out = self.ssh_exec(f"uci -q get {UCI_NTP_SERVER}", check=False).strip()
-        return out.split()
-
     # --- verification -------------------------------------------------------
     def verify_configuration(self, *, new_password: str, zonename: str,
                              ntp_server: str,
@@ -171,6 +163,12 @@ class TswClient(TeltonikaClient):
         written to the run record verbatim and shipped to bench-central, and on
         the failing path the password still in use is the device's own label
         password. The outcome is all a reader needs.
+
+        The timezone and NTP rows check EFFECT, not the options we wrote. An
+        earlier version read `system.ntp.zoneName` and `system.ntp.server`
+        straight back and passed a switch that was still on UTC with four Google
+        servers: `uci set` creates an option whether or not the device consumes
+        it, so a read-back of our own write only proves the write happened.
         """
         checks: list[dict] = []
 
@@ -184,17 +182,21 @@ class TswClient(TeltonikaClient):
                                        "password",
             on_shared)
 
-        zn = self.ssh_exec(f"uci get {UCI_ZONENAME} 2>/dev/null", check=False).strip()
-        tz = self.ssh_exec(f"uci get {UCI_TIMEZONE} 2>/dev/null", check=False).strip()
-        add("timezone", zonename, f"{zn} ({tz})", zn == zonename)
+        checks.append(self.timezone_check(zonename))
 
-        servers = self.ntp_servers()
+        servers = self.configured_ntp_servers()
+        running = self.running_ntp_servers()
         enabled = self.ssh_exec(f"uci -q get {UCI_NTP_ENABLED}", check=False).strip()
-        # Only ours, and enabled. A pool entry left behind is a real finding: the
-        # switch would drift to internet time on a site that has none.
-        add("NTP server", f"{ntp_server} (only, enabled)",
-            f"{', '.join(servers) or '(none)'} (enabled={enabled or '?'})",
-            servers == [ntp_server] and enabled == "1")
+        # Only ours, enabled, and actually being polled by the live daemon. A
+        # pool entry left behind is a real finding (the switch would drift to
+        # internet time on a site that has none), and so is a correct config the
+        # daemon never picked up.
+        add("NTP server", f"{ntp_server} (only, enabled, polled)",
+            f"configured {', '.join(servers) or '(none)'} "
+            f"(enabled={enabled or '?'}); "
+            f"ntpd polling {', '.join(running) or 'nothing'}",
+            servers == [ntp_server] and enabled == "1"
+            and running == [ntp_server])
 
         fw = self.ssh_exec("cat /etc/version 2>/dev/null", check=False).strip()
         if minimum_firmware:

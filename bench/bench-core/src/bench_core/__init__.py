@@ -162,8 +162,14 @@ IMEI_KEYS = ("imei",)
 
 # --- UCI paths (verified against OTD5_R_00.07.20.3) -------------------------
 UCI_HOSTNAME = "system.system.hostname"          # device name == hostname for RMS
-UCI_TIMEZONE = "system.system.timezone"          # POSIX TZ string
-UCI_ZONENAME = "system.ntp.zoneName"             # IANA zone name (note capital N)
+UCI_TIMEZONE = "system.system.timezone"          # POSIX TZ string — libc reads this
+# Two IANA zone names (note the capital N in both), read by different consumers.
+# The WebUI's Date & Time dropdown owns the one in the `system` section: a
+# TSW202 with only the timeserver copy set showed a correct clock as "UTC" in
+# the UI, which one Save & Apply would have written back over the clock. Proven
+# by setting the zone in the UI and diffing `uci show system`.
+UCI_ZONENAME = "system.system.zoneName"          # what the WebUI renders
+UCI_ZONENAME_NTP = "system.ntp.zoneName"         # the timeserver section's copy
 # RMS lives in the `rms_mqtt` package; the connect daemon's enable flag is
 # `1` by default, so "connect to RMS" is really: ensure enabled + force connect.
 UCI_RMS_ENABLED = "rms_mqtt.rms_connect_mqtt.enable"
@@ -621,6 +627,35 @@ def fw_versions_match(a: str, b: str) -> bool:
     na = re.sub(r"[^0-9a-z]", "", (a or "").lower())
     nb = re.sub(r"[^0-9a-z]", "", (b or "").lower())
     return bool(na) and bool(nb) and na == nb
+
+
+def expected_utc_offset(zonename: str) -> str:
+    """The UTC offset `zonename` is in RIGHT NOW, e.g. '+0300' — or "" when this
+    machine has no tz database to answer with.
+
+    Paired with `TeltonikaClient.effective_utc_offset` to check a timezone by
+    its effect on the device clock rather than by reading back the UCI option we
+    just wrote. It has to be computed per-call, not tabled: Asia/Jerusalem is
+    +0200 in winter and +0300 under IDT, so a fixed expectation would fail for
+    half the year.
+
+    Windows has no system tz database, which is why `tzdata` is in
+    requirements.txt — the bench stations are exactly where this must not
+    silently degrade.
+    """
+    from datetime import datetime, timezone
+    try:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    except ImportError:      # pragma: no cover - Python < 3.9
+        return ""
+    try:
+        return datetime.now(timezone.utc).astimezone(
+            ZoneInfo(zonename)).strftime("%z")
+    except (ZoneInfoNotFoundError, ValueError, KeyError, ModuleNotFoundError):
+        log.warning("No tz database entry for '%s' on this machine, so the "
+                    "timezone check can only confirm the clock left UTC "
+                    "(pip install tzdata).", zonename)
+        return ""
 
 
 def fw_version_at_least(device_fw: str, minimum: str) -> bool:
@@ -1772,14 +1807,116 @@ class TeltonikaClient:
         self.ssh_exec(f"echo {qname} > /proc/sys/kernel/hostname", check=False)
         log.info("Hostname set.")
 
+    def effective_utc_offset(self) -> str:
+        """The device clock's CURRENT UTC offset, e.g. '+0300' — or "".
+
+        The only layout-independent evidence that a timezone actually took: it
+        is what the running clock does, not what a UCI option says. A switch
+        whose `system.ntp.zoneName` reads back 'Asia/Jerusalem' while this
+        returns '+0000' has been written to and is ignoring it.
+        """
+        return self.ssh_exec("date +%z", check=False).strip()
+
+    def timezone_check(self, zonename: str) -> dict:
+        """One `{item, expected, actual, ok}` verification row for the timezone.
+
+        Shared by the routers and the switch because the failure was: the
+        TSW202 passed a read-back of `system.ntp.zoneName` while running on
+        UTC and displaying UTC.
+
+        Two things have to agree. The CLOCK is the real evidence — `uci set`
+        creates an option whether or not the device consumes it, so only the
+        offset proves the zone took. The zone NAME is checked as well because
+        that is what the WebUI's dropdown renders, and a device whose clock is
+        right while its UI says UTC is one accidental Save & Apply away from
+        losing the clock too.
+        """
+        offset = self.effective_utc_offset()
+        shown = self.ssh_exec(f"uci -q get {UCI_ZONENAME}", check=False).strip()
+        want = expected_utc_offset(zonename)
+        if want:
+            expected = f"{zonename} (clock at {want})"
+            clock_ok = offset == want
+        else:
+            # No tz database on this station to say what the zone means today;
+            # the clock having left UTC is the most this can honestly claim.
+            expected = f"{zonename} (clock off UTC)"
+            clock_ok = bool(offset) and offset != "+0000"
+        return {"item": "timezone", "expected": expected,
+                "actual": f"clock at {offset or 'unknown'}, "
+                          f"WebUI shows {shown or '(unset)'}",
+                "ok": clock_ok and shown == zonename}
+
+    def configured_ntp_servers(self) -> list[str]:
+        """Every NTP server the device has configured, in whatever section shape
+        it keeps them.
+
+        Deliberately NOT `uci get system.ntp.server`: that reads back exactly
+        what `set_ntp_server` writes, which passed verification on a TSW202
+        whose WebUI still listed four Google servers untouched. Collecting every
+        `server` / `hostname` option in the package finds the ones the device
+        really uses, whether they are a `list server` on one section or a
+        `hostname` on one section per server.
+        """
+        out = self.ssh_exec("uci show system 2>/dev/null", check=False)
+        servers: list[str] = []
+        for line in out.splitlines():
+            m = re.match(r"system\.(@?[\w.\[\]-]+?)\.(server|hostname)=(.*)$",
+                         line.strip())
+            if not m:
+                continue
+            section, option = m.group(1), m.group(2)
+            # system.system.hostname is the DEVICE name, not a time server.
+            if option == "hostname" and section == "system":
+                continue
+            # uci renders a list as `opt='a' 'b' 'c'`.
+            for token in m.group(3).split():
+                value = token.strip().strip("'\"")
+                if value and value not in servers:
+                    servers.append(value)
+        return servers
+
+    def running_ntp_servers(self) -> list[str]:
+        """The servers the RUNNING ntpd was started with, off its command line.
+
+        The companion to `configured_ntp_servers`: a committed config the daemon
+        never picked up is exactly the failure the timezone had, and the only
+        thing that settles it is what the live process is polling. The bracket
+        in `[n]tpd` keeps grep from matching itself.
+        """
+        out = self.ssh_exec("ps w 2>/dev/null | grep '[n]tpd'", check=False)
+        return re.findall(r"-p\s+(\S+)", out)
+
     def set_timezone(self, zonename: str) -> None:
         posix = POSIX_TZ.get(zonename)
         if not posix:
             raise SystemExit(f"No POSIX TZ mapping for '{zonename}'; add it to POSIX_TZ.")
         log.info("Setting timezone to %s ...", zonename)
-        self._uci(f"{UCI_ZONENAME}='{zonename}'", f"{UCI_TIMEZONE}='{posix}'",
+        # Three keys for three consumers: libc reads the POSIX string, the WebUI
+        # dropdown reads the zone name in the `system` section, and the
+        # timeserver section keeps its own copy. Setting fewer than all three
+        # leaves the device disagreeing with itself.
+        self._uci(f"{UCI_TIMEZONE}='{posix}'",
+                  f"{UCI_ZONENAME}='{zonename}'",
+                  f"{UCI_ZONENAME_NTP}='{zonename}'",
                   package="system")
+        # A committed UCI option is not yet a timezone. libc reads /etc/TZ, and
+        # nothing writes it until the system config is reloaded: the first
+        # TSW202 off the bench held both options exactly right and ran on a
+        # +0000 clock, because this step was missing.
+        self.ssh_exec("/etc/init.d/system reload", check=False)
         self.ssh_exec("/etc/init.d/sysntpd restart", check=False)
+
+        want = expected_utc_offset(zonename)
+        if want and self.effective_utc_offset() != want:
+            # Some builds' `system` init script doesn't own /etc/TZ. Write what
+            # libc reads directly — /etc/TZ is usually a symlink to /tmp/TZ, so
+            # both are written to cover either layout.
+            log.warning("The clock is still not at %s after reloading the "
+                        "system config — writing the TZ file directly.", want)
+            qposix = shlex.quote(posix)
+            self.ssh_exec(f"echo {qposix} > /tmp/TZ", check=False)
+            self.ssh_exec(f"echo {qposix} > /etc/TZ", check=False)
         log.info("Timezone set.")
 
     # --- LAN address (must run LAST) ----------------------------------------
@@ -2354,9 +2491,7 @@ class TeltonikaClient:
         hn = self.ssh_exec("uci get system.system.hostname 2>/dev/null", check=False).strip()
         add("hostname", hostname, hn, hn == hostname)
 
-        zn = self.ssh_exec(f"uci get {UCI_ZONENAME} 2>/dev/null", check=False).strip()
-        tz = self.ssh_exec(f"uci get {UCI_TIMEZONE} 2>/dev/null", check=False).strip()
-        add("timezone", zonename, f"{zn} ({tz})", zn == zonename)
+        checks.append(self.timezone_check(zonename))
 
         if sim_4g:
             idxs = self._sim_indices()
