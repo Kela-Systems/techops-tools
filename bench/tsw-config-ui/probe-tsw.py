@@ -78,19 +78,25 @@ def main() -> int:
                          + ("  <-- an ntpclient package would mean the NTP paths "
                             "are wrong" if "ntpclient" in configs else "")))
 
-        # 3. Is the management interface network.lan, and does it take
-        #    netmask/gateway? A wrong section name fails the move loudly.
-        lan_ip = client.current_lan_ip()
-        lan = client.ssh_exec("uci show network.lan 2>/dev/null", check=False).strip()
-        findings.append((bool(lan_ip), f"network.lan.ipaddr -> {lan_ip or '(absent)'}"))
-        for option in ("netmask", "gateway"):
-            findings.append((f".{option}=" in lan,
-                             f"network.lan.{option} present -> {f'.{option}=' in lan}"))
-        if not lan_ip:
-            interfaces = client.ssh_exec(
-                "uci show network | sed -n 's/^network\\.\\([^.]*\\)=interface/\\1/p'",
-                check=False).split()
-            findings.append((False, "network interfaces -> " + " ".join(interfaces)))
+        # 3. Which network section carries the management address? On a RutOS
+        #    router it is `lan`; the first TSW202 on the bench answered
+        #    `uci: Invalid argument` to network.lan, so this is discovered.
+        addresses = client.network_addresses()
+        section = client.mgmt_section(addresses)
+        findings.append((bool(addresses), "addressed network sections -> "
+                         + (", ".join(f"{s}={ip}" for s, ip in addresses.items())
+                            or "(none — the address is configured elsewhere)")))
+        findings.append((bool(section),
+                         f"management section for {host} -> "
+                         f"network.{section or '(ambiguous — the move refuses)'}"
+                         + ("" if section == "lan" else "   <-- not `lan`")))
+        if section:
+            shown = client.ssh_exec(f"uci show network.{section} 2>/dev/null",
+                                    check=False)
+            for option in ("netmask", "gateway"):
+                findings.append((f".{option}=" in shown,
+                                 f"network.{section}.{option} already set -> "
+                                 f"{f'.{option}=' in shown}"))
 
         print(f"version: {client.ssh_exec('cat /etc/version', check=False).strip()}\n")
     except SystemExit as e:

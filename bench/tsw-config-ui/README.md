@@ -64,25 +64,37 @@ There is also a single-device CLI:
 python3 tsw_configure.py --label-password 'Xy7Kp2Lm9Qa'
 ```
 
-## Before the first real unit
+## What the first unit on the bench settled
 
-Every device fact here comes from Teltonika's docs rather than a switch on a
-bench, and the TSW2 firmware line is a thinner build than the RUTM/OTD RutOS.
-`probe-tsw.py` reads back the three things that were assumed and says whether
-each holds:
+Three device assumptions were taken from Teltonika's docs rather than hardware,
+because the TSW2 firmware line is a thinner build than the RUTM/OTD RutOS.
+Verified on a real TSW202 (SN 6010620710, `TSW2_R_00.01.07.1`):
+
+- **`ubus call mnfinfo get` is there.** Model, serial and MAC come straight off
+  it, so the board-info fallback in `TswClient.get_identity` is belt-and-braces
+  rather than the main path. The model string is `TSW20200XXXX`, which the
+  prefix match in `assert_device_model` handles.
+- **NTP is at `system.ntp.*`**, the same section `set_timezone` writes into.
+- **The management address is NOT on `network.lan`.** This one was wrong. The
+  switch answers `uci: Invalid argument` to `uci set network.lan.ipaddr` —
+  what UCI says when a section doesn't resolve. `move_lan` now asks the device
+  which `network` section holds the address it was reached on
+  (`TeltonikaClient.mgmt_section`) instead of hard-coding `lan`, so this is
+  fixed for the whole family rather than special-cased here. Where `lan` *is*
+  the section, as on every RutOS router, nothing changes.
+
+Also confirmed: `set_admin_password` works, i.e. this firmware does serve the
+RutOS `change_password_firstlogin` endpoint. That was the assumption with no
+recoverable fallback, so it was the one worth worrying about.
+
+`probe-tsw.py` re-checks all of the above against any unit, read-only:
 
 ```
 ../.venv/bin/python probe-tsw.py 192.168.1.2
 ```
 
-The code is written to survive all three being wrong in the recoverable
-direction — the model falls back to the board info when `mnfinfo` is absent, the
-NTP section is created when missing, and a wrong interface name fails the LAN
-step loudly rather than silently no-opping. What the probe protects against is
-the *un*recoverable one: `set_admin_password` posts to the RutOS
-`change_password_firstlogin` endpoint, and if this firmware doesn't serve it,
-every run fails at that step with a clear error. That is the first thing to
-check if the first unit refuses.
+Worth running against the first TSW101 or TSW212 if that scope lands (TEC-844),
+since the section name is exactly the kind of thing that differs per model.
 
 ## Shared code
 

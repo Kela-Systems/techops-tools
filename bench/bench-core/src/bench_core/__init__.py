@@ -1784,14 +1784,59 @@ class TeltonikaClient:
 
     # --- LAN address (must run LAST) ----------------------------------------
     def current_lan_ip(self) -> str:
-        return self.ssh_exec("uci get network.lan.ipaddr 2>/dev/null", check=False).strip()
+        return self.ssh_exec(
+            f"uci get network.{self.mgmt_section()}.ipaddr 2>/dev/null",
+            check=False).strip()
+
+    def network_addresses(self) -> dict:
+        """Every `network.<section>.ipaddr` the device has, as {section: ip}.
+
+        Section names come back exactly as UCI addresses them, so an anonymous
+        `config interface` block appears as `@interface[0]` — which is a valid
+        UCI path and an invalid bare shell word, hence `_uci_arg` everywhere
+        these are used."""
+        out = self.ssh_exec("uci show network 2>/dev/null", check=False)
+        found = {}
+        for line in out.splitlines():
+            m = re.match(r"network\.(@?[\w.\[\]-]+?)\.ipaddr=(.*)$", line.strip())
+            if m:
+                found[m.group(1)] = m.group(2).strip().strip("'\"")
+        return found
+
+    def mgmt_section(self, addresses: Optional[dict] = None) -> str:
+        """The `network` section that carries the address we are talking to.
+
+        `lan` on every RutOS router, but NOT on every device in the family: the
+        TSW202 answered `uci: Invalid argument` to `uci set network.lan.ipaddr`,
+        which is what UCI says when a section does not resolve. Asking the
+        device which section actually holds its current address is both the
+        correct answer and one that needs no per-model table.
+
+        In order: the section whose address is the one we reached the device on,
+        then the conventional `lan`, then the only addressed section if there
+        happens to be exactly one. `""` when it is genuinely ambiguous — better
+        a caller that reports the candidates than one that moves the wrong
+        interface and strands the device.
+        """
+        addresses = self.network_addresses() if addresses is None else addresses
+        for section, ip in addresses.items():
+            if ip == self.host:
+                return section
+        if "lan" in addresses:
+            return "lan"
+        if len(addresses) == 1:
+            return next(iter(addresses))
+        return ""
 
     def move_lan(self, new_ip: str, wait: int = 120, *, netmask: str = "",
                  gateway: str = "", renew_dhcp: bool = True) -> dict:
-        """Point the LAN interface at `new_ip`. We are talking to the device OVER
-        that LAN, so the network restart drops the connection by design: commit
-        synchronously, restart fire-and-forget, then confirm by reaching the
-        device on the new address.
+        """Point the management interface at `new_ip`. We are talking to the
+        device OVER that interface, so the network restart drops the connection
+        by design: commit synchronously, restart fire-and-forget, then confirm
+        by reaching the device on the new address.
+
+        The section written is whichever one currently holds our address (see
+        `mgmt_section`) rather than a hard-coded `lan`.
 
         `netmask`/`gateway` are for devices that need them stated. A router
         (RUTM08) needs neither — its DHCP pool follows the interface subnet, and
@@ -1807,23 +1852,35 @@ class TeltonikaClient:
 
         Returns a verification-style check dict; never raises after the commit
         (past that point the device is moving whether we can see it or not)."""
-        cur = self.current_lan_ip()
+        addresses = self.network_addresses()
+        section = self.mgmt_section(addresses)
+        if not section:
+            found = ", ".join(f"network.{s}={ip}" for s, ip in addresses.items())
+            candidates = found or ("none — is the address configured outside the "
+                                   "`network` package?")
+            raise SystemExit(
+                f"Cannot tell which network section carries {self.host}, so the "
+                "move would risk re-addressing the wrong interface. Addressed "
+                f"sections: {candidates}")
+
+        cur = addresses.get(section, "")
         if cur == new_ip:
-            log.info("LAN IP is already %s; skipping the move.", new_ip)
+            log.info("Management IP is already %s; skipping the move.", new_ip)
             return {"item": "LAN IP", "expected": new_ip,
                     "actual": f"{new_ip} (already set)", "ok": True}
 
         # Resolve the host-side interface while the device is still reachable.
         iface = host_iface_for(self.host)
-        log.info("Moving the LAN from %s to %s — the connection will drop ...",
-                 cur or self.host, new_ip)
-        sets = [f"network.lan.ipaddr='{new_ip}'"]
+        log.info("Moving network.%s from %s to %s — the connection will drop ...",
+                 section, cur or self.host, new_ip)
+        options = {"ipaddr": new_ip}
         if netmask:
-            sets.append(f"network.lan.netmask='{netmask}'")
+            options["netmask"] = netmask
         if gateway:
-            sets.append(f"network.lan.gateway='{gateway}'")
-        self.ssh_exec(" && ".join([f"uci set {s}" for s in sets]
-                                  + ["uci commit network"]))
+            options["gateway"] = gateway
+        sets = [f"uci set {self._uci_arg(f'network.{section}.{option}', value)}"
+                for option, value in options.items()]
+        self.ssh_exec(" && ".join(sets + ["uci commit network"]))
         self._fire_and_forget("sleep 1; /etc/init.d/network restart")
         self.close()
         self.host = new_ip

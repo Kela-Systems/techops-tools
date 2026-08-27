@@ -11,6 +11,7 @@ import re
 import pytest
 import requests
 
+import bench_core
 from bench_core import DEFAULT_NEW_PASSWORD
 
 import tsw_configure as mod
@@ -30,17 +31,23 @@ class FakeSwitch:
     recording of every command for the writes."""
 
     def __init__(self, *, version=FLOOR, uci=None, model="TSW202",
-                 mnfinfo=True, board=""):
+                 mnfinfo=True, board="", network=None):
         self.commands: list[str] = []
         self.version = version
         self.model = model
         self.mnfinfo = mnfinfo
         self.board = board
         self.uci = dict(uci or {})
+        # {section: ip} as `uci show network` would report it. Defaults to what
+        # the first real TSW202 had: an addressed section that is NOT `lan`.
+        self.network = {"lan_mgmt": "192.0.2.2"} if network is None else network
 
     def __call__(self, command, check=True, exec_timeout=None):
         self.commands.append(command)
 
+        if "uci show network" in command:
+            return "\n".join(f"network.{s}=interface\nnetwork.{s}.ipaddr='{ip}'"
+                             for s, ip in self.network.items())
         if "cat /etc/version" in command:
             return self.version
         if "mnfinfo" in command:
@@ -230,6 +237,60 @@ def test_an_unreadable_version_is_treated_as_below_the_floor(monkeypatch, tmp_pa
     failures = []
     apply_firmware_floor(c, firmware_settings(str(image)), failures)
     assert c.flashes == [{"bin_path": str(image), "keep_settings": True}]
+
+
+# ── the management section is discovered, not assumed ────────────────────────
+#
+# The first TSW202 on the bench failed the move with `uci: Invalid argument`,
+# which is what UCI says when a section does not resolve: its management
+# address is not on `network.lan` the way every RutOS router's is. Writing a
+# hard-coded section is therefore not just wrong for this switch, it is a
+# family-wide assumption that had never been checked.
+
+def test_the_section_holding_our_address_wins():
+    c = client(network={"lan": "10.0.0.1", "lan_mgmt": "192.0.2.2"})
+    # Matched by address, so the presence of a `lan` section is not enough to
+    # claim it — that is exactly the trap that produced the bench failure.
+    assert c.mgmt_section() == "lan_mgmt"
+
+
+def test_lan_is_still_used_where_it_is_the_convention():
+    # Every RutOS router: the move must behave identically to before.
+    c = client(network={"lan": "192.0.2.2"})
+    assert c.mgmt_section() == "lan"
+
+
+def test_lan_is_the_fallback_when_no_address_matches():
+    c = client(network={"lan": "10.0.0.1", "wan": "10.0.1.1"})
+    assert c.mgmt_section() == "lan"
+
+
+def test_a_single_addressed_section_is_used_even_when_unmatched():
+    c = client(network={"mgmt": "10.0.0.1"})
+    assert c.mgmt_section() == "mgmt"
+
+
+def test_an_ambiguous_config_refuses_rather_than_guessing():
+    # Moving the wrong interface strands the device, so "I cannot tell" has to
+    # stop the step rather than pick one.
+    c = client(network={"eth0": "10.0.0.1", "eth1": "10.0.1.1"})
+    assert c.mgmt_section() == ""
+
+
+def test_an_anonymous_section_is_addressed_as_uci_addresses_it():
+    c = client(network={"@interface[0]": "192.0.2.2"})
+    assert c.mgmt_section() == "@interface[0]"
+
+
+def test_network_addresses_parses_quoted_and_bare_values():
+    c = client()
+    c.ssh_exec = lambda *a, **k: (
+        "network.lan=interface\n"
+        "network.lan.ipaddr='192.168.1.2'\n"
+        "network.lan.netmask='255.255.255.0'\n"
+        "network.wan.ipaddr=10.0.0.5\n"
+        "network.lan.proto='static'\n")
+    assert c.network_addresses() == {"lan": "192.168.1.2", "wan": "10.0.0.5"}
 
 
 # ── verification ─────────────────────────────────────────────────────────────
@@ -452,6 +513,69 @@ def test_there_is_no_rms_tailscale_or_sim_step(monkeypatch):
         assert absent not in joined, absent
     assert [check["item"] for check in result["verification"]] == [
         "admin/root password", "timezone", "NTP server", "firmware", "LAN IP"]
+
+
+def move_client(monkeypatch, network):
+    """A client whose real move_lan runs, with everything after the commit
+    (the interface restart, the host-side renew, the settle sleep, the
+    reachability wait) stubbed out — the commands sent are what these assert on.
+
+    The patches land in `bench_core`, where move_lan resolves its globals;
+    patching them in this module would leave the real ones running."""
+    c = client(network=network)
+    monkeypatch.setattr(c, "_fire_and_forget", lambda *a, **k: None)
+    monkeypatch.setattr(c, "_port_open", lambda *a, **k: True)
+    monkeypatch.setattr(c, "close", lambda: None)
+    monkeypatch.setattr(bench_core, "host_iface_for", lambda *a, **k: "en9")
+    monkeypatch.setattr(bench_core, "renew_host_dhcp", lambda *a, **k: None)
+    monkeypatch.setattr(bench_core.time, "sleep", lambda *a: None)
+    return c
+
+
+def test_the_move_writes_the_discovered_section(monkeypatch):
+    # The regression test for the bench failure: the emitted UCI must name the
+    # section the switch actually has, not `lan`.
+    c = move_client(monkeypatch, {"lan_mgmt": "192.0.2.2"})
+    check = c.move_lan("192.168.88.2", netmask="255.255.255.0",
+                       gateway="192.168.88.1", renew_dhcp=False)
+    assert check["ok"] is True
+    assert c.switch.wrote("uci set network.lan_mgmt.ipaddr=192.168.88.2")
+    assert c.switch.wrote("uci set network.lan_mgmt.netmask=255.255.255.0")
+    assert c.switch.wrote("uci set network.lan_mgmt.gateway=192.168.88.1")
+    assert c.switch.wrote("uci commit network")
+    assert not c.switch.wrote("network.lan.")
+
+
+def test_an_anonymous_section_is_quoted_against_the_shell(monkeypatch):
+    # `[0]` is a shell glob; an unquoted path would be mangled before uci ever
+    # sees it. This is what _uci_arg is for.
+    c = move_client(monkeypatch, {"@interface[0]": "192.0.2.2"})
+    c.move_lan("192.168.88.2", renew_dhcp=False)
+    assert c.switch.wrote("uci set 'network.@interface[0].ipaddr=192.168.88.2'")
+
+
+def test_the_move_refuses_an_ambiguous_config(monkeypatch):
+    c = move_client(monkeypatch, {"eth0": "10.0.0.1", "eth1": "10.0.1.1"})
+    with pytest.raises(SystemExit, match="Cannot tell which network section"):
+        c.move_lan("192.168.88.2", renew_dhcp=False)
+    assert not c.switch.wrote("uci commit network")
+
+
+def test_the_move_is_skipped_when_already_on_the_target(monkeypatch):
+    c = move_client(monkeypatch, {"lan_mgmt": "192.168.88.2"})
+    c.host = "192.168.88.2"
+    check = c.move_lan("192.168.88.2", renew_dhcp=False)
+    assert check["ok"] is True and "already set" in check["actual"]
+    assert not c.switch.wrote("uci commit network")
+
+
+def test_a_router_still_gets_only_ipaddr(monkeypatch):
+    # The RUTM08 call site passes no netmask/gateway and must keep behaving
+    # exactly as it did before the section discovery went in.
+    c = move_client(monkeypatch, {"lan": "192.0.2.2"})
+    c.move_lan("192.168.88.1")
+    assert c.switch.wrote("uci set network.lan.ipaddr=192.168.88.1 "
+                          "&& uci commit network")
 
 
 def test_the_defaults_match_the_committed_example():

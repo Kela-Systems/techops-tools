@@ -21,6 +21,8 @@ Two things separate this from the router pipelines next door:
 * **The switch does not serve DHCP**, so the LAN move must not renew the
   station's lease — see `move_lan(renew_dhcp=False)` below. The station needs an
   address on the target subnet for the move to be confirmable.
+* **Its management address is not on `network.lan`**, unlike every RutOS router,
+  which is why `move_lan` discovers the section off the device. See the README.
 
 There is no RMS, Tailscale, SIM or internet-wait step: the baseline in TEC-791
 is password, firmware, time, address. The device client is the shared
