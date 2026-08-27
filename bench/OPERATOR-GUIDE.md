@@ -120,9 +120,26 @@ Plug the router in. The page reads it and asks for two things:
 Click **Configure**. The tool does everything else (password, name, time, firmware, RMS, Tailscale,
 checks) and, for the RUTM08, **moves the LAN to** `192.168.88.1` **as the last step**.
 
+### Scan the label instead of typing the password
+
+If the station has a barcode scanner, **scan the QR code on the device's sticker** instead of
+typing the password. The field turns green and says *"Password from the scanned label"* with the
+serial number. You still type the site name and click **Configure** as usual.
+
+You don't have to aim at the password box — scan whenever the device form is on screen.
+
+> ⚠️ **"Scanned label rejected — scan the label on the device that is actually connected"**
+> means the sticker you scanned belongs to a *different* device than the one plugged in. This is
+> the scanner doing its job: check you scanned the right box, then scan again. Nothing was
+> configured.
+
+If a scan doesn't work at all, or the password is rejected right after a scan, just type the
+password by hand — typing always wins — and tell an engineer, because the scanner probably needs
+re-setting up.
+
 > **Re-running a device that was already configured?** Leave the label-password field **empty** —
-> it's already on the shared password. The RUTM08 page can also pick it up again on its new
-> `192.168.88.1` address.
+> it's already on the shared password. Don't scan the label; the factory password no longer applies.
+> The RUTM08 page can also pick it up again on its new `192.168.88.1` address.
 
 > ⚠️ **Firmware:** if the page warns the firmware image is missing, tell an engineer — the device
 > can't be fully configured without it.
@@ -193,6 +210,17 @@ answering on the address they shipped with. The green tick means it worked — u
 **I closed the black window by accident**
 All tools stopped. Just double-click `Start Bench Tools.bat` again. (Closing a browser *tab* is fine — the
 tools keep running; reopen the tab from the dashboard.)
+
+**The scanner beeps but nothing appears on the page**
+The scanner read the code but couldn't send it. Put it back in its cradle for a few seconds — that
+both charges it and re-establishes the link — then scan again. If it still does nothing, type the
+password by hand and tell an engineer. **Park the scanner in its cradle whenever you're not using
+it**; that's how it charges, and a flat scanner is the most common reason it goes quiet.
+
+**The label lands in the site-name box, and the page starts configuring on its own**
+The page is running an old copy of itself, left over from before the tools were updated. Press
+**Ctrl+Shift+R** on that tab and scan again. Worth mentioning to an engineer if it happens on a
+station more than once.
 
 ---
 

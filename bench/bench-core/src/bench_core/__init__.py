@@ -2194,9 +2194,17 @@ class TeltonikaClient:
             checks.append({"item": item, "expected": expected, "actual": actual, "ok": ok})
 
         # Password: we are still authenticated, and SSH answers, on new_password.
-        add("admin/root password", new_password,
-            "in use" if self.password == new_password else self.password,
-            self.password == new_password)
+        # Neither side of this check may carry an actual password. `expected`
+        # would pin the station's shared password into every run record, and
+        # `actual` is worse: when the change did NOT take, the password still in
+        # use is the device's per-device label password (TEC-349 now reads that
+        # off the sticker, so the bench is trusted with it), and these checks are
+        # shipped to bench-central verbatim. The outcome is all a reader needs.
+        on_shared = self.password == new_password
+        add("admin/root password", "the shared password",
+            "in use" if on_shared else "NOT set — the device is still on another "
+                                       "password",
+            on_shared)
 
         hn = self.ssh_exec("uci get system.system.hostname 2>/dev/null", check=False).strip()
         add("hostname", hostname, hn, hn == hostname)

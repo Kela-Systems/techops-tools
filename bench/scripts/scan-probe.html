@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bench scanner probe</title>
+<style>
+:root {
+  --bg: #0f1117; --surface: #1a1d27; --surface2: #232733; --border: #2e3345;
+  --text: #e1e4ed; --text-dim: #8b90a0; --accent: #6c8cff;
+  --green: #34d399; --green-bg: rgba(52,211,153,.12);
+  --yellow: #fbbf24; --yellow-bg: rgba(251,191,36,.12);
+  --red: #f87171; --red-bg: rgba(248,113,113,.10);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+       background: var(--bg); color: var(--text); line-height: 1.5; }
+.container { max-width: 1000px; margin: 0 auto; padding: 24px 20px 60px; }
+h1 { font-size: 1.3rem; font-weight: 650; }
+h1 .sub { color: var(--text-dim); font-weight: 400; font-size: .85rem; display: block; margin-top: 3px; }
+h3 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em;
+     color: var(--text-dim); margin-bottom: 10px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+        padding: 18px; margin-bottom: 16px; }
+input, textarea { background: var(--bg); border: 1px solid var(--border); color: var(--text);
+                  border-radius: 6px; padding: 9px 12px; font-size: .95rem; outline: none; width: 100%; }
+input:focus, textarea:focus { border-color: var(--accent); }
+button { cursor: pointer; border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+         border-radius: 6px; font-size: .85rem; padding: 7px 14px; }
+button:hover { color: var(--text); border-color: var(--text-dim); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.muted { color: var(--text-dim); font-size: .85rem; }
+.row { display: flex; gap: 10px; align-items: center; }
+table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+th { text-align: left; color: var(--text-dim); font-weight: 500; font-size: .7rem;
+     text-transform: uppercase; letter-spacing: .05em; padding: 5px 8px;
+     border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); }
+td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.scroll { max-height: 340px; overflow: auto; }
+.verdict { border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; font-size: .88rem; }
+.v-ok   { border: 1px solid rgba(52,211,153,.5);  background: var(--green-bg);  color: var(--green); }
+.v-bad  { border: 1px solid rgba(248,113,113,.5); background: var(--red-bg);    color: var(--red); }
+.v-warn { border: 1px solid rgba(251,191,36,.55); background: var(--yellow-bg); color: var(--yellow); }
+.recon { display: grid; grid-template-columns: 90px 1fr; gap: 8px 12px; font-size: .82rem; align-items: start; }
+.recon .label { color: var(--text-dim); padding-top: 2px; }
+.recon .val { word-break: break-all; background: var(--bg); border: 1px solid var(--border);
+              border-radius: 6px; padding: 6px 9px; min-height: 30px; }
+.chip { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: .7rem; font-weight: 600; }
+.chip-ok  { background: var(--green-bg);  color: var(--green); }
+.chip-bad { background: var(--red-bg);    color: var(--red); }
+.diff b { color: var(--red); background: var(--red-bg); padding: 0 1px; border-radius: 2px; }
+.k { color: var(--accent); }
+.lead { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="lead">
+    <div>
+      <h1>Bench scanner probe
+        <span class="sub">Which browser event actually carries the scanned characters on this host?
+        Scan a label into the box below.</span>
+      </h1>
+    </div>
+    <span class="muted mono" id="platform"></span>
+  </div>
+
+  <div class="card">
+    <h3>Scan target</h3>
+    <input id="sink" type="text" autocomplete="off" spellcheck="false" class="mono"
+           placeholder="click here, then scan a device label">
+    <div class="row" style="margin-top:10px;">
+      <button id="clearBtn" type="button">Clear</button>
+      <span class="muted" id="tally">no events yet</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Verdict</h3>
+    <div id="verdict" class="muted">Scan something to get a verdict.</div>
+    <div class="recon" style="margin-top:14px;">
+      <span class="label">keydown</span>     <span class="val mono" id="rKeydown"></span>
+      <span class="label">beforeinput</span> <span class="val mono" id="rBeforeinput"></span>
+      <span class="label">input</span>       <span class="val mono" id="rInput"></span>
+      <span class="label">field value</span> <span class="val mono" id="rValue"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Expected payload (optional — for the character self-test)</h3>
+    <input id="expected" type="text" autocomplete="off" spellcheck="false" class="mono"
+           value="SN:0000000000;I:000000000000000;M:AABBCCDDEEFF;U:admin;PW:aZ?4*$=_-!;B:000;">
+    <div class="muted" style="margin-top:8px;" id="cmp">
+      Set this to the payload of the barcode you are scanning, then scan it.
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Timing</h3>
+    <div id="timing" class="muted">—</div>
+  </div>
+
+  <div class="card">
+    <h3>Raw events</h3>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>#</th><th>+ms</th><th>type</th><th>key / data</th><th>code</th>
+          <th>inputType</th><th>mods</th>
+        </tr></thead>
+        <tbody id="log"><tr><td colspan="7" class="muted">nothing captured yet</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* Standalone diagnostic — no server, no bench code. Open it straight off disk
+ * (file://) on the host you are testing, or serve it, either works.
+ *
+ * The question it answers: with the scanner in HID keyboard mode and Alt+Numpad
+ * (keypad emulation) turned on, the OS composes each character from an
+ * Alt + numpad-digits sequence. Browsers may then report the composed character
+ * on `keydown`, or only on `beforeinput`/`input`. Whichever surface carries the
+ * real characters is the one the bench capture code has to listen on. */
+
+const $ = (id) => document.getElementById(id);
+
+const sink = $('sink');
+let events = [];          // every captured event, in order
+let t0 = null;            // timestamp of the first event of the current burst
+let lastTs = null;
+
+document.getElementById('platform').textContent =
+  navigator.platform + ' · ' + (navigator.userAgentData?.platform || '') ;
+
+function reset() {
+  events = []; t0 = null; lastTs = null;
+  sink.value = '';
+  $('log').innerHTML = '<tr><td colspan="7" class="muted">nothing captured yet</td></tr>';
+  $('rKeydown').textContent = $('rBeforeinput').textContent = '';
+  $('rInput').textContent = $('rValue').textContent = '';
+  $('verdict').className = 'muted';
+  $('verdict').textContent = 'Scan something to get a verdict.';
+  $('timing').textContent = '—';
+  $('cmp').textContent = 'Set this to the payload of the barcode you are scanning, then scan it.';
+  $('tally').textContent = 'no events yet';
+  sink.focus();
+}
+$('clearBtn').addEventListener('click', reset);
+
+// A burst is "new" when more than 700ms passed since the previous event — long
+// enough that a scan never splits, short enough that two scans stay separate.
+function noteBurst(ts) {
+  if (t0 === null || (lastTs !== null && ts - lastTs > 700)) {
+    events = [];
+    t0 = ts;
+  }
+  lastTs = ts;
+}
+
+function record(type, e) {
+  const ts = performance.now();
+  noteBurst(ts);
+  events.push({
+    type,
+    at: ts - t0,
+    key: e.key ?? null,
+    code: e.code ?? null,
+    data: e.data ?? null,
+    inputType: e.inputType ?? null,
+    mods: [e.ctrlKey && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift', e.metaKey && 'meta']
+      .filter(Boolean).join('+'),
+    value: type === 'input' ? sink.value : null,
+  });
+  render();
+}
+
+sink.addEventListener('keydown', (e) => record('keydown', e));
+sink.addEventListener('beforeinput', (e) => record('beforeinput', e));
+sink.addEventListener('input', (e) => record('input', e));
+
+// Reconstruct what each surface would have given a naive listener.
+function reconstruct(type, pick) {
+  return events.filter(ev => ev.type === type).map(pick).filter(c => c !== null).join('');
+}
+
+// A keydown `key` is a literal character only when it is exactly one code point.
+const fromKeydown = (ev) => (ev.key && [...ev.key].length === 1 ? ev.key : null);
+const fromData    = (ev) => (ev.data !== null && ev.data !== undefined ? ev.data : null);
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Show control/invisible characters so a stray CR or NUL is not silent.
+function visible(s) {
+  return String(s).replace(/[\x00-\x1f\x7f]/g, c =>
+    '\u241b' /* ␛ marker */ + '(' + c.charCodeAt(0).toString(16).padStart(2, '0') + ')');
+}
+
+function render() {
+  const kd = reconstruct('keydown', fromKeydown);
+  const bi = reconstruct('beforeinput', fromData);
+  const ip = reconstruct('input', fromData);
+  const val = sink.value;
+
+  $('rKeydown').innerHTML     = esc(visible(kd))  || '<span class="muted">—</span>';
+  $('rBeforeinput').innerHTML = esc(visible(bi))  || '<span class="muted">—</span>';
+  $('rInput').innerHTML       = esc(visible(ip))  || '<span class="muted">—</span>';
+  $('rValue').innerHTML       = esc(visible(val)) || '<span class="muted">—</span>';
+
+  $('tally').textContent =
+    `${events.length} events in this burst — ` +
+    `keydown ${events.filter(e => e.type === 'keydown').length}, ` +
+    `beforeinput ${events.filter(e => e.type === 'beforeinput').length}, ` +
+    `input ${events.filter(e => e.type === 'input').length}`;
+
+  renderVerdict(kd, bi, ip, val);
+  renderTiming();
+  renderCompare(val, kd, bi, ip);
+
+  const rows = events.map((ev, i) => `<tr>
+    <td class="muted">${i + 1}</td>
+    <td class="mono">${ev.at.toFixed(1)}</td>
+    <td class="k">${esc(ev.type)}</td>
+    <td class="mono">${esc(visible(ev.type === 'keydown' ? ev.key : ev.data))}</td>
+    <td class="mono muted">${esc(ev.code ?? '')}</td>
+    <td class="muted">${esc(ev.inputType ?? '')}</td>
+    <td class="muted">${esc(ev.mods)}</td></tr>`).join('');
+  $('log').innerHTML = rows || '<tr><td colspan="7" class="muted">nothing captured yet</td></tr>';
+}
+
+function renderVerdict(kd, bi, ip, val) {
+  const v = $('verdict');
+  if (!events.length) return;
+  // The field value is ground truth: it is what the OS actually committed.
+  const kdOk = kd === val && val.length > 0;
+  const biOk = bi === val && val.length > 0;
+  const ipOk = ip === val && val.length > 0;
+  const surfaces = [];
+  if (kdOk) surfaces.push('keydown');
+  if (biOk) surfaces.push('beforeinput');
+  if (ipOk) surfaces.push('input');
+
+  const enter = events.some(e => e.type === 'keydown' && e.key === 'Enter');
+  const alt = events.some(e => e.type === 'keydown' && e.mods.includes('alt'));
+  const notes = [];
+  notes.push(enter ? 'Enter terminator seen.' : 'No Enter seen — is the CR suffix configured?');
+  if (alt) notes.push('Alt-modified keydowns present, so keypad emulation looks active.');
+
+  if (surfaces.length) {
+    v.className = 'verdict v-ok';
+    v.innerHTML = `<b>Capture on: ${surfaces.join(' or ')}</b> — ` +
+      `${surfaces.length === 3 ? 'all three surfaces' : 'these surfaces'} reproduce the field value exactly. ` +
+      esc(notes.join(' '));
+  } else if (val.length) {
+    v.className = 'verdict v-bad';
+    v.innerHTML = '<b>No surface reproduced the field value.</b> ' +
+      'The characters reach the input but none of keydown/beforeinput/input rebuilds them — ' +
+      'capture must read the field value itself rather than per-event data. ' + esc(notes.join(' '));
+  } else {
+    v.className = 'verdict v-warn';
+    v.innerHTML = '<b>Nothing landed in the field.</b> ' + esc(notes.join(' '));
+  }
+}
+
+function renderTiming() {
+  const t = $('timing');
+  const chars = events.filter(e => e.type === 'keydown');
+  if (chars.length < 2) { t.textContent = '—'; return; }
+  const gaps = [];
+  for (let i = 1; i < chars.length; i++) gaps.push(chars[i].at - chars[i - 1].at);
+  const max = Math.max(...gaps), avg = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+  const total = chars[chars.length - 1].at - chars[0].at;
+  t.innerHTML = `${chars.length} keydowns over <b>${total.toFixed(0)}ms</b> — ` +
+    `mean gap <b>${avg.toFixed(1)}ms</b>, worst gap <b>${max.toFixed(1)}ms</b>. ` +
+    `<span class="muted">A burst threshold has to sit above the worst gap.</span>`;
+}
+
+// The scan marker the bench expects the scanner to prepend. Kept in step with
+// LABEL_SCAN_PREFIX in bench.js.
+const SCAN_PREFIX = '~';
+
+function renderCompare(val, kd, bi, ip) {
+  const want = $('expected').value;
+  const c = $('cmp');
+  if (!want || !val) return;
+
+  // Compare the *payload*, not the raw field value: a correctly configured
+  // scanner prepends the marker, and the expected payloads on the self-test
+  // sheet (and on a real sticker) do not include it. Otherwise a scanner that
+  // is set up exactly right would report a one-character mismatch — the false
+  // alarm this page exists to rule out. The marker is reported separately.
+  const hasPrefix = val.startsWith(SCAN_PREFIX);
+  const payload = hasPrefix ? val.slice(SCAN_PREFIX.length) : val;
+  const prefixNote = hasPrefix
+    ? `<span class="chip chip-ok">PREFIX ${esc(SCAN_PREFIX)}</span> `
+    : `<span class="chip chip-bad">NO PREFIX</span> `;
+
+  if ([payload, ip, bi, kd].some(s => s === want)) {
+    c.innerHTML = prefixNote +
+      '<span class="chip chip-ok">EXACT MATCH</span> ' +
+      'every character survived the trip, including the shift-dependent ones.' +
+      (hasPrefix ? '' : '<br><span class="muted">The payload is perfect but the ' +
+        '<code>~</code> marker is missing, so the tools cannot tell a scan from ' +
+        'typing. Re-do the Scan Prefix step.</span>');
+    return;
+  }
+
+  // Character-by-character diff of the payload.
+  const n = Math.max(want.length, payload.length);
+  let out = '', bad = 0;
+  for (let i = 0; i < n; i++) {
+    const w = want[i], g = payload[i];
+    if (w === g) { out += esc(visible(w ?? '')); }
+    else { bad++; out += `<b>${esc(visible(g ?? '\u2205'))}</b>`; }
+  }
+  c.innerHTML = prefixNote +
+    `<span class="chip chip-bad">${bad} MISMATCH${bad === 1 ? '' : 'ES'}</span> ` +
+    `got: <span class="mono diff">${out}</span><br>` +
+    `<span class="muted">Bold = wrong or missing. Mangled punctuation means the host keyboard ` +
+    `layout is being applied — on Windows scan "Disable Quick Keypad Emulation" (page 8-13); ` +
+    `on macOS make sure that one is <i>enabled</i>.</span>`;
+}
+
+reset();
+</script>
+</body>
+</html>

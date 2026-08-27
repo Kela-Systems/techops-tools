@@ -134,6 +134,305 @@ function mountConfigWarn() {
   };
 }
 
+// ── Device-label scan detection (TEC-349) ───────────────────────────────────
+//
+// Deciding whether some text is a scanned device label. Kept at the top level,
+// separate from the UI that uses it, because it is the one piece of scan
+// handling with enough edge cases to be worth testing on its own (see
+// bench-core/tests/test_bench_js_scan.py).
+//
+// It is deliberately NOT a parser: it locates a payload and hands the raw
+// string to the server, which owns the only parser
+// (`bench_core.device_label`). These constants mirror that module — same keys,
+// same 2-key minimum for what counts as a label.
+const LABEL_SCAN_KEYS = 'SN|PW|I|M|U|B';
+const LABEL_SCAN_PREFIX = '~';       // the scanner's configured scan marker
+const LABEL_SCAN_MIN_KEYS = 2;
+const _LABEL_KEY_AT =
+  new RegExp('(?:^|[^A-Za-z0-9])((?:' + LABEL_SCAN_KEYS + ')\\s*:)', 'i');
+const _LABEL_KEY_COUNT =
+  new RegExp('(?:^|;)\\s*(?:' + LABEL_SCAN_KEYS + ')\\s*:', 'gi');
+const _LABEL_HAS_PW = /(?:^|;)\s*PW\s*:/i;
+
+// A label sitting in `text`: `{cut, payload}` — where to trim the field back
+// to, and the raw string to send. Null when there isn't one.
+//
+// The marker is preferred because it is unambiguous. The shape fallback keeps
+// a factory-reset scanner (no prefix configured) working, and covers a burst
+// whose first character was lost to a focus change.
+//
+// A payload must carry the PW key, on top of the key-count minimum. Ending the
+// burst is the flush timer's job, not this function's, but the two overlap: a
+// scanner that stalls long enough mid-label would otherwise let a *prefix* of
+// one through, and `SN:...;I:...` alone already clears the key count. Since
+// the only reason to read a label at all is the password, "no PW yet" is a
+// reliable proxy for "not finished". A label with an *empty* PW still has the
+// key, so the server keeps its chance to explain that one properly.
+function findLabelPayload(text) {
+  if (!text) return null;
+  const looksComplete = (s) =>
+    (s.match(_LABEL_KEY_COUNT) || []).length >= LABEL_SCAN_MIN_KEYS &&
+    _LABEL_HAS_PW.test(s);
+  const marked = text.lastIndexOf(LABEL_SCAN_PREFIX);
+  if (marked >= 0) {
+    const payload = text.slice(marked + 1);
+    if (looksComplete(payload)) return { cut: marked, payload: payload };
+  }
+  const m = _LABEL_KEY_AT.exec(text);
+  if (m) {
+    const at = m.index + m[0].length - m[1].length;
+    const payload = text.slice(at);
+    if (looksComplete(payload)) return { cut: at, payload: payload };
+  }
+  return null;
+}
+
+// Cheap "a scan may be in progress" test. `input` fires per character, so this
+// is what arms the flush timer; findLabelPayload decides if it really was one.
+function couldBeLabelScan(text) {
+  return !!text && (text.indexOf(LABEL_SCAN_PREFIX) >= 0 || _LABEL_KEY_AT.test(text));
+}
+
+// Device-label scanning (TEC-349). Injected by connectBenchWS on the tools
+// that opt in (`state.label_scan.enabled`), so the Teltonika pages get it
+// without per-page markup and the other four are untouched.
+//
+// A 2D scanner in HID keyboard mode is a keyboard: it "types" the label and
+// sends Enter. Three things follow from that, and shape everything below.
+//
+// 1. The characters land in whatever has focus — usually #siteName, which the
+//    pages focus as soon as a device is detected. So capture is delegated from
+//    `document` and works on any field: the payload is lifted back out and the
+//    field restored, rather than trying to win a fight over focus.
+// 2. `input` fires per character, so a payload is only complete once the
+//    scanner's CR suffix arrives (or typing stops). Acting on the first
+//    keystrokes that happen to look like a label would post half of one.
+// 3. That trailing Enter would otherwise hit #siteName's own handler and
+//    submit the form mid-scan, so it is swallowed — but only when a complete
+//    payload is actually sitting there, or a human pressing Enter would stop
+//    working.
+//
+// Nothing here parses the label or touches the password: the raw string goes
+// to the server, which owns the one parser and keeps the password out of the
+// page entirely. Returns {update(state)}.
+function mountLabelScan(onState) {
+  // Must exceed the scanner's worst inter-character gap — scan-probe.html
+  // reports it. Only used when no CR suffix arrives to end the burst.
+  const IDLE_FLUSH_MS = 200;
+
+  let enabled = false;      // the tool opted in
+  let manual = false;       // operator chose to type over an armed scan
+  let lastMac = null;       // to reset `manual` when the device changes
+  let pending = null;       // field a burst is currently landing in
+  let timer = null;
+  let returnFocus = null;   // {el, pos}: focus and caret a scan took over
+  let banner = null, sink = null;
+  let hintHTML = null, hintClass = null, placeholder = null;  // originals
+
+  function ensureNodes() {
+    if (banner) return;
+    banner = document.createElement('div');
+    banner.id = 'labelScanBanner';
+    banner.className = 'scanwarn hidden';
+    const header = document.querySelector('.container > header') ||
+      document.querySelector('header');
+    if (header && header.parentNode) header.insertAdjacentElement('afterend', banner);
+    else document.body.prepend(banner);
+
+    // Somewhere to put a burst that arrives with nothing focused, so it is not
+    // simply lost. Never focused while the operator is in a real field.
+    sink = document.createElement('input');
+    sink.id = 'benchScanSink';
+    sink.type = 'text';
+    sink.className = 'scan-sink';
+    sink.tabIndex = -1;
+    sink.setAttribute('autocomplete', 'off');
+    sink.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(sink);
+  }
+
+  function schedule(el) {
+    pending = el;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(flush, IDLE_FLUSH_MS);
+  }
+
+  // Hand back the field and caret a scan took over, optionally re-inserting
+  // `text` where the takeover happened. Every exit path that stole focus goes
+  // through here, so a '~' that turned out not to begin a label costs the
+  // operator nothing.
+  function releaseFocus(text) {
+    const target = returnFocus;
+    returnFocus = null;
+    if (sink) sink.value = '';
+    const el = target && target.el;
+    if (!el || !el.isConnected) return;
+    if (text) {
+      const pos = target.pos === null ? el.value.length : target.pos;
+      el.value = el.value.slice(0, pos) + text + el.value.slice(pos);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      try { el.setSelectionRange(pos + text.length, pos + text.length); }
+      catch (_) { /* not a text input; the value is still right */ }
+    }
+    try { el.focus(); } catch (_) { /* gone from the DOM mid-scan */ }
+  }
+
+  async function flush() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    const el = pending;
+    pending = null;
+    if (!el) return;
+    const hit = findLabelPayload(el.value);
+    if (!hit) {
+      // A stray '~' or half a label. Leave a real field alone; if the sink took
+      // focus for this, give it back along with whatever followed the marker.
+      if (returnFocus) releaseFocus(el === sink ? el.value : '');
+      return;
+    }
+
+    // Take the payload out of the field before anything can submit or read it.
+    el.value = el.value.slice(0, hit.cut);
+    if (el !== sink) el.dispatchEvent(new Event('input', { bubbles: true }));
+    if (returnFocus) releaseFocus('');
+    else if (sink) sink.value = '';
+    manual = false;
+
+    const r = await postJSON('/api/label-scan', { raw: hit.payload },
+                             { alertOnError: false });
+    // Paint the outcome now rather than waiting up to a second for the next
+    // state frame — a scan should feel immediate.
+    if (r && r.error) showProblem(r.error);
+    else if (r && onState) onState(r);
+  }
+
+  // The marker is the earliest moment a scan can be recognised, and
+  // `beforeinput` is the only surface that offers it *cancelably* under every
+  // scanner setting: with keypad emulation on, characters are composed by the
+  // OS out of Alt+numpad sequences, so no `keydown` ever carries a '~'.
+  // Cancelling that first insertion and moving focus to the sink keeps the rest
+  // of the burst out of the operator's field entirely. The lift-and-restore
+  // below still works without this — the pages focus #siteName as soon as a
+  // device is detected, so a scan lands there and is pulled back out a frame
+  // later — but the field visibly garbles itself in the meantime, which reads
+  // as the tool malfunctioning.
+  document.addEventListener('beforeinput', (e) => {
+    if (!enabled || !sink) return;
+    const el = e.target;
+    if (!el || el === sink || typeof el.value !== 'string') return;
+    if (typeof e.data !== 'string') return;   // deletion, composition, drag
+    const at = e.data.indexOf(LABEL_SCAN_PREFIX);
+    if (at < 0) return;
+    e.preventDefault();
+    returnFocus = {
+      el: el,
+      pos: typeof el.selectionStart === 'number' ? el.selectionStart : null,
+    };
+    // Keep the marker: it makes the payload unambiguous to findLabelPayload.
+    // A scanner that delivers the whole burst as one insertion arrives here
+    // complete, so carry the remainder across too.
+    sink.value = e.data.slice(at);
+    sink.focus();
+    try { sink.setSelectionRange(sink.value.length, sink.value.length); }
+    catch (_) { /* nothing to place the caret in yet */ }
+    schedule(sink);
+  }, true);
+
+  document.addEventListener('input', (e) => {
+    const el = e.target;
+    if (!enabled || !el || typeof el.value !== 'string') return;
+    if (couldBeLabelScan(el.value)) schedule(el);
+  }, true);
+
+  document.addEventListener('keydown', (e) => {
+    if (!enabled) return;
+    if (e.key === 'Enter') {
+      const el = pending || e.target;
+      if (el && typeof el.value === 'string' && findLabelPayload(el.value)) {
+        // Capture phase on `document`, so this never reaches the field's own
+        // Enter handler and cannot submit the form.
+        e.preventDefault();
+        e.stopPropagation();
+        pending = el;
+        flush();
+      }
+      return;
+    }
+    const active = document.activeElement;
+    if (sink && (!active || active === document.body ||
+                 active === document.documentElement)) sink.focus();
+  }, true);
+
+  function showProblem(message) {
+    if (!banner) return;
+    const html = '<b>&#9888; Scanned label rejected</b><div>' + esc(message) + '</div>';
+    if (banner.innerHTML !== html) banner.innerHTML = html;
+    banner.classList.remove('hidden');
+  }
+
+  function renderProblem(message) {
+    if (!banner) return;
+    if (message) { showProblem(message); return; }
+    banner.classList.add('hidden');
+  }
+
+  function renderField(armed) {
+    const input = $('labelPw'), hint = $('labelPwHint');
+    if (!input) return;
+    if (placeholder === null) placeholder = input.placeholder || '';
+    if (hint && hintHTML === null) { hintHTML = hint.innerHTML; hintClass = hint.className; }
+
+    const fromScan = !!(armed && armed.has_password) && !manual;
+    input.disabled = fromScan;
+    input.classList.toggle('from-scan', fromScan);
+    if (fromScan && input.value) input.value = '';
+    input.placeholder = fromScan ? 'read from the scanned label' : placeholder;
+    if (!hint) return;
+
+    if (!fromScan) {
+      if (hint.innerHTML !== hintHTML) hint.innerHTML = hintHTML;
+      hint.className = hintClass;
+      return;
+    }
+    const bits = [];
+    if (armed.serial) bits.push('SN ' + esc(armed.serial));
+    if (armed.batch) bits.push('batch ' + esc(armed.batch));
+    // matches_active === null means the device's own MAC was unreadable, so
+    // the label could not be cross-checked. That is weaker than a match and
+    // the operator should know which one they are looking at.
+    const unchecked = armed.matches_active === null;
+    const html = (unchecked ? '&#9888; ' : '&#10003; ') +
+      'Password from the scanned label' +
+      (bits.length ? ' (' + bits.join(', ') + ')' : '') +
+      (unchecked ? ' — the device\u2019s own MAC could not be read, so this was '
+                 + 'not checked against it' : '') +
+      ' &middot; <a href="#" class="scan-manual">type it instead</a>';
+    hint.className = 'hint ' + (unchecked ? 'hint-warn' : 'hint-ok');
+    if (hint.innerHTML === html) return;   // 1 Hz feed: don't churn the DOM
+    hint.innerHTML = html;
+    const link = hint.querySelector('.scan-manual');
+    if (link) link.addEventListener('click', (e) => {
+      e.preventDefault();
+      manual = true;                       // a typed value wins server-side
+      renderField(armed);
+      const box = $('labelPw');
+      if (box) { box.disabled = false; box.focus(); }
+    });
+  }
+
+  return {
+    update(s) {
+      const info = s.label_scan || { enabled: false };
+      enabled = !!info.enabled;
+      if (!enabled) return;
+      ensureNodes();
+      const mac = s.active_mac || null;
+      if (mac !== lastMac) { manual = false; lastMac = mac; }
+      renderProblem(info.problem);
+      renderField(info.armed);
+    },
+  };
+}
+
 // Resilient WebSocket state feed.
 //
 // Calls `onState(state)` for every frame. Also bootstraps once via GET
@@ -147,7 +446,16 @@ function connectBenchWS(onState, opts) {
   const connEl = $('conn');
   const operatorBox = mountOperatorBox();
   const configWarn = mountConfigWarn();
-  const handleState = (s) => { operatorBox.update(s); configWarn.update(s); onState(s); };
+  let labelScan = null;
+  const handleState = (s) => {
+    operatorBox.update(s);
+    configWarn.update(s);
+    if (labelScan) labelScan.update(s);
+    onState(s);
+  };
+  // Takes handleState so a scan can repaint immediately from its own response
+  // instead of waiting for the next 1 Hz frame.
+  labelScan = mountLabelScan(handleState);
   let ws = null, retry = 0, closed = false, bootstrapping = false;
 
   function setConn(text, up) {

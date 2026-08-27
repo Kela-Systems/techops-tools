@@ -40,7 +40,7 @@
         <label for="labelPw">Label password (factory)</label>
         <input id="labelPw" type="password" autocomplete="off" placeholder="from the device sticker"
                onkeydown="if(event.key==='Enter')submitConfigure()">
-        <span class="hint">Leave empty if the router was provisioned before (shared password).</span>
+        <span class="hint" id="labelPwHint">Scan the label's QR code, or type it. Leave empty if the router was provisioned before (shared password).</span>
       </div>
       <div class="field field-actions">
         <label aria-hidden="true">&nbsp;</label>

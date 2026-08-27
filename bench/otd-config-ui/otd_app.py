@@ -52,6 +52,7 @@ class OtdConfigurator(BenchConfigurator):
     log_filename = "otd-config.log"
     tailscale_label = "otd"
     history_limit = 20  # full step logs per entry — the JSON files are the archive
+    label_scan_enabled = True  # read the factory password off the QR label (TEC-349)
 
     # ── state ────────────────────────────────────────────────────────────────
 
@@ -111,6 +112,7 @@ class OtdConfigurator(BenchConfigurator):
                 "hostname": result["hostname"],
                 "site_name": inputs["site_name"],
                 "imei": ident.get("imei", "unknown"),
+                "password_source": self.password_source(inputs, "label_password"),
             },
         )
 
@@ -165,8 +167,10 @@ class OtdConfigurator(BenchConfigurator):
                 return {"error": "The site name needs at least one letter or digit."}
             if not self.state["detected"]:
                 return {"error": "No device is currently detected."}
+            password, source = self.resolve_label_password(body.label_password)
             inputs = {"site_name": site,
-                      "label_password": body.label_password.strip(),
+                      "label_password": password,
+                      "password_source": source,
                       "mac": self.state.get("active_mac")}
             label = f"{self.hostname_for(inputs)} ({self.cfg.get('host', DEFAULT_HOST)})"
             if not await self.execute_run(inputs, label):

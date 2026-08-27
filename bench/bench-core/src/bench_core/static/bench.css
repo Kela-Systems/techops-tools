@@ -249,6 +249,32 @@ pre.log {
 .configwarn ul { margin: 4px 0 0 20px; }
 .configwarn li { margin: 2px 0; }
 
+/* Rejected label scan (injected by bench.js, TEC-349). Red, not amber: the
+   usual cause is the operator holding the wrong device, and carrying on would
+   provision it under the wrong name. */
+.scanwarn {
+  border: 1px solid rgba(248, 113, 113, .55); background: var(--red-bg); color: var(--red);
+  padding: 10px 14px; border-radius: 10px; margin-bottom: 16px; font-size: .85rem;
+}
+.scanwarn div { margin-top: 3px; }
+
+/* A password field being filled from a scan — visibly not something to type
+   into, so a disabled box doesn't read as a broken one. */
+.field input.from-scan, .field input.from-scan:disabled {
+  border-color: var(--green); background: var(--green-bg); opacity: 1;
+}
+.field .hint.hint-ok { color: var(--green); }
+.field .hint.hint-warn { color: var(--yellow); }
+.field .hint a { color: inherit; text-decoration: underline; opacity: .8; }
+.field .hint a:hover { opacity: 1; }
+
+/* Landing spot for a scan that arrives with nothing focused. Off-screen rather
+   than display:none, which cannot hold focus. */
+.scan-sink {
+  position: fixed; top: 0; left: -9999px;
+  width: 1px; height: 1px; opacity: 0; padding: 0; border: 0;
+}
+
 /* Narrow screens: stack the dense grids so nothing overflows the viewport. */
 @media (max-width: 640px) {
   .container { padding: 20px 14px 50px; }

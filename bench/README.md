@@ -99,14 +99,31 @@ window (Windows) or press Ctrl+C in the terminal (macOS/Linux).
 | --------------------- | ---------------------------- | ---- | ------------------------------------------------------ |
 | `magos-config-ui/`    | Magos AR-300 **radar**       | 8001 | factory subnet `192.168.40.x`                          |
 | `magos-config-ui/`    | Magos **APU**                | 8002 | factory IP `192.168.40.60`                             |
-| `otd-config-ui/`      | Teltonika **OTD500**         | 8003 | one device at a time, factory `192.168.1.1`            |
-| `rutm-config-ui/`     | Teltonika **RUTM08**         | 8004 | one device at a time, factory `192.168.1.1`            |
+| `otd-config-ui/`      | Teltonika **OTD500**         | 8003 | one device at a time, factory `192.168.1.1`; label scan |
+| `rutm-config-ui/`     | Teltonika **RUTM08**         | 8004 | one device at a time, factory `192.168.1.1`; label scan |
 | `raythink-config-ui/` | Raythink **thermal camera**  | 8005 | factory `192.168.1.123`, RPC2 API; static IP or DHCP    |
 | `speaker-config-ui/`  | Provision-ISR **IP speaker** | 8006 | arrives on **DHCP** — auto-scans `192.168.1/2/88.0/24` |
 
 
 The ports are fixed and don't collide, so all the tools run side by side under
 the one launcher.
+
+### Scanning the label instead of typing the password
+
+On the two Teltonika tools, the factory password can be read off the device's QR
+label with a barcode scanner rather than retyped from the sticker. Plug in the
+device, scan its label, and the password field fills itself — the site name and
+Configure are unchanged.
+
+The label also carries the device's MAC, so the tool checks it against the MAC it
+read off the plugged-in device itself: **scanning the wrong box is refused rather
+than provisioned.** The password stays on the server, never appears on the page,
+and is never written into a run record.
+
+One-time scanner setup (Zebra **DS2278** in its cradle), the self-test barcodes
+that prove a station's keyboard layout isn't mangling passwords, and the
+troubleshooting table are in
+[`docs/scanner-ds2278.md`](docs/scanner-ds2278.md).
 
 ## For engineers
 
@@ -127,7 +144,18 @@ one — proof the base is protocol-agnostic.
 (`Start Bench Tools.bat` / `start-bench.sh`), the docs and
 `requirements.txt`; everything they delegate to — `bench-launch.bat`,
 `_lib.sh`, `updater.py`, the `setup-station.*` installers — lives in
-`scripts/`. The tools and `bench-core/` are siblings at the root.
+`scripts/`. The tools and `bench-core/` are siblings at the root. Reference
+material that isn't a runbook lives in `docs/` (currently the scanner setup and
+its committed self-test barcodes).
+- **Scanner diagnostics** (not wired into the launcher, no hardware needed to
+run the second one):
+  - `scripts/scan-probe.html` — open it in a browser on any host and scan into
+  it. Reports which browser event carried the characters, the inter-character
+  timing, and a character-by-character diff against an expected payload. This is
+  what you reach for when a station mangles passwords.
+  - `scripts/scan-smoke.py` — drives the whole scan flow over real HTTP against
+  both Teltonika tools with simulated devices, including the deliberate
+  wrong-device case. Run it after touching the scan path.
 - **Updates are pushed from bench-central** (`bench-central/README.md`,
 "Fleet"): an admin pins a release (any git ref, resolved to a SHA) and every
 station converges to it at launch. The station half is `scripts/updater.py`

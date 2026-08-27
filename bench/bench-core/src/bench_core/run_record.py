@@ -44,14 +44,19 @@ only by the per-run JSON writer — `parse_run_record()` still accepts those.)
 
 `device` extension blocks (per-family fields, everything else stays core):
 
-    otd           hostname, site_name, imei
-    rutm          hostname, site_name
+    otd           hostname, site_name, imei, password_source
+    rutm          hostname, site_name, password_source
     raythink      hostname, profile, ip
     speaker       hostname, ip, from_host
     magos-radar   channel, ip, from_host, ntp, timezone
     magos-apu     channel, ip, radars ([{radar_id, ip, name}] — one APU
                   controls two radars since firmware 3.1.2), radar_ip (the
                   same list as one display string), from_host, ntp, timezone
+
+`password_source` (TEC-349) is where the login password came from: "scan" (read
+off the device's QR label), "typed", or "shared-fallback" (none given, so the
+pipeline used the station's shared password). The password itself is never part
+of a record — the whole point of scanning it is that nobody has to handle it.
 """
 from __future__ import annotations
 
