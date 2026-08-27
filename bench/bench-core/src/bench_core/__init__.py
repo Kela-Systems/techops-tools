@@ -162,8 +162,14 @@ IMEI_KEYS = ("imei",)
 
 # --- UCI paths (verified against OTD5_R_00.07.20.3) -------------------------
 UCI_HOSTNAME = "system.system.hostname"          # device name == hostname for RMS
-UCI_TIMEZONE = "system.system.timezone"          # POSIX TZ string
-UCI_ZONENAME = "system.ntp.zoneName"             # IANA zone name (note capital N)
+UCI_TIMEZONE = "system.system.timezone"          # POSIX TZ string — libc reads this
+# Two IANA zone names (note the capital N in both), read by different consumers.
+# The WebUI's Date & Time dropdown owns the one in the `system` section: a
+# TSW202 with only the timeserver copy set showed a correct clock as "UTC" in
+# the UI, which one Save & Apply would have written back over the clock. Proven
+# by setting the zone in the UI and diffing `uci show system`.
+UCI_ZONENAME = "system.system.zoneName"          # what the WebUI renders
+UCI_ZONENAME_NTP = "system.ntp.zoneName"         # the timeserver section's copy
 # RMS lives in the `rms_mqtt` package; the connect daemon's enable flag is
 # `1` by default, so "connect to RMS" is really: ensure enabled + force connect.
 UCI_RMS_ENABLED = "rms_mqtt.rms_connect_mqtt.enable"
@@ -621,6 +627,54 @@ def fw_versions_match(a: str, b: str) -> bool:
     na = re.sub(r"[^0-9a-z]", "", (a or "").lower())
     nb = re.sub(r"[^0-9a-z]", "", (b or "").lower())
     return bool(na) and bool(nb) and na == nb
+
+
+def expected_utc_offset(zonename: str) -> str:
+    """The UTC offset `zonename` is in RIGHT NOW, e.g. '+0300' — or "" when this
+    machine has no tz database to answer with.
+
+    Paired with `TeltonikaClient.effective_utc_offset` to check a timezone by
+    its effect on the device clock rather than by reading back the UCI option we
+    just wrote. It has to be computed per-call, not tabled: Asia/Jerusalem is
+    +0200 in winter and +0300 under IDT, so a fixed expectation would fail for
+    half the year.
+
+    Windows has no system tz database, which is why `tzdata` is in
+    requirements.txt — the bench stations are exactly where this must not
+    silently degrade.
+    """
+    from datetime import datetime, timezone
+    try:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    except ImportError:      # pragma: no cover - Python < 3.9
+        return ""
+    try:
+        return datetime.now(timezone.utc).astimezone(
+            ZoneInfo(zonename)).strftime("%z")
+    except (ZoneInfoNotFoundError, ValueError, KeyError, ModuleNotFoundError):
+        log.warning("No tz database entry for '%s' on this machine, so the "
+                    "timezone check can only confirm the clock left UTC "
+                    "(pip install tzdata).", zonename)
+        return ""
+
+
+def fw_version_at_least(device_fw: str, minimum: str) -> bool:
+    """True when `device_fw` is `minimum` or newer.
+
+    The ordered counterpart to fw_versions_match, for a tool whose firmware
+    setting is a FLOOR rather than a pin (the TSW202: flash a unit that is
+    older, leave a newer one alone). Ordering the numeric tuples rather than
+    the strings is what makes that safe across the three shapes a real compare
+    hits: a release name against a bare version ('TSW2_R_00.01.10' vs
+    '00.01.10'), differing segment counts ('00.01.07' predates '00.01.07.1'),
+    and a segment that outgrows its zero padding ('00.01.100' follows
+    '00.01.99'). Get it wrong and the step flashes a switch backwards.
+
+    False when either side carries no dotted version: "we could not tell" must
+    not read as "new enough" and silently skip an upgrade.
+    """
+    a, b = _version_digits(device_fw), _version_digits(minimum)
+    return bool(a) and bool(b) and a >= b
 
 
 def fw_carries_version(device_fw: str, version: str) -> bool:
@@ -1753,15 +1807,243 @@ class TeltonikaClient:
         self.ssh_exec(f"echo {qname} > /proc/sys/kernel/hostname", check=False)
         log.info("Hostname set.")
 
+    def effective_utc_offset(self) -> str:
+        """The device clock's CURRENT UTC offset, e.g. '+0300' — or "".
+
+        The only layout-independent evidence that a timezone actually took: it
+        is what the running clock does, not what a UCI option says. A switch
+        whose `system.ntp.zoneName` reads back 'Asia/Jerusalem' while this
+        returns '+0000' has been written to and is ignoring it.
+        """
+        return self.ssh_exec("date +%z", check=False).strip()
+
+    def timezone_check(self, zonename: str) -> dict:
+        """One `{item, expected, actual, ok}` verification row for the timezone.
+
+        Shared by the routers and the switch because the failure was: the
+        TSW202 passed a read-back of `system.ntp.zoneName` while running on
+        UTC and displaying UTC.
+
+        Two things have to agree. The CLOCK is the real evidence — `uci set`
+        creates an option whether or not the device consumes it, so only the
+        offset proves the zone took. The zone NAME is checked as well because
+        that is what the WebUI's dropdown renders, and a device whose clock is
+        right while its UI says UTC is one accidental Save & Apply away from
+        losing the clock too.
+        """
+        offset = self.effective_utc_offset()
+        shown = self.ssh_exec(f"uci -q get {UCI_ZONENAME}", check=False).strip()
+        want = expected_utc_offset(zonename)
+        if want:
+            expected = f"{zonename} (clock at {want})"
+            clock_ok = offset == want
+        else:
+            # No tz database on this station to say what the zone means today;
+            # the clock having left UTC is the most this can honestly claim.
+            expected = f"{zonename} (clock off UTC)"
+            clock_ok = bool(offset) and offset != "+0000"
+        return {"item": "timezone", "expected": expected,
+                "actual": f"clock at {offset or 'unknown'}, "
+                          f"WebUI shows {shown or '(unset)'}",
+                "ok": clock_ok and shown == zonename}
+
+    def configured_ntp_servers(self) -> list[str]:
+        """Every NTP server the device has configured, in whatever section shape
+        it keeps them.
+
+        Deliberately NOT `uci get system.ntp.server`: that reads back exactly
+        what `set_ntp_server` writes, which passed verification on a TSW202
+        whose WebUI still listed four Google servers untouched. Collecting every
+        `server` / `hostname` option in the package finds the ones the device
+        really uses, whether they are a `list server` on one section or a
+        `hostname` on one section per server.
+        """
+        out = self.ssh_exec("uci show system 2>/dev/null", check=False)
+        servers: list[str] = []
+        for line in out.splitlines():
+            m = re.match(r"system\.(@?[\w.\[\]-]+?)\.(server|hostname)=(.*)$",
+                         line.strip())
+            if not m:
+                continue
+            section, option = m.group(1), m.group(2)
+            # system.system.hostname is the DEVICE name, not a time server.
+            if option == "hostname" and section == "system":
+                continue
+            # uci renders a list as `opt='a' 'b' 'c'`.
+            for token in m.group(3).split():
+                value = token.strip().strip("'\"")
+                if value and value not in servers:
+                    servers.append(value)
+        return servers
+
+    def running_ntp_servers(self) -> list[str]:
+        """The servers the RUNNING ntpd was started with, off its command line.
+
+        The companion to `configured_ntp_servers`: a committed config the daemon
+        never picked up is exactly the failure the timezone had, and the only
+        thing that settles it is what the live process is polling. The bracket
+        in `[n]tpd` keeps grep from matching itself.
+        """
+        out = self.ssh_exec("ps w 2>/dev/null | grep '[n]tpd'", check=False)
+        return re.findall(r"-p\s+(\S+)", out)
+
     def set_timezone(self, zonename: str) -> None:
         posix = POSIX_TZ.get(zonename)
         if not posix:
             raise SystemExit(f"No POSIX TZ mapping for '{zonename}'; add it to POSIX_TZ.")
         log.info("Setting timezone to %s ...", zonename)
-        self._uci(f"{UCI_ZONENAME}='{zonename}'", f"{UCI_TIMEZONE}='{posix}'",
+        # Three keys for three consumers: libc reads the POSIX string, the WebUI
+        # dropdown reads the zone name in the `system` section, and the
+        # timeserver section keeps its own copy. Setting fewer than all three
+        # leaves the device disagreeing with itself.
+        self._uci(f"{UCI_TIMEZONE}='{posix}'",
+                  f"{UCI_ZONENAME}='{zonename}'",
+                  f"{UCI_ZONENAME_NTP}='{zonename}'",
                   package="system")
+        # A committed UCI option is not yet a timezone. libc reads /etc/TZ, and
+        # nothing writes it until the system config is reloaded: the first
+        # TSW202 off the bench held both options exactly right and ran on a
+        # +0000 clock, because this step was missing.
+        self.ssh_exec("/etc/init.d/system reload", check=False)
         self.ssh_exec("/etc/init.d/sysntpd restart", check=False)
+
+        want = expected_utc_offset(zonename)
+        if want and self.effective_utc_offset() != want:
+            # Some builds' `system` init script doesn't own /etc/TZ. Write what
+            # libc reads directly — /etc/TZ is usually a symlink to /tmp/TZ, so
+            # both are written to cover either layout.
+            log.warning("The clock is still not at %s after reloading the "
+                        "system config — writing the TZ file directly.", want)
+            qposix = shlex.quote(posix)
+            self.ssh_exec(f"echo {qposix} > /tmp/TZ", check=False)
+            self.ssh_exec(f"echo {qposix} > /etc/TZ", check=False)
         log.info("Timezone set.")
+
+    # --- LAN address (must run LAST) ----------------------------------------
+    def current_lan_ip(self) -> str:
+        return self.ssh_exec(
+            f"uci get network.{self.mgmt_section()}.ipaddr 2>/dev/null",
+            check=False).strip()
+
+    def network_addresses(self) -> dict:
+        """Every `network.<section>.ipaddr` the device has, as {section: ip}.
+
+        Section names come back exactly as UCI addresses them, so an anonymous
+        `config interface` block appears as `@interface[0]` — which is a valid
+        UCI path and an invalid bare shell word, hence `_uci_arg` everywhere
+        these are used."""
+        out = self.ssh_exec("uci show network 2>/dev/null", check=False)
+        found = {}
+        for line in out.splitlines():
+            m = re.match(r"network\.(@?[\w.\[\]-]+?)\.ipaddr=(.*)$", line.strip())
+            if m:
+                found[m.group(1)] = m.group(2).strip().strip("'\"")
+        return found
+
+    def mgmt_section(self, addresses: Optional[dict] = None) -> str:
+        """The `network` section that carries the address we are talking to.
+
+        `lan` on every RutOS router, but NOT on every device in the family: the
+        TSW202 answered `uci: Invalid argument` to `uci set network.lan.ipaddr`,
+        which is what UCI says when a section does not resolve. Asking the
+        device which section actually holds its current address is both the
+        correct answer and one that needs no per-model table.
+
+        In order: the section whose address is the one we reached the device on,
+        then the conventional `lan`, then the only addressed section if there
+        happens to be exactly one. `""` when it is genuinely ambiguous — better
+        a caller that reports the candidates than one that moves the wrong
+        interface and strands the device.
+        """
+        addresses = self.network_addresses() if addresses is None else addresses
+        for section, ip in addresses.items():
+            if ip == self.host:
+                return section
+        if "lan" in addresses:
+            return "lan"
+        if len(addresses) == 1:
+            return next(iter(addresses))
+        return ""
+
+    def move_lan(self, new_ip: str, wait: int = 120, *, netmask: str = "",
+                 gateway: str = "", renew_dhcp: bool = True) -> dict:
+        """Point the management interface at `new_ip`. We are talking to the
+        device OVER that interface, so the network restart drops the connection
+        by design: commit synchronously, restart fire-and-forget, then confirm
+        by reaching the device on the new address.
+
+        The section written is whichever one currently holds our address (see
+        `mgmt_section`) rather than a hard-coded `lan`.
+
+        `netmask`/`gateway` are for devices that need them stated. A router
+        (RUTM08) needs neither — its DHCP pool follows the interface subnet, and
+        it IS the gateway — so only `ipaddr` changes there. A switch's
+        management interface has to be told both.
+
+        `renew_dhcp` renews the HOST's lease so the laptop follows the device
+        into the new subnet. Only correct when the device serves DHCP there: on
+        macOS the renew is `ipconfig set <iface> DHCP`, which would throw away a
+        statically-configured bench adapter. Devices that don't serve DHCP
+        (switches) must pass False and rely on the station already having an
+        address in the target subnet.
+
+        Returns a verification-style check dict; never raises after the commit
+        (past that point the device is moving whether we can see it or not)."""
+        addresses = self.network_addresses()
+        section = self.mgmt_section(addresses)
+        if not section:
+            found = ", ".join(f"network.{s}={ip}" for s, ip in addresses.items())
+            candidates = found or ("none — is the address configured outside the "
+                                   "`network` package?")
+            raise SystemExit(
+                f"Cannot tell which network section carries {self.host}, so the "
+                "move would risk re-addressing the wrong interface. Addressed "
+                f"sections: {candidates}")
+
+        cur = addresses.get(section, "")
+        if cur == new_ip:
+            log.info("Management IP is already %s; skipping the move.", new_ip)
+            return {"item": "LAN IP", "expected": new_ip,
+                    "actual": f"{new_ip} (already set)", "ok": True}
+
+        # Resolve the host-side interface while the device is still reachable.
+        iface = host_iface_for(self.host)
+        log.info("Moving network.%s from %s to %s — the connection will drop ...",
+                 section, cur or self.host, new_ip)
+        options = {"ipaddr": new_ip}
+        if netmask:
+            options["netmask"] = netmask
+        if gateway:
+            options["gateway"] = gateway
+        sets = [f"uci set {self._uci_arg(f'network.{section}.{option}', value)}"
+                for option, value in options.items()]
+        self.ssh_exec(" && ".join(sets + ["uci commit network"]))
+        self._fire_and_forget("sleep 1; /etc/init.d/network restart")
+        self.close()
+        self.host = new_ip
+        self.base = f"{self.scheme}://{new_ip}/api"
+
+        port = 443 if self.scheme == "https" else 80
+        deadline = time.time() + wait
+        time.sleep(5)
+        if renew_dhcp:
+            renew_host_dhcp(iface)
+        renewed_again = False
+        while time.time() < deadline:
+            if self._port_open(port):
+                log.info("Device is answering on %s.", new_ip)
+                return {"item": "LAN IP", "expected": new_ip,
+                        "actual": f"answering on {new_ip}", "ok": True}
+            if renew_dhcp and not renewed_again and time.time() > deadline - wait / 2:
+                renew_host_dhcp(iface)
+                renewed_again = True
+            time.sleep(3)
+        hint = ("laptop lease may be stale" if renew_dhcp else
+                f"is this station on the {new_ip.rsplit('.', 1)[0]}.x subnet?")
+        log.warning("Device did not answer on %s within %ds — it may still be fine; "
+                    "%s", new_ip, wait, hint)
+        return {"item": "LAN IP", "expected": new_ip,
+                "actual": f"no answer on {new_ip} after {wait}s ({hint})", "ok": False}
 
     # --- SIM / mobile -------------------------------------------------------
     def set_sims_4g_only(self) -> None:
@@ -2209,9 +2491,7 @@ class TeltonikaClient:
         hn = self.ssh_exec("uci get system.system.hostname 2>/dev/null", check=False).strip()
         add("hostname", hostname, hn, hn == hostname)
 
-        zn = self.ssh_exec(f"uci get {UCI_ZONENAME} 2>/dev/null", check=False).strip()
-        tz = self.ssh_exec(f"uci get {UCI_TIMEZONE} 2>/dev/null", check=False).strip()
-        add("timezone", zonename, f"{zn} ({tz})", zn == zonename)
+        checks.append(self.timezone_check(zonename))
 
         if sim_4g:
             idxs = self._sim_indices()

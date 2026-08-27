@@ -63,6 +63,10 @@ bench/otd-config-ui/firmware/
 bench/rutm-config-ui/config/rutm.config.json
 bench/rutm-config-ui/firmware/
 
+# TSW202 tool — real secrets/config + firmware images
+bench/tsw-config-ui/config/tsw.config.json
+bench/tsw-config-ui/firmware/
+
 # Raythink camera tool — real config (copy from the example) + IP counter.
 # The config/profiles/ exports ship committed (no secrets; needed at runtime).
 bench/raythink-config-ui/config/raythink.config.json
@@ -89,6 +93,7 @@ bench/*.bundle.zip
 bench/magos-config-ui/logs/
 bench/otd-config-ui/logs/
 bench/rutm-config-ui/logs/
+bench/tsw-config-ui/logs/
 bench/raythink-config-ui/logs/
 bench/speaker-config-ui/logs/
 

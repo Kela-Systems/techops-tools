@@ -1,0 +1,27 @@
+{
+  "_comment": "Copy to tsw.config.json (gitignored). These are the shared settings applied to every TSW202; the only per-device input is the factory label password, scanned or typed into the UI. Unlike the router tools there is no site name — nothing in the switch baseline is named after one.",
+
+  "_comment_host": "A fresh TSW202 boots on 192.168.1.2 — the .2, NOT the .1 the OTD500 and RUTM08 share, so this tool can run alongside them on the same bench subnet.",
+  "host": "192.168.1.2",
+  "username": "admin",
+  "scheme": "https",
+  "insecure": true,
+
+  "new_password": "Kelasys123!",
+  "timezone": "Asia/Jerusalem",
+
+  "_comment_ntp": "Set as the switch's ONLY time source (the factory pool entries are cleared, not appended to). Unreachable from the factory subnet by design — the switch can only talk to it once the management move below has happened, so verification checks the configuration, not that the clock has synced.",
+  "ntp_server": "192.168.88.10",
+
+  "_comment_lan": "Applied as the LAST step: the management interface moves to lan_ip and the switch drops off the factory address. A switch serves no DHCP, so the station's own adapter needs an address on this subnet for the move to be confirmable — otherwise the run reports the LAN IP check as failed even though the switch moved fine. The detection loop also watches lan_ip, so an already-moved switch can be re-run (leave the label password empty — it is on the shared password).",
+  "lan_ip": "192.168.88.2",
+  "netmask": "255.255.255.0",
+  "gateway": "192.168.88.1",
+
+  "firmware": {
+    "_comment": "minimum_version is a FLOOR, not a pin. A switch below it is flashed from bin_path; one at or above it is left alone (Teltonika ships a newer 'Latest' than its 'Stable' for this family, so arriving-newer is routine). Download the image from https://wiki.teltonika-networks.com/view/TSW202_Firmware_Downloads into firmware/ (gitignored) — it is only needed for a switch that arrives below the floor. keep_settings must stay true: a wipe would reset a moved switch back to the factory address mid-run.",
+    "minimum_version": "TSW2_R_00.01.07.1",
+    "bin_path": "./firmware/TSW2_R_00.01.07.1_WEBUI.bin",
+    "keep_settings": true
+  }
+}

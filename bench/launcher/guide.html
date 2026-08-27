@@ -80,11 +80,12 @@
     <a href="#flow">2. The basic routine</a><br>
     <a href="#rules">3. Golden rules</a><br>
     <a href="#magos">4. Magos Radar &amp; APU</a><br>
-    <a href="#teltonika">5. Teltonika OTD500 &amp; RUTM08</a><br>
+    <a href="#teltonika">5. Teltonika OTD500 &amp; RUTM08 routers</a><br>
     <a href="#camera">6. Raythink camera</a><br>
     <a href="#speaker">7. Provision-ISR speaker</a><br>
-    <a href="#issues">8. Known issues &amp; fixes</a><br>
-    <a href="#help">9. When to call an engineer</a>
+    <a href="#switch">8. Teltonika TSW202 switch</a><br>
+    <a href="#issues">9. Known issues &amp; fixes</a><br>
+    <a href="#help">10. When to call an engineer</a>
   </div>
 
   <!-- 1 -->
@@ -94,7 +95,7 @@
     <li>A black window opens and stays open — <b>leave it open all day.</b> Closing it stops every tool.
         It first checks for a tools update — if the engineers released one, it installs itself here;
         no internet at the bench just means it starts with what it has.</li>
-    <li>After a few seconds the <b>dashboard</b> opens in the browser with six tool cards.</li>
+    <li>After a few seconds the <b>dashboard</b> opens in the browser with seven tool cards.</li>
     <li>Click the card for whatever you're about to plug in. A green
         <span class="dot up"></span> dot means that tool is ready.</li>
     <li><b>Enter your name</b> in the <b>Operator</b> box at the top of the tool page
@@ -177,7 +178,7 @@
      just switch the mode back on to continue.</p>
 
   <!-- 5 -->
-  <h2 id="teltonika">5. Teltonika OTD500 &amp; RUTM08 <span class="pill telt">network 192.168.1.x</span></h2>
+  <h2 id="teltonika">5. Teltonika OTD500 &amp; RUTM08 routers <span class="pill telt">network 192.168.1.x</span></h2>
   <p>Plug the router in. The page reads it and asks for two things:</p>
   <ul>
     <li><b>Site name</b> — e.g. <code>haifa-port</code>. The device is named after it (<code>otd-haifa-port</code> / <code>rut-haifa-port</code>).</li>
@@ -218,7 +219,28 @@
     place — tell an engineer. The speaker can't be fully configured without it.</div>
 
   <!-- 8 -->
-  <h2 id="issues">8. Known issues &amp; quick fixes</h2>
+  <h2 id="switch">8. Teltonika TSW202 switch <span class="pill telt">network 192.168.1.x</span></h2>
+  <p>The simplest tool on the bench: <b>nothing to type but the password.</b> Plug the switch in,
+     scan the QR code on its sticker (or type the label password), and click <b>Configure</b>.
+     There's no site name — a switch isn't named after one.</p>
+  <p>The tool sets the password, checks the firmware, sets the time server and timezone, and
+     <b>moves the switch to <code>192.168.88.2</code> as the last step</b>, then verifies it.</p>
+  <div class="note warn"><b>One switch at a time.</b> Every switch ends up on the <b>same</b>
+    final address (<code>192.168.88.2</code>), so finish and unplug one before connecting the next.</div>
+  <div class="note"><b>Re-running a switch that was already configured?</b> Leave the label-password
+    field <b>empty</b> — it's already on the shared password. The page also picks it up again on its
+    new <code>192.168.88.2</code> address.</div>
+  <div class="note"><b>Firmware</b> is different here from the routers: the switch only gets flashed
+    if it arrived with an <b>older</b> version than the bench standard. A switch that shipped with a
+    newer one is left alone, and the page says so in the <i>Firmware step</i> column. That's a
+    normal, passing result — not something to report.</div>
+  <div class="note warn"><b>Switch never detected at all?</b> A few TSW202 units are the
+    <b>PROFINET</b> variant, which ships with no address and can't be found by this tool. Check the
+    box/label — if it says PROFINET, tell an engineer; it needs a one-off setup step first. Any
+    other switch that isn't detected is the usual causes (wrong port, not booted yet).</div>
+
+  <!-- 9 -->
+  <h2 id="issues">9. Known issues &amp; quick fixes</h2>
 
   <div class="card">
     <h3><span class="dot"></span> A tool card stays grey</h3>
@@ -256,8 +278,8 @@
        <i>tab</i> is fine — the tools keep running; reopen the tab from the dashboard.)</p>
   </div>
 
-  <!-- 9 -->
-  <h2 id="help">9. When to call an engineer</h2>
+  <!-- 10 -->
+  <h2 id="help">10. When to call an engineer</h2>
   <ul>
     <li>A tool card never turns green even after restarting <code>Start Bench Tools.bat</code>.</li>
     <li>The page reports a <b>missing firmware image</b>, <b>missing media file</b>, or missing configuration.</li>

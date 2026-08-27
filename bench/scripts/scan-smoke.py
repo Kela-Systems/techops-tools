@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the label-scan flow over real HTTP against both Teltonika tools.
+"""Drive the label-scan flow over real HTTP against every Teltonika tool.
 
 Everything the e2e check on real hardware covers *except* the hardware: the
 FastAPI wiring, the Pydantic body, JSON serialisation of the state feed, the
@@ -32,6 +32,9 @@ OTD_LABEL = ("SN:6008219573;I:864088065513384;M:2097272B00F7;"
 OTD_MAC, OTD_PW = "20:97:27:2b:00:f7", "zZ?40*kA"
 RUTM_LABEL = "SN:6010212527;M:20972732F638;U:admin;PW:mL$7=b6N;B:039;"
 RUTM_MAC, RUTM_PW = "20:97:27:32:f6:38", "mL$7=b6N"
+# The switch sticker carries the same keys minus the IMEI (no modem).
+TSW_LABEL = "SN:6011300481;M:20972B2B00F7;U:admin;PW:qN4$8xTr;B:001;"
+TSW_MAC, TSW_PW = "20:97:2b:2b:00:f7", "qN4$8xTr"
 
 # What the scanner really sends: the configured prefix, then a CR.
 def wedge(label: str) -> str:
@@ -101,7 +104,9 @@ class Served:
         return requests.get(self.base + "/api/state", timeout=5).json()
 
 
-def exercise(tool, label, mac, password, other_mac, pw_field):
+def exercise(tool, label, mac, password, other_mac, pw_field, site_field="site_name"):
+    """`site_field=None` for a tool whose Configure body is the password alone
+    (the TSW202 — nothing in its baseline is named after a site)."""
     print(f"\n{tool.cfg.title} on {tool.base}")
 
     # --- the page and its assets -------------------------------------------
@@ -164,7 +169,9 @@ def exercise(tool, label, mac, password, other_mac, pw_field):
     # --- the field naming asymmetry ---------------------------------------
     tool.cfg.clear_armed_label()
     tool.scan(wedge(label))
-    body = {"site_name": "smoke-test", pw_field: ""}
+    body = {pw_field: ""}
+    if site_field:
+        body[site_field] = "smoke-test"
     sent = requests.post(tool.base + "/api/configure", json=body, timeout=5).json()
     # No real device answers, so the run fails — but it must fail in the
     # pipeline, having accepted the body and the armed password.
@@ -184,6 +191,9 @@ def main() -> int:
         exercise(otd, OTD_LABEL, OTD_MAC, OTD_PW, RUTM_MAC, "label_password")
     with Served("rutm-config-ui", "rutm_app") as rutm:
         exercise(rutm, RUTM_LABEL, RUTM_MAC, RUTM_PW, OTD_MAC, "initial_password")
+    with Served("tsw-config-ui", "tsw_app") as tsw:
+        exercise(tsw, TSW_LABEL, TSW_MAC, TSW_PW, RUTM_MAC, "initial_password",
+                 site_field=None)
 
     print(f"\n{passed} passed, {failed} failed")
     return 1 if failed else 0

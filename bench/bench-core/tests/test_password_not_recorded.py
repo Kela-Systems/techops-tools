@@ -11,10 +11,21 @@ uploaded to bench-central. Two passwords can reach that row:
 
 Since TEC-349 the bench is handed the label password off the sticker, so this
 stopped being theoretical. The check reports the outcome instead.
+
+A tool that writes its OWN `verify_configuration` (the TSW202 does, since the
+shared one's parameters describe a router's surface) has to hold the same line,
+so it is checked here rather than only in its own suite — one place to look
+when a new tool is added.
 """
+import sys
+from pathlib import Path
+
 import pytest
 
 from bench_core import TeltonikaClient
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tsw-config-ui"))
+from tsw_configure import TswClient   # noqa: E402
 
 SHARED = "Kelasys123!"
 LABEL = "zZ?40*kA"          # a real OTD500 label password
@@ -61,3 +72,41 @@ def test_no_check_contains_a_password(current, secret):
     # in the same record.
     for check in verify(current):
         assert secret not in str(check), check
+
+
+# ── the TSW202's own verify_configuration, held to the same rule ─────────────
+
+TSW_LABEL = "qN4$8xTr"      # a TSW202-shaped label password
+
+
+def tsw_verify(current_password):
+    c = TswClient(host="192.0.2.2")
+    c.ssh_exec = lambda *a, **k: ""
+    c.password = current_password
+    return c.verify_configuration(new_password=SHARED, zonename="Asia/Jerusalem",
+                                  ntp_server="192.168.88.10",
+                                  minimum_firmware="TSW2_R_00.01.07.1")
+
+
+def test_the_tsw_reports_the_password_outcome_too():
+    assert password_check(tsw_verify(SHARED))["actual"] == "in use"
+    failed = password_check(tsw_verify(TSW_LABEL))
+    assert failed["ok"] is False
+    assert "NOT set" in failed["actual"]
+
+
+@pytest.mark.parametrize("current,secret", [
+    (SHARED, SHARED),
+    (TSW_LABEL, SHARED),
+    (TSW_LABEL, TSW_LABEL),
+])
+def test_no_tsw_check_contains_a_password(current, secret):
+    for check in tsw_verify(current):
+        assert secret not in str(check), check
+
+
+def test_both_tools_name_the_password_row_identically():
+    # bench-central reads records from every tool; a row renamed in one of them
+    # would quietly drop out of any cross-tool query for password failures.
+    assert (password_check(tsw_verify(SHARED))["item"]
+            == password_check(verify(SHARED))["item"])

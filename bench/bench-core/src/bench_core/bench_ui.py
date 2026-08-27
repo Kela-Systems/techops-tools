@@ -60,6 +60,13 @@ SHARED_STATIC_DIR = Path(__file__).resolve().parent / "static"
 _REDACT_PATHS = (("new_password",), ("tailscale", "auth_key"), ("tailscale", "api_key"),
                  ("rms", "auth_code"), ("rms", "api_token"))
 
+# Keys of a pipeline's return value that `_do_configure` interprets itself.
+# Everything else a pipeline returns is passed through to `build_entry`
+# untouched, so a per-family finding (the TSW202's firmware note, a device's
+# final address) reaches the run record without a detour through the config.
+PIPELINE_CORE_KEYS = frozenset({"identity", "warnings", "verification", "ok",
+                                "failures"})
+
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -703,6 +710,7 @@ class BenchConfigurator:
             run_cfg["tailscale"] = ts
 
         identity, warnings, error, ok, verification = {}, [], None, False, []
+        extras: dict = {}
         client = self.build_client(run_cfg, self.client_host(inputs))
         try:
             result = self.run_pipeline(client, run_cfg, inputs)
@@ -714,6 +722,11 @@ class BenchConfigurator:
                 problems = list(result.get("failures", []))
                 problems += [f"verify:{c['item']}" for c in verification if c["ok"] is False]
                 error = "; ".join(problems)
+            # Whatever else the pipeline discovered rides along to build_entry,
+            # so a per-family finding doesn't have to be reconstructed from the
+            # config (which cannot know it) or dug out of the step log. The
+            # keys below always win, so a pipeline cannot overwrite the core.
+            extras = {k: v for k, v in result.items() if k not in PIPELINE_CORE_KEYS}
         except BaseException as e:  # noqa: BLE001 — SystemExit + any network error
             error = str(e)
             self.logger.error("Provisioning FAILED: %s", e)
@@ -723,6 +736,7 @@ class BenchConfigurator:
 
         steps = collector.steps
         return {
+            **extras,
             "ok": ok, "hostname": hostname, "identity": identity, "warnings": warnings,
             "error": error, "steps": steps, "verification": verification,
             "log": "\n".join(f"[{s['level']}] [{s['sn']}] {s['msg']}" for s in steps),

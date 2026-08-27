@@ -15,7 +15,7 @@ How to provision devices at the bench. Keep this open on the side screen.
 2. A black window opens and stays open — **leave it open all day.** Closing it stops every tool.
    It first checks for a tools update — if the engineers released one, it installs
    itself here; no internet at the bench just means it starts with what it has.
-3. After a few seconds the **dashboard** opens in the browser with six tool cards.
+3. After a few seconds the **dashboard** opens in the browser with seven tool cards.
 4. Click the card for whatever you're about to plug in. A **green dot** means that tool is ready.
 5. **Enter your name** in the **Operator** box at the top of the tool page (scan your badge or
    type it, then press Enter). Do this once at the start of the day — it's shared by all the
@@ -110,7 +110,7 @@ on to continue.
 
 
 
-## 5. Teltonika OTD500 & RUTM08  *(network 192.168.1.x)*
+## 5. Teltonika OTD500 & RUTM08 routers  *(network 192.168.1.x)*
 
 Plug the router in. The page reads it and asks for two things:
 
@@ -185,7 +185,37 @@ speaker to** `192.168.88.70` **as the last step**, then verifies it.
 
 
 
-## 8. Known issues & quick fixes
+## 8. Teltonika TSW202 switch  *(network 192.168.1.x)*
+
+The simplest tool on the bench: **nothing to type but the password.** Plug the switch in, scan
+the QR code on its sticker (or type the label password), and click **Configure**. There's no site
+name — a switch isn't named after one.
+
+The tool sets the password, checks the firmware, sets the time server and timezone, and **moves
+the switch to** `192.168.88.2` **as the last step**, then verifies it.
+
+> ⚠️ **One switch at a time.** Every switch ends up on the **same** final address
+> (`192.168.88.2`), so finish and unplug one before connecting the next.
+
+> **Re-running a switch that was already configured?** Leave the label-password field **empty** —
+> it's already on the shared password. The page also picks it up again on its new `192.168.88.2`
+> address.
+
+> **Firmware** is different here from the routers: the switch only gets flashed if it arrived with
+> an **older** version than the bench standard. A switch that shipped with a newer one is left
+> alone, and the page says so in the *Firmware step* column. That's a normal, passing result — not
+> something to report.
+
+> ⚠️ **Switch never detected at all?** A few TSW202 units are the **PROFINET** variant, which ships
+> with no address and can't be found by this tool. Check the box/label — if it says PROFINET, tell
+> an engineer; it needs a one-off setup step first. Any other switch that isn't detected is the
+> usual causes (wrong port, not booted yet).
+
+---
+
+
+
+## 9. Known issues & quick fixes
 
 **A tool card stays grey**
 The tool isn't up yet. On the first start of the day it's still installing — wait a minute and it
@@ -226,7 +256,7 @@ station more than once.
 
 
 
-## 9. When to call an engineer
+## 10. When to call an engineer
 
 - A tool card never turns green even after restarting `Start Bench Tools.bat`.
 - The page reports a **missing firmware image**, **missing media file**, or missing configuration.
