@@ -49,6 +49,7 @@ class RutmConfigurator(BenchConfigurator):
     log_filename = "rutm-config.log"
     tailscale_label = "rutm"
     history_limit = 30  # full step logs per entry — the JSON files are the archive
+    label_scan_enabled = True  # read the factory password off the QR label (TEC-349)
 
     # ── state ────────────────────────────────────────────────────────────────
 
@@ -106,6 +107,7 @@ class RutmConfigurator(BenchConfigurator):
             device={
                 "hostname": result["hostname"],
                 "site_name": inputs["site_name"],
+                "password_source": self.password_source(inputs, "initial_password"),
             },
         )
 
@@ -178,8 +180,10 @@ class RutmConfigurator(BenchConfigurator):
             if not self.state["detected"]:
                 return {"error": "No router is currently detected."}
             host = self.state["active_host"] or self.cfg.get("host", DEFAULT_HOST)
+            password, source = self.resolve_label_password(body.initial_password)
             inputs = {"site_name": site_name,
-                      "initial_password": body.initial_password.strip(),
+                      "initial_password": password,
+                      "password_source": source,
                       "host": host, "mac": self.state["active_mac"]}
             label = f"{self.hostname_for(inputs)} ({host})"
             if not await self.execute_run(inputs, label):

@@ -39,6 +39,7 @@ from pydantic import BaseModel
 from bench_core import LOG_LINE_FORMAT, mac_from_arp_output
 from bench_core.central import spool_run_record, start_central_uploader
 from bench_core.config_check import check_config, config_fingerprint
+from bench_core.device_label import DeviceLabel, parse_device_label
 
 try:
     import requests
@@ -246,6 +247,35 @@ class OperatorBody(BaseModel):
     operator: str = ""
 
 
+# ── Device-label scanning ────────────────────────────────────────────────────
+#
+# Scanning the QR on a device's sticker instead of retyping the factory
+# password off it (TEC-349). The browser posts the raw scanned string here and
+# never parses it, so there is one parser (`bench_core.device_label`), the
+# password never enters the page, and the label's MAC can be checked against
+# the MAC the tool independently read off the plugged-in device over ARP.
+#
+# A scan is *armed*, not applied: it sits here until the operator presses
+# Configure, and it is dropped as soon as it stops being trustworthy — the
+# device changed, a run finished, or it simply got old. Nothing here is
+# persisted; a restart loses an armed scan, which is the right outcome.
+
+# How long an armed scan stays usable. Long enough for an operator to be
+# interrupted mid-device, short enough that a scan can't be applied to whatever
+# is on the bench an hour later.
+LABEL_SCAN_TTL_SEC = 600.0
+
+
+class LabelScanBody(BaseModel):
+    """Request body of POST /api/label-scan — the scanner's raw output.
+
+    Deliberately unparsed: whatever the wedge typed, verbatim, including any
+    configured prefix character. Note that this field can hold a password, so
+    it must never be logged or echoed back.
+    """
+    raw: str = ""
+
+
 # ── MAC reading (ARP) ───────────────────────────────────────────────────────
 # canonical_mac / mac_from_arp_output (and the whole-cache arp_table +
 # find_ip_by_mac) live in bench_core next to the other host-side network
@@ -366,6 +396,11 @@ class BenchConfigurator:
     logger_name: str = "teltonika"
     tailscale_label: str = "device"      # used in the Tailscale key description
     history_limit: int = 20
+    # Opt in to reading the device's factory password off its QR label
+    # (TEC-349). Off by default: only devices whose sticker carries a parseable
+    # label — the Teltonika families — have anything to gain, and a tool that
+    # doesn't opt in gets no route and no UI for it.
+    label_scan_enabled: bool = False
 
     def __init__(self, base_dir: Path) -> None:
         self.base_dir = base_dir
@@ -390,6 +425,11 @@ class BenchConfigurator:
         self.state["config_loaded"] = bool(self.cfg)
         self._live_collector: Optional[StepCollector] = None
         self._run_t0: Optional[float] = None
+        # The armed device-label scan (TEC-349), and why the last scan was
+        # refused if it was. In memory only — see LABEL_SCAN_TTL_SEC.
+        self._armed_label: Optional[DeviceLabel] = None
+        self._armed_at: float = 0.0
+        self._label_scan_problem: Optional[str] = None
 
     # ── config + state (override `initial_state`; usually keep the rest) ──────
 
@@ -459,7 +499,136 @@ class BenchConfigurator:
                               if busy and self._live_collector else [],
                 "run_seconds": int(time.monotonic() - self._run_t0)
                                if busy and self._run_t0 else None,
+                "label_scan": self.label_scan_state(),
                 **self.extra_public_state()}
+
+    # ── device-label scanning (TEC-349) ──────────────────────────────────────
+
+    def arm_label(self, raw: str) -> dict:
+        """Take one raw scan and hold its password for the next Configure.
+
+        Returns `{}` when armed, or `{"error": ...}` when the scan is refused —
+        and refusing is the interesting half. The label carries the device's LAN
+        MAC, and the tool already knows the MAC of the device on the bench from
+        ARP, so scanning the wrong unit is detectable here rather than surfacing
+        later as an inexplicable login failure against the right device.
+        """
+        if not self.label_scan_enabled:
+            return {"error": "This tool does not read device labels."}
+
+        label = parse_device_label(raw)
+        if label is None:
+            # Deliberately says nothing about the content: an unparsed scan can
+            # still be a password, and this string reaches the browser.
+            size = len(raw or "")
+            return self._refuse_label(
+                f"That scan ({size} character{'' if size == 1 else 's'}) is not "
+                "a device label. Scan the QR code on the device's sticker.")
+
+        active = self.state.get("active_mac")
+        if label.matches_mac(active) is False:
+            return self._refuse_label(
+                f"The scanned label belongs to MAC {label.mac}, but the device "
+                f"plugged in is {active}. Scan the label on the device that is "
+                "actually connected.")
+        if not label.password:
+            return self._refuse_label(
+                f"The scanned label (SN {label.serial or 'unknown'}) carries no "
+                "password. To use the shared password instead, leave the "
+                "password field empty and press Configure.")
+
+        self._armed_label = label
+        self._armed_at = time.monotonic()
+        self._label_scan_problem = None
+        # Everything here is off the label except the password itself.
+        self.logger.info(
+            "Label scanned: SN %s, MAC %s, batch %s%s.",
+            label.serial or "unknown", label.mac or "unknown",
+            label.batch or "unknown",
+            "" if active else " — the device's own MAC could not be read, so "
+                              "the label was not cross-checked")
+        return {}
+
+    def _refuse_label(self, message: str) -> dict:
+        """Reject a scan, and drop any previously armed one with it: the
+        operator's most recent scan is their intent, so leaving an older one
+        armed would apply a password they no longer expect."""
+        self._armed_label = None
+        self._label_scan_problem = (message, self.state.get("active_mac"))
+        self.logger.warning("Label scan refused: %s", message)
+        return {"error": message}
+
+    def armed_label(self) -> Optional[DeviceLabel]:
+        """The armed scan, if it is still trustworthy. Drops it otherwise."""
+        label = self._armed_label
+        if label is None:
+            return None
+        if time.monotonic() - self._armed_at > LABEL_SCAN_TTL_SEC:
+            self.clear_armed_label("it expired")
+            return None
+        # Re-checked on every read, not just at arm time: the MAC may have been
+        # unreadable when the label was scanned and resolved since, and the
+        # device on the bench can change under a page that is still open.
+        if label.matches_mac(self.state.get("active_mac")) is False:
+            self.clear_armed_label("a different device is plugged in")
+            return None
+        return label
+
+    def clear_armed_label(self, reason: Optional[str] = None) -> None:
+        if self._armed_label is not None and reason:
+            self.logger.info("Discarded the scanned label — %s.", reason)
+        self._armed_label = None
+        self._label_scan_problem = None
+
+    def label_scan_state(self) -> dict:
+        """The scan half of /api/state. Carries the label's identity fields and
+        whether it matches the plugged-in device — never the password."""
+        if not self.label_scan_enabled:
+            return {"enabled": False}
+        label = self.armed_label()
+        armed = None
+        if label is not None:
+            armed = {**label.redacted(),
+                     "matches_active": label.matches_mac(
+                         self.state.get("active_mac"))}
+        problem = None
+        if self._label_scan_problem is not None:
+            message, at_mac = self._label_scan_problem
+            # A refusal is about one device. Once something else is on the
+            # bench the warning is stale, so it retires itself.
+            if at_mac == self.state.get("active_mac"):
+                problem = message
+            else:
+                self._label_scan_problem = None
+        return {"enabled": True, "armed": armed, "problem": problem}
+
+    def resolve_label_password(self, typed: str) -> tuple[str, str]:
+        """The password to log in with, and where it came from.
+
+        A typed value always wins, so the operator can override a scan (or work
+        a device whose sticker is unreadable) without turning anything off. The
+        empty result is not a failure: both pipelines read it as "try the shared
+        password", which is how an already-provisioned device is re-run.
+        """
+        typed = (typed or "").strip()
+        if typed:
+            return typed, "typed"
+        label = self.armed_label()
+        if label is not None and label.password:
+            return label.password, "scan"
+        return "", "shared-fallback"
+
+    def password_source(self, inputs: dict, password_key: str) -> str:
+        """Where a run's login password came from, for the run record:
+        `"scan"`, `"typed"` or `"shared-fallback"`.
+
+        `/api/configure` decides this and passes it through `inputs`. The
+        fallback covers a caller that drives `execute_run` directly (the tests
+        do) and infers the only two possibilities left, so a record is never
+        stamped with a provenance that isn't true.
+        """
+        return inputs.get("password_source") or (
+            "typed" if inputs.get(password_key) else "shared-fallback")
 
     # ── the pipeline run (shared machinery; override the small hooks) ─────────
 
@@ -579,6 +748,9 @@ class BenchConfigurator:
         finally:
             self.state["busy"] = False
             self._run_t0 = None
+            # One scan, one device. Holding it past the run would let a retry
+            # (or the next unit, if the MAC can't be read) reuse it silently.
+            self.clear_armed_label()
         return True
 
     # ── detection loop (override `poll_once`) ─────────────────────────────────
@@ -644,6 +816,7 @@ class BenchConfigurator:
             self.state["last_result"] = None
             self.state["phase"] = "waiting"
             self.state["message"] = self.dismiss_message()
+            self.clear_armed_label()
             return self.public_state()
 
         @app.post("/api/operator")
@@ -651,6 +824,14 @@ class BenchConfigurator:
             name = self.operator_store.set(body.operator)
             self.logger.info("Operator set to '%s'.", name or "(cleared)")
             return self.public_state()
+
+        if self.label_scan_enabled:
+            @app.post("/api/label-scan")
+            async def label_scan(body: LabelScanBody):
+                refusal = self.arm_label(body.raw)
+                if refusal:
+                    return refusal
+                return self.public_state()
 
         @app.websocket("/ws/state")
         async def ws_state(websocket: WebSocket):
