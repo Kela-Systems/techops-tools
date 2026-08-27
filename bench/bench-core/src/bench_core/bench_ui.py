@@ -348,6 +348,31 @@ def redact_config(cfg: dict) -> dict:
     return safe
 
 
+# ── Static assets ────────────────────────────────────────────────────────────
+
+class _RevalidatedStatic(StaticFiles):
+    """Static files a browser must not reuse without asking us first.
+
+    Stations pull new bench.js/bench.css from bench-central while operator tabs
+    stay open for days, and StaticFiles sends no Cache-Control at all — which
+    licenses a browser to reuse a cached copy on its own heuristic, without
+    revalidating. A tab then runs the JS from *before* an update against a
+    server from after it. That surfaced as TEC-349's scan capture being dead on
+    a station whose /api/state advertised the feature as enabled: the page had
+    no code to act on it, so scans landed in whatever field had focus and the
+    scanner's Enter submitted the form. A hard refresh "fixed" it, which is not
+    something an operator will think to try.
+
+    `no-cache` still caches — it only forces revalidation — so the usual answer
+    is a 304 with no body, over loopback.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # ── Event-loop noise suppression (Windows) ───────────────────────────────────
 
 def install_loop_exception_handler() -> None:
@@ -792,10 +817,10 @@ class BenchConfigurator:
                     await poller
 
         app = FastAPI(title=self.title, lifespan=lifespan)
-        app.mount("/static", StaticFiles(directory=str(self.base_dir / "static")),
+        app.mount("/static", _RevalidatedStatic(directory=str(self.base_dir / "static")),
                   name="static")
         # Shared CSS/JS live in this package so every tool serves one copy.
-        app.mount("/shared", StaticFiles(directory=str(SHARED_STATIC_DIR)),
+        app.mount("/shared", _RevalidatedStatic(directory=str(SHARED_STATIC_DIR)),
                   name="shared")
 
         @app.get("/")

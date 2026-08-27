@@ -225,6 +225,7 @@ function mountLabelScan(onState) {
   let lastMac = null;       // to reset `manual` when the device changes
   let pending = null;       // field a burst is currently landing in
   let timer = null;
+  let returnFocus = null;   // {el, pos}: focus and caret a scan took over
   let banner = null, sink = null;
   let hintHTML = null, hintClass = null, placeholder = null;  // originals
 
@@ -256,18 +257,44 @@ function mountLabelScan(onState) {
     timer = setTimeout(flush, IDLE_FLUSH_MS);
   }
 
+  // Hand back the field and caret a scan took over, optionally re-inserting
+  // `text` where the takeover happened. Every exit path that stole focus goes
+  // through here, so a '~' that turned out not to begin a label costs the
+  // operator nothing.
+  function releaseFocus(text) {
+    const target = returnFocus;
+    returnFocus = null;
+    if (sink) sink.value = '';
+    const el = target && target.el;
+    if (!el || !el.isConnected) return;
+    if (text) {
+      const pos = target.pos === null ? el.value.length : target.pos;
+      el.value = el.value.slice(0, pos) + text + el.value.slice(pos);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      try { el.setSelectionRange(pos + text.length, pos + text.length); }
+      catch (_) { /* not a text input; the value is still right */ }
+    }
+    try { el.focus(); } catch (_) { /* gone from the DOM mid-scan */ }
+  }
+
   async function flush() {
     if (timer) { clearTimeout(timer); timer = null; }
     const el = pending;
     pending = null;
     if (!el) return;
     const hit = findLabelPayload(el.value);
-    if (!hit) return;   // a stray '~' or half a label — leave the field alone
+    if (!hit) {
+      // A stray '~' or half a label. Leave a real field alone; if the sink took
+      // focus for this, give it back along with whatever followed the marker.
+      if (returnFocus) releaseFocus(el === sink ? el.value : '');
+      return;
+    }
 
     // Take the payload out of the field before anything can submit or read it.
     el.value = el.value.slice(0, hit.cut);
     if (el !== sink) el.dispatchEvent(new Event('input', { bubbles: true }));
-    if (sink) sink.value = '';
+    if (returnFocus) releaseFocus('');
+    else if (sink) sink.value = '';
     manual = false;
 
     const r = await postJSON('/api/label-scan', { raw: hit.payload },
@@ -277,6 +304,38 @@ function mountLabelScan(onState) {
     if (r && r.error) showProblem(r.error);
     else if (r && onState) onState(r);
   }
+
+  // The marker is the earliest moment a scan can be recognised, and
+  // `beforeinput` is the only surface that offers it *cancelably* under every
+  // scanner setting: with keypad emulation on, characters are composed by the
+  // OS out of Alt+numpad sequences, so no `keydown` ever carries a '~'.
+  // Cancelling that first insertion and moving focus to the sink keeps the rest
+  // of the burst out of the operator's field entirely. The lift-and-restore
+  // below still works without this — the pages focus #siteName as soon as a
+  // device is detected, so a scan lands there and is pulled back out a frame
+  // later — but the field visibly garbles itself in the meantime, which reads
+  // as the tool malfunctioning.
+  document.addEventListener('beforeinput', (e) => {
+    if (!enabled || !sink) return;
+    const el = e.target;
+    if (!el || el === sink || typeof el.value !== 'string') return;
+    if (typeof e.data !== 'string') return;   // deletion, composition, drag
+    const at = e.data.indexOf(LABEL_SCAN_PREFIX);
+    if (at < 0) return;
+    e.preventDefault();
+    returnFocus = {
+      el: el,
+      pos: typeof el.selectionStart === 'number' ? el.selectionStart : null,
+    };
+    // Keep the marker: it makes the payload unambiguous to findLabelPayload.
+    // A scanner that delivers the whole burst as one insertion arrives here
+    // complete, so carry the remainder across too.
+    sink.value = e.data.slice(at);
+    sink.focus();
+    try { sink.setSelectionRange(sink.value.length, sink.value.length); }
+    catch (_) { /* nothing to place the caret in yet */ }
+    schedule(sink);
+  }, true);
 
   document.addEventListener('input', (e) => {
     const el = e.target;

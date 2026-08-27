@@ -217,6 +217,11 @@ both charges it and re-establishes the link — then scan again. If it still doe
 password by hand and tell an engineer. **Park the scanner in its cradle whenever you're not using
 it**; that's how it charges, and a flat scanner is the most common reason it goes quiet.
 
+**The label lands in the site-name box, and the page starts configuring on its own**
+The page is running an old copy of itself, left over from before the tools were updated. Press
+**Ctrl+Shift+R** on that tab and scan again. Worth mentioning to an engineer if it happens on a
+station more than once.
+
 ---
 
 
