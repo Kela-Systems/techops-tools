@@ -28,29 +28,45 @@ A DS2278 can reach a host two ways. Take the first:
 
 ## What the tools expect
 
-| Setting | Value | Why |
-| --- | --- | --- |
-| USB device type | **HID Keyboard Emulation** | No driver and no COM port; this is the cradle's default. |
-| Prefix | **`~`** (ASCII 126) | Marks the start of a scan so the page can tell a scan from typing, and route it away from whatever field has focus. |
-| Suffix | **CR** (ASCII 13) | Terminates the scan. |
-| Scan options | **`<PREFIX> <DATA> <SUFFIX>`** | Actually transmits the two above. |
-| Caps Lock Override | **Enable** | Stops a stray Caps Lock from inverting the password's case. |
-| Emulate Keypad (Alt+Numpad) | **Enable** — on a scanner used with Windows | See below. This is the setting that makes the layout irrelevant, and the one that is not portable to macOS. |
+| Setting | Value | Factory default | Why |
+| --- | --- | --- | --- |
+| USB device type | **HID Keyboard Emulation** | already this | No driver and no COM port. |
+| Prefix | **`~`** (ASCII 126) | none | Marks the start of a scan so the page can tell a scan from typing, and route it away from whatever field has focus. |
+| Suffix | **CR** (ASCII 13) | none | Terminates the scan. |
+| Scan options | **`<PREFIX> <DATA> <SUFFIX>`** | data only | Actually transmits the two above. |
+| USB Caps Lock Override | **Enable** | Disable | Stops a stray Caps Lock from inverting the password's case. |
+| Keypad Emulation | **Enable** | already Enable | Sends characters as Alt+numpad sequences. See below. |
+| Quick Keypad Emulation | **Disable** — on a scanner used with Windows | Enable | See below. This is the setting that actually makes the layout irrelevant, and the one that is not portable to macOS. |
 
 Everything else stays at factory default. In particular leave **batch mode off**:
 you want a scan to fail loudly when the scanner is out of range, not to be stored
-and replayed later against whatever device happens to be on the bench.
+and replayed later against whatever device happens to be on the bench. Leave
+**Keypad Emulation with Leading Zero** at its default (Enable) too — that is the
+`ALT 0 0 6 5` form, which is the one Windows reads through the ANSI codepage.
 
-### Emulate Keypad: the one setting that isn't portable
+### Quick Keypad Emulation: the one setting that isn't portable
 
-"Emulate Keypad" makes the scanner send each character as an **Alt + numeric
-keypad** sequence instead of a letter key. Windows composes that into the exact
-character regardless of the active keyboard layout, which is precisely the
-protection the bench PCs need: a station with Hebrew (or any non-US) layout
-active still receives `?` as `?`.
+"Keypad Emulation" makes the scanner send each character as an **Alt + numeric
+keypad** sequence instead of a key press. Windows composes that into the exact
+character from the number alone, with the active keyboard layout never getting a
+say — which is precisely the protection the bench PCs need: a station with Hebrew
+(or any non-US) layout active still receives `?` as `?`.
 
-**macOS has no Alt+numpad composition, so the same setting produces garbage
-there.** And on a DS2278 this matters more than it looks, because:
+It is enabled out of the box, so it is **not** the barcode you scan. The trap is
+its companion:
+
+> **"Quick" Keypad Emulation is also on by default, and it means Alt+numpad is
+> used only for characters that are NOT on the keyboard.** Every character in a
+> Teltonika password — letters, digits, `?` `$` `*` `=` `!` `-` `_` — *is* on the
+> keyboard, so with Quick enabled they all still travel as ordinary key presses
+> and are still mangled by a non-US layout. Table 8-1 lists both as Enable;
+> page 8-13 says it outright: "disable Quick Keypad Emulation and enable Keypad
+> Emulation".
+
+So the Windows change is a single barcode: **Disable Quick Keypad Emulation**.
+
+**macOS has no Alt+numpad composition, so once Quick is off the scanner produces
+garbage there.** On a DS2278 that matters more than it looks, because:
 
 > **Parameters live in the scanner, not the cradle.** Configure the scanner once
 > and the settings travel with it to any cradle on any station — which is
@@ -59,15 +75,21 @@ there.** And on a DS2278 this matters more than it looks, because:
 
 So, with one scanner:
 
-- **Configure it for Windows (Emulate Keypad on) and leave it that way.** The
-  Windows benches are what actually provision devices.
+- **Configure it for Windows (Quick off) and leave it that way.** The Windows
+  benches are what actually provision devices.
 - **Don't scan on the Mac.** You do not need to: the whole flow is testable
   without hardware — `.venv/bin/python -m pytest` plus
   `.venv/bin/python scripts/scan-smoke.py`, which drives real scans through both
   tools over HTTP with simulated devices.
-- If you *do* want to scan on the Mac, turn Emulate Keypad off first and back on
-  before the scanner returns to a bench. The charset self-test below is what
-  catches you forgetting.
+- If you *do* want to scan on the Mac, re-enable Quick Keypad Emulation first and
+  disable it again before the scanner returns to a bench. The charset self-test
+  below is what catches you forgetting.
+
+One consequence worth knowing when you read a passing self-test: with Quick
+*enabled* (the factory state), a payload made entirely of on-keyboard ASCII never
+exercises Alt+numpad at all. A green charset self-test on a US-layout host
+therefore proves the prefix, the suffix and the character set, and says nothing
+about keypad emulation. Only a run with a non-US layout active tests that.
 
 This asymmetry is safe because nothing in the bench code decodes keystrokes. The
 capture reads the character content the OS *committed* to the input field, so it
@@ -89,11 +111,15 @@ Guide. Do it in this order; the scanner beeps twice on accepting each one.
 3. **Set Defaults** (front of the *User Preferences* chapter) — start from a
    known state, so a scanner someone else has already fiddled with behaves the
    same as a new one. This does not unpair it.
-4. In the **USB Interface** chapter:
-   - **USB Device Type → HID Keyboard Emulation**
-   - **USB Caps Lock Override → Enable**
-   - **Emulate Keypad → Enable** *(see the section above before you do this on a
-     scanner you also use with a Mac)*
+4. In the **USB Interface** chapter (chapter 8 — the cradle is a USB device, so
+   this is the right chapter; the *Bluetooth* chapter has near-identically named
+   parameters that apply only to a scanner paired straight to a host):
+   - **USB Caps Lock Override → Enable** (page 8-8; default is Disable)
+   - **Disable Quick Keypad Emulation** (page 8-13) *(see the section above
+     before you do this on a scanner you also use with a Mac)*
+   - **USB Device Type** is already **HID Keyboard Emulation** and **Keypad
+     Emulation** is already **Enable**, so neither needs scanning after a Set
+     Defaults. Scan them only to recover a scanner someone else changed.
 5. Prefix and suffix, from the **Data Formatting / Scan Options** chapter. Zebra
    takes these as a four-digit number scanned from the *Numeric Barcodes*
    appendix, using its **ASCII value + 1000** convention:
@@ -134,8 +160,8 @@ A mismatch is almost always one of these:
 
 | Symptom | Cause |
 | --- | --- |
-| Punctuation wrong, letters fine | Host layout is being applied. On Windows, enable Emulate Keypad. On macOS, make sure it is *disabled*. |
-| Letters come out Hebrew/Cyrillic | Non-Latin layout active. Enable Emulate Keypad (Windows), or switch the layout to English. |
+| Punctuation wrong, letters fine | Host layout is being applied. On Windows, **Disable Quick Keypad Emulation**. On macOS, make sure it is *enabled*. |
+| Letters come out Hebrew/Cyrillic | Non-Latin layout active. **Disable Quick Keypad Emulation** (Windows), or switch the layout to English. |
 | Case inverted | Caps Lock is on and Caps Lock Override is not enabled. |
 | Dropped characters, worse on longer payloads | Host cannot keep up. Set **USB Keystroke Delay → Medium** in the USB Interface chapter. |
 | No `~` at the start | Prefix or Scan Options did not commit. Re-do step 5, ending with the **Enter** barcode. |
