@@ -176,6 +176,29 @@ UCI_RMS_ENABLED = "rms_mqtt.rms_connect_mqtt.enable"
 # SIM "Preferred network type" is per-SIM in `simcard`: service='lte' == 4G only
 # (other values: auto, lte_nr5g, nr5g, umts, gsm ...).
 SIM_SERVICE_4G = "lte"
+# What the modem reports it is ATTACHED on, as the <AcT> field of `AT+COPS?`
+# (3GPP TS 27.007 §7.3). The config option above is the intent; this is the
+# effect, and the two disagreeing is the whole reason the 4G row exists.
+ACCESS_TECH = {
+    0: "GSM (2G)",
+    1: "GSM Compact (2G)",
+    2: "UTRAN (3G)",
+    3: "GSM/EGPRS (2G)",
+    4: "UTRAN/HSDPA (3G)",
+    5: "UTRAN/HSUPA (3G)",
+    6: "UTRAN/HSPA+ (3G)",
+    7: "E-UTRAN (4G)",
+    8: "EC-GSM-IoT (2G)",
+    9: "E-UTRAN NB-S1 (4G)",
+    10: "E-UTRA on a 5G core",
+    11: "NR on a 5G core (5G)",
+    12: "NG-RAN (5G)",
+    13: "E-UTRA/NR dual connectivity (5G)",
+}
+# The codes that mean "this is a 4G attach". 10 is deliberately excluded: it is
+# an LTE radio bearer on a 5G core, which a device restricted to 4G should not
+# have ended up on, and calling it 4G would hide a misconfigured preference.
+FOURG_ACCESS_TECH = frozenset({7, 9})
 # Tailscale is an add-on package (opkg-installed). Config lives under the
 # `tailscale` package's `settings` section (verified on OTD5_R_00.07.20.3).
 TS_PACKAGE = "tailscale"
@@ -1185,9 +1208,67 @@ def find_ip_by_mac(mac: str, subnets: list[str], *, port: int,
     return None
 
 
+class MutationBlocked(Exception):
+    """A read-only client was asked to change the device (TEC-348).
+
+    Deliberately NOT a SystemExit. Pipelines catch SystemExit all over the place
+    to record a step failure and carry on, and this must not be absorbed that
+    way: reaching it means a verify pipeline tried to mutate, which is a bug in
+    the pipeline, and the run has to fail loudly with the offending command
+    named rather than quietly reporting one red row.
+    """
+
+
+# Commands that change a RutOS device, matched against anything handed to
+# `ssh_exec` while the client is read-only. A deny-list over arbitrary shell is
+# a seatbelt, not a proof — the proof is test_verify_only_is_mutation_free.py,
+# which asserts a verify pipeline issues no such command in the first place.
+# This exists to catch the case that test can't: a real device, a pipeline
+# changed later, and nobody re-reading it.
+#
+# Bare word-boundary matching was tried first and is wrong in both directions.
+# `grep -v '^#' /etc/sysupgrade.conf` is a READ that the SIM-switch check makes
+# on every OTD500 run, and `\bsysupgrade\b` matches it — a check would have
+# started refusing to run. So the destructive verbs have to be anchored at a
+# command position: start of the command, or after a `;`, `|`, `&&` or `||`.
+_CMD_START = r"(?:^|[;&|(]\s*)"
+
+_MUTATING_COMMANDS = re.compile(
+    rf"""
+    # uci writes. Not anchored: `uci get`/`uci show` are excluded by the verb
+    # list, so matching anywhere is safe and catches a chained `... && uci set`.
+      \buci \s+ (?:-\S+\s+)* (?:set|add|add_list|del_list|delete|commit|revert|rename|batch)\b
+    # Applying config: an init script that restarts is how a write takes effect.
+    | /etc/init\.d/\S+ \s+ (?:restart|reload|start|stop)\b
+    # Destructive verbs, only where they are the command being run.
+    | {_CMD_START}
+      (?:reboot|halt|poweroff|sysupgrade|firstboot|opkg|chpasswd|passwd
+        |mv|cp|rm|mkdir|rmdir|chmod|chown|touch|tee|dd|kill|killall)
+      (?:\s|$)
+    | \bsed \s+ -i\b
+    | \bln \s+ -s\b
+    | {_CMD_START} crontab (?:\s|$)
+    # Writing into the places device config lives. `2>/dev/null` is not one.
+    | >>? \s* (?:/etc/|/tmp/|/proc/|/sys/|/usr/|/root/|/overlay/)
+    | \btailscale \s+ (?:up|down|logout|set)\b
+    | \bubus \s+ call \s+ \S+ \s+ (?:reload|restart|connect|set|write)\b
+    # Downloading an eSIM profile writes to the modem; resetting it drops the
+    # link. `--esim-list` and the other gsmctl reads are untouched.
+    | \bgsmctl \s+ (?:--esim-download | -A\s+'AT\+CFUN)
+    """,
+    re.VERBOSE,
+)
+
+
 class TeltonikaClient:
     """One OTD500 over REST (primary) + SSH/UCI (config). Never opens SSH until
-    a step actually needs it."""
+    a step actually needs it.
+
+    A client can be put into **read-only** mode (`read_only=True`, TEC-348), in
+    which every method that changes the device refuses. That is what makes the
+    Verify pass mutation-free by construction rather than by careful reading of
+    the pipeline — see `_refuse_mutation`.
+    """
 
     # verify=False is intentional for the bench: devices use a self-signed cert
     # on a direct local link, so there is no CA to validate against (see the
@@ -1213,6 +1294,32 @@ class TeltonikaClient:
         # Extra SSH passwords to try (used to self-heal a half-changed device
         # where root already has the new password but admin/REST does not).
         self._ssh_alt_passwords: list[str] = []
+        # Read-only mode (TEC-348). Off by default: a configure pipeline is the
+        # normal case, and a flag that had to be turned OFF to provision would
+        # be the wrong way round.
+        self.read_only: bool = False
+
+    # --- read-only mode (TEC-348) -------------------------------------------
+    def set_read_only(self, read_only: bool = True) -> None:
+        """Refuse, from here on, anything that would change the device.
+
+        Called by a verify pipeline once it has logged in — after, because
+        logging in is a POST and the device's own session state is the one thing
+        a check legitimately needs to establish (the password row IS "are we
+        authenticated on the shared password").
+        """
+        self.read_only = read_only
+        if read_only:
+            log.info("Client is read-only for this run — nothing will be changed.")
+
+    def _refuse_mutation(self, what: str) -> None:
+        """Raise if this client is read-only. Called at the top of every method
+        that writes, so the message names the step an operator would recognise
+        rather than the shell command underneath it."""
+        if self.read_only:
+            raise MutationBlocked(
+                f"refusing to {what}: this is a verify-only run and must not "
+                "change the device")
 
     # --- auth ---------------------------------------------------------------
     def login(self, password: str) -> None:
@@ -1272,7 +1379,14 @@ class TeltonikaClient:
         `exec_timeout` bounds the WHOLE command: paramiko's timeout= only covers
         channel reads, and recv_exit_status() blocks forever if the device drops
         mid-command (e.g. reboots, modem reset) — which would leave the bench
-        stuck on 'busy' until someone restarts the app."""
+        stuck on 'busy' until someone restarts the app.
+
+        On a read-only client (TEC-348) a command that looks like it writes is
+        refused before it reaches the device."""
+        if self.read_only and _MUTATING_COMMANDS.search(command):
+            raise MutationBlocked(
+                f"refusing to run a command that changes the device on a "
+                f"verify-only run: {command}")
         cli = self._ssh_client()
         _in, out, err = cli.exec_command(command, timeout=self.timeout)
         deadline = time.time() + (exec_timeout or 120)
@@ -1294,6 +1408,7 @@ class TeltonikaClient:
 
     def _uci(self, *sets: str, package: str) -> None:
         """uci set ...; uci commit <package> over SSH."""
+        self._refuse_mutation(f"write UCI options in '{package}'")
         cmd = " && ".join([f"uci set {s}" for s in sets] + [f"uci commit {package}"])
         self.ssh_exec(cmd)
 
@@ -1308,6 +1423,7 @@ class TeltonikaClient:
     def _uci_add(self, package: str, section_type: str) -> str:
         """`uci add` an anonymous section, returning the id UCI assigned it (e.g.
         'cfg0492bd'). The add is staged, so the caller's `uci commit` persists it."""
+        self._refuse_mutation(f"add a '{section_type}' section to '{package}'")
         out = self.ssh_exec(f"uci add {package} {section_type}").strip()
         section = out.splitlines()[-1].strip() if out else ""
         if not section:
@@ -1344,6 +1460,7 @@ class TeltonikaClient:
 
         Written next to the target and moved into place, so neither cron nor the
         init system can catch a half-written file."""
+        self._refuse_mutation(f"write {path} on the device")
         if self.PUT_FILE_EOF in content:
             raise SystemExit(f"Refusing to write {path}: it contains the heredoc "
                              f"delimiter {self.PUT_FILE_EOF}.")
@@ -1450,6 +1567,10 @@ class TeltonikaClient:
         if self.password == new_password:
             log.info("Password already set to the shared default; skipping.")
             return
+        # After the early return, not before: a verify pass calls nothing here,
+        # but a device already on the shared password is the no-op case and
+        # refusing it would be refusing to do nothing.
+        self._refuse_mutation("change the admin password")
         log.info("Changing admin password to the shared default ...")
 
         # Allow the SSH connection to fall back to the new password too — so a
@@ -1495,6 +1616,7 @@ class TeltonikaClient:
         connection WILL drop (expected). If wait, block until 192.168.1.1 is back.
         `skip_if_version`: skip the (local) flash when the device already runs
         this version — makes a retry of a half-provisioned device a no-op here."""
+        self._refuse_mutation("upgrade the firmware")
         if bin_path:
             if not os.path.exists(bin_path):
                 raise SystemExit(f"Firmware image not found: {bin_path} — download it "
@@ -1693,6 +1815,7 @@ class TeltonikaClient:
 
     def _fire_and_forget(self, command: str) -> None:
         """Kick off a command that reboots the box; ignore the dropped channel."""
+        self._refuse_mutation(f"run '{command}'")
         try:
             cli = self._ssh_client()
             cli.exec_command(f"({command}) >/dev/null 2>&1 &", timeout=self.timeout)
@@ -1807,6 +1930,33 @@ class TeltonikaClient:
         self.ssh_exec(f"echo {qname} > /proc/sys/kernel/hostname", check=False)
         log.info("Hostname set.")
 
+    def hostname_check(self, hostname: str) -> dict:
+        """One `{item, expected, actual, ok}` verification row for the hostname.
+
+        Two things have to agree, for the same reason the timezone row checks
+        two: `set_hostname` writes BOTH `system.system.hostname` and
+        `/proc/sys/kernel/hostname`, and the check used to read back only the
+        first. That is a tautology — `uci set` creates an option whether or not
+        anything consumes it — and it is the same fault class that shipped a
+        TSW202 on a UTC clock with four green rows.
+
+        The RUNNING kernel hostname is the effect: it is what the device calls
+        itself to syslog, to DHCP and to RMS, so it is the name an engineer will
+        later search for. The UCI option is checked as well because that is what
+        survives a reboot; a device right in one and wrong in the other is
+        half-named, and which half is wrong changes what you do about it.
+        """
+        stored = self.ssh_exec(f"uci -q get {UCI_HOSTNAME}", check=False).strip()
+        # `hostname` (the command) reads the running kernel value; the proc file
+        # is the fallback for a build without the busybox applet.
+        running = self.ssh_exec(
+            "hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null",
+            check=False).strip()
+        return {"item": "hostname", "expected": hostname,
+                "actual": (f"running {running or '(unset)'}, "
+                           f"stored {stored or '(unset)'}"),
+                "ok": running == hostname and stored == hostname}
+
     def effective_utc_offset(self) -> str:
         """The device clock's CURRENT UTC offset, e.g. '+0300' — or "".
 
@@ -1920,6 +2070,36 @@ class TeltonikaClient:
         log.info("Timezone set.")
 
     # --- LAN address (must run LAST) ----------------------------------------
+    def lan_ip_check(self, expected_ip: str) -> dict:
+        """The `move_lan` verification row, asked without moving anything (TEC-348).
+
+        This is the row that made the ambiguity in TEC-348 worth fixing. During
+        a configure run the check has to be "did the device come back on the new
+        address after we restarted its network", and a no-answer there is
+        genuinely inconclusive — the device may be fine and the *station's* DHCP
+        lease stale, which is why `move_lan` logs "it may still be fine".
+
+        On a verify pass there is no such doubt. The unit is already at its
+        final address or it is not, and we are talking to it right now, so the
+        strongest possible evidence is simply which address that is. Both halves
+        are reported: `self.host` is where the SSH/REST session actually reached
+        it, and the UCI value is what it will come back on after a reboot — a
+        device answering on the right address with the wrong config is a real
+        finding (someone set it by hand and never committed).
+        """
+        configured = self.current_lan_ip()
+        reached_ok = self.host == expected_ip
+        if not reached_ok:
+            actual = (f"reached it on {self.host}, not {expected_ip} "
+                      f"(configured {configured or 'unreadable'})")
+        elif configured and configured != expected_ip:
+            actual = (f"answering on {expected_ip}, but configured as "
+                      f"{configured} — it will move on the next reboot")
+        else:
+            actual = f"answering on {expected_ip}"
+        return {"item": "LAN IP", "expected": expected_ip, "actual": actual,
+                "ok": reached_ok and (not configured or configured == expected_ip)}
+
     def current_lan_ip(self) -> str:
         return self.ssh_exec(
             f"uci get network.{self.mgmt_section()}.ipaddr 2>/dev/null",
@@ -1989,6 +2169,9 @@ class TeltonikaClient:
 
         Returns a verification-style check dict; never raises after the commit
         (past that point the device is moving whether we can see it or not)."""
+        # A verify pass wants `lan_ip_check()` — the same row, asked by reaching
+        # the device rather than by re-addressing it.
+        self._refuse_mutation(f"move the management address to {new_ip}")
         addresses = self.network_addresses()
         section = self.mgmt_section(addresses)
         if not section:
@@ -2067,6 +2250,70 @@ class TeltonikaClient:
         self._online = None
         log.info("Set %d SIM slot(s) to 4G only (modem re-attaching — data drops briefly).",
                  len(indices))
+
+    def attached_access_tech(self) -> tuple[Optional[int], str]:
+        """`(AcT code, raw reply)` — the radio technology the modem is CURRENTLY
+        attached on, or `(None, raw)` when it is not attached (or the reply can't
+        be parsed).
+
+        `AT+COPS?` answers `+COPS: <mode>,<format>,<operator>,<AcT>` while
+        registered and drops the last two fields when it is not, so a missing
+        `AcT` genuinely means "not on a network" rather than "no idea". That
+        distinction is what lets the 4G row degrade honestly instead of guessing.
+
+        NOTE: parsed from an unsolicited-response format that varies a little
+        between modem firmwares. An unrecognised reply returns None, which the
+        caller reports as "cannot confirm" — never as a pass.
+        """
+        raw = self.ssh_exec("gsmctl -A 'AT+COPS?' 2>/dev/null", check=False).strip()
+        # <operator> may be a quoted string ("Partner") or a number (LAC format
+        # 2), so match either without letting it swallow the field separator.
+        m = re.search(r"\+COPS:\s*\d+\s*,\s*\d+\s*,\s*(?:\"[^\"]*\"|[^,\s]+)\s*,\s*(\d+)",
+                      raw)
+        return (int(m.group(1)) if m else None), raw
+
+    def sim_4g_check(self) -> dict:
+        """One `{item, expected, actual, ok}` row for "the SIMs are 4G-only".
+
+        Two halves, for the same reason the timezone and hostname rows have two.
+        The INTENT is `simcard.@sim[N].service='lte'`, which is what
+        `set_sims_4g_only` writes — reading it back cannot fail, so on its own it
+        was a tautology. The EFFECT is the technology the modem actually attached
+        on: a device that says `lte` in its config and is sitting on 3G is not
+        4G-only, and the config alone will never say so.
+
+        Degrades rather than guessing. A modem with no SIM, or one that has not
+        registered yet (very common on a bench with no outdoor antenna), yields
+        `ok=None` and "cannot confirm" — never a pass. A bench sweep that turned
+        "I couldn't check" into green would be the tautology all over again.
+        """
+        idxs = self._sim_indices()
+        vals = [self.ssh_exec(f"uci get simcard.@sim[{i}].service 2>/dev/null",
+                              check=False).strip() for i in idxs]
+        configured = ",".join(vals) or "(none)"
+        intent_ok = bool(idxs) and all(v == SIM_SERVICE_4G for v in vals)
+
+        act, raw = self.attached_access_tech()
+        tech = ACCESS_TECH.get(act) if act is not None else None
+        expected = f"lte x{len(idxs)}, attached on 4G"
+
+        if not intent_ok:
+            # The config is wrong, which is decidable without the modem.
+            attached = f"attached on {tech}" if tech else "not attached"
+            return {"item": "SIM 4G-only", "expected": expected,
+                    "actual": f"config says {configured}; {attached}", "ok": False}
+        if act in FOURG_ACCESS_TECH:
+            return {"item": "SIM 4G-only", "expected": expected,
+                    "actual": f"config says {configured}; attached on {tech}",
+                    "ok": True}
+        if tech:
+            return {"item": "SIM 4G-only", "expected": expected,
+                    "actual": f"config says {configured}; attached on {tech} — "
+                              "the modem is not on 4G", "ok": False}
+        return {"item": "SIM 4G-only", "expected": expected,
+                "actual": f"config says {configured}; not attached — cannot "
+                          f"confirm what it uses ({raw[:60] or 'no reply'})",
+                "ok": None}
 
     def _sim_indices(self) -> list[int]:
         """SIM section indices, e.g. [0,1,2] from simcard.@sim[0]=sim ..."""
@@ -2488,17 +2735,11 @@ class TeltonikaClient:
                                        "password",
             on_shared)
 
-        hn = self.ssh_exec("uci get system.system.hostname 2>/dev/null", check=False).strip()
-        add("hostname", hostname, hn, hn == hostname)
-
+        checks.append(self.hostname_check(hostname))
         checks.append(self.timezone_check(zonename))
 
         if sim_4g:
-            idxs = self._sim_indices()
-            vals = [self.ssh_exec(f"uci get simcard.@sim[{i}].service 2>/dev/null",
-                                  check=False).strip() for i in idxs]
-            add("SIM 4G-only", f"lte x{len(idxs)}", ",".join(vals) or "(none)",
-                bool(idxs) and all(v == SIM_SERVICE_4G for v in vals))
+            checks.append(self.sim_4g_check())
         else:
             add("SIM 4G-only", "(skipped)", "-", None)
 

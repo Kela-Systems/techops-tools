@@ -8,6 +8,13 @@ routes. Everything in this module is device-agnostic; the per-device bits
 (detection, the pipeline call, the history-entry shape, the configure route)
 are supplied by subclassing `BenchConfigurator` and overriding its hooks.
 
+A run comes in two kinds (TEC-348). A **configure** run mutates the device; a
+**verify** run plugs into the same machinery — same detection, same live log,
+same run record — and changes nothing, so a finished unit can be re-checked
+before it ships. The mode is threaded through `execute_run(..., mode=...)` and
+lands in the record's `kind` field; a tool opts in by setting
+`verify_supported` and implementing `verify_pipeline`.
+
 This module deliberately does NOT import the Teltonika client — a configurator
 hands back its own client and pipeline, so the same base also fits a device on
 a completely different protocol (e.g. the Magos REST dashboard).
@@ -40,6 +47,8 @@ from bench_core import LOG_LINE_FORMAT, mac_from_arp_output
 from bench_core.central import spool_run_record, start_central_uploader
 from bench_core.config_check import check_config, config_fingerprint
 from bench_core.device_label import DeviceLabel, parse_device_label
+from bench_core.history import resolve_expected
+from bench_core.run_record import KIND_CONFIGURE, KIND_VERIFY
 
 try:
     import requests
@@ -48,6 +57,12 @@ except ImportError:  # pragma: no cover - requests is a hard dep in practice
 
 POLL_INTERVAL_SEC = 2.0
 DETECT_TIMEOUT_SEC = 1.0
+
+# Phases a finished run leaves behind: the device is still plugged in and its
+# result is still on screen, so detection must not reset the page to "detected"
+# under the operator. Shared so that adding a phase (`verified`, TEC-348) can't
+# be forgotten in one of the six poll loops that check for them.
+TERMINAL_PHASES = ("configured", "verified", "error")
 
 # Per-run JSON logs embed full raw device payloads, so cap how many we keep on an
 # operator machine that may run for months without a restart.
@@ -254,6 +269,22 @@ class OperatorBody(BaseModel):
     operator: str = ""
 
 
+class VerifyBody(BaseModel):
+    """Request body of the shared POST /api/verify route (TEC-348).
+
+    Everything is optional: the point of the mode is that an operator can press
+    Verify on a finished unit without knowing anything about it, and the
+    expectations are recovered from the unit's configure record.
+
+    `expected` is the escape hatch for the case the lookup can't cover — a unit
+    provisioned before records were kept, or one an engineer wants checked
+    against what it SHOULD be rather than what it was mistakenly set to. Keys
+    are the per-family `device` fields (site_name, hostname, ip, ...); blank
+    values are ignored rather than treated as a claim.
+    """
+    expected: dict = {}
+
+
 # ── Device-label scanning ────────────────────────────────────────────────────
 #
 # Scanning the QR on a device's sticker instead of retyping the factory
@@ -433,6 +464,14 @@ class BenchConfigurator:
     # label — the Teltonika families — have anything to gain, and a tool that
     # doesn't opt in gets no route and no UI for it.
     label_scan_enabled: bool = False
+    # Opt in to the mutation-free Verify pass (TEC-348). Off by default so a
+    # tool that hasn't implemented `verify_pipeline` gets no route and no
+    # button, rather than a button that errors — and so the tool it IS wired up
+    # on is a deliberate choice per family.
+    verify_supported: bool = False
+    # The tool name used to look a device's configure record up (must match the
+    # `tool` its build_entry passes to build_run_entry). Set per subclass.
+    record_tool: str = ""
 
     def __init__(self, base_dir: Path) -> None:
         self.base_dir = base_dir
@@ -457,6 +496,10 @@ class BenchConfigurator:
         self.state["config_loaded"] = bool(self.cfg)
         self._live_collector: Optional[StepCollector] = None
         self._run_t0: Optional[float] = None
+        # Which kind of run is in flight, or was the last one to finish. Drives
+        # the page's wording (a verify pass must not report "Configured") and
+        # the record's `kind` field.
+        self._run_kind: str = KIND_CONFIGURE
         # The armed device-label scan (TEC-349), and why the last scan was
         # refused if it was. In memory only — see LABEL_SCAN_TTL_SEC.
         self._armed_label: Optional[DeviceLabel] = None
@@ -503,8 +546,18 @@ class BenchConfigurator:
         raise NotImplementedError
 
     def counts(self) -> dict:  # override (manifest progress vs history tally)
-        done = sum(1 for h in self.state["history"] if h["status"] == "ok")
-        return {"done": done, "error": len(self.state["history"]) - done}
+        """The session tally. Configure and verify runs are counted separately:
+        an end-of-batch QA sweep re-checks every unit already in the done pile,
+        and folding those into `done` would report twice as many devices
+        provisioned as the bench actually saw."""
+        configures = [h for h in self.state["history"]
+                      if h.get("kind", KIND_CONFIGURE) == KIND_CONFIGURE]
+        verifies = [h for h in self.state["history"]
+                    if h.get("kind") == KIND_VERIFY]
+        done = sum(1 for h in configures if h["status"] == "ok")
+        passed = sum(1 for h in verifies if h["status"] == "ok")
+        return {"done": done, "error": len(configures) - done,
+                "verified": passed, "verify_failed": len(verifies) - passed}
 
     def extra_public_state(self) -> dict:  # override to add manifest / name_prefix / etc.
         return {}
@@ -532,6 +585,10 @@ class BenchConfigurator:
                 "run_seconds": int(time.monotonic() - self._run_t0)
                                if busy and self._run_t0 else None,
                 "label_scan": self.label_scan_state(),
+                # Which kind of run is in flight / was last shown, so the page
+                # can label a verify pass as one instead of saying "Configured".
+                "verify_supported": self.verify_supported,
+                "run_kind": self._run_kind,
                 **self.extra_public_state()}
 
     # ── device-label scanning (TEC-349) ──────────────────────────────────────
@@ -676,9 +733,49 @@ class BenchConfigurator:
     def run_pipeline(self, client, run_cfg: dict, inputs: dict) -> dict:  # override
         raise NotImplementedError
 
+    def verify_pipeline(self, client, run_cfg: dict, inputs: dict) -> dict:  # override
+        """Check a finished device against its intended state, mutating NOTHING
+        (TEC-348). Same return contract as `run_pipeline`.
+
+        A verify pipeline is handed `self.verify_resolver(inputs)` and calls it
+        once, right after it has read the device's identity — see there for why
+        the timing matters.
+        """
+        raise NotImplementedError
+
+    def verify_resolver(self, inputs: dict):
+        """A callable `(identity) -> (expected, prior_run_row)` for a verify
+        pipeline to invoke once it knows what device it is talking to.
+
+        A callable rather than pre-computed values because the lookup key is the
+        serial, and the serial comes off the device — so it cannot be resolved
+        before the pipeline logs in. The MAC read over ARP during detection is
+        the fallback for a unit whose serial won't read.
+
+        `prior_run_row` is a FAILING row when no configure record exists
+        anywhere. A pipeline must include it, not drop it: without it a device
+        nobody ever provisioned verifies green, and TEC-352 prints it a label.
+        """
+        def resolve(identity: dict) -> tuple[dict, Optional[dict]]:
+            expected, prior_row, source = resolve_expected(
+                self.log_dir,
+                serial=(identity or {}).get("serial", "") or "",
+                mac=(identity or {}).get("mac", "") or inputs.get("mac", "") or "",
+                tool=self.record_tool,
+                overrides=inputs.get("expected_overrides") or {})
+            inputs["expected"] = expected
+            inputs["expected_source"] = source
+            return expected, prior_row
+
+        return resolve
+
     def build_entry(self, result: dict, inputs: dict, duration: int) -> dict:  # override
         """Build the run-record entry via bench_core.run_record.build_run_entry
-        (the canonical schema, TEC-346) — per-family fields go in `device`."""
+        (the canonical schema, TEC-346) — per-family fields go in `device`.
+
+        `kind` is stamped by `execute_run` afterwards, so a hook that has no
+        idea the verify mode exists still produces a correctly labelled record.
+        """
         raise NotImplementedError
 
     def on_run_recorded(self, result: dict, inputs: dict, entry: dict) -> None:
@@ -688,8 +785,33 @@ class BenchConfigurator:
         return (f"Configured {result['hostname']} (SN {entry['serial']}) in {took}. "
                 "Unplug it and plug in the next one.")
 
+    def verify_message(self, result: dict, entry: dict, took: str) -> str:
+        """What the page says after a verify pass. Deliberately does NOT say
+        "configured" — the operator has to be able to tell a QA check from a
+        provision at a glance, since only one of them changed the device."""
+        name = result.get("hostname") or entry["serial"]
+        return (f"{name} PASSED verification in {took} — nothing was changed. "
+                "Unplug it and plug in the next one.")
+
     def _do_configure(self, inputs: dict) -> dict:
-        """Run one device's pipeline in a worker thread, collecting its log."""
+        """Run one device's configure pipeline. A named seam, not a shim: the
+        per-tool tests stub this out to drive `execute_run` without a device."""
+        return self._do_run(inputs, KIND_CONFIGURE)
+
+    def _do_verify(self, inputs: dict) -> dict:
+        """Run one device's verify pass. The `_do_configure` seam's twin."""
+        return self._do_run(inputs, KIND_VERIFY)
+
+    def _do_run(self, inputs: dict, mode: str = KIND_CONFIGURE) -> dict:
+        """Run one device's pipeline in a worker thread, collecting its log.
+
+        `mode` picks the pipeline: `run_pipeline` (mutates) or `verify_pipeline`
+        (mutates nothing). Everything else — the run config, the live log, the
+        result contract, the failure handling — is identical, which is the
+        point: a verify pass is a first-class run, not a special case bolted on
+        beside one.
+        """
+        verifying = mode == KIND_VERIFY
         collector = StepCollector()
         self._live_collector = collector
         self.logger.addHandler(collector)
@@ -704,7 +826,10 @@ class BenchConfigurator:
             fw["bin_path"] = str(self.base_dir / fw["bin_path"])
             run_cfg["firmware"] = fw
         ts = run_cfg.get("tailscale", {}) or {}
-        if ts.get("enabled"):
+        # Minting a Tailscale key is a mutation of the tailnet, not of the
+        # device, but it is still a side effect and a verify pass has no use for
+        # one: it reads the node's existing address off the device.
+        if ts.get("enabled") and not verifying:
             ts["_resolved_auth_key"] = resolve_tailscale_key(
                 self.cfg, hostname, label=self.tailscale_label, logger=self.logger)
             run_cfg["tailscale"] = ts
@@ -713,7 +838,8 @@ class BenchConfigurator:
         extras: dict = {}
         client = self.build_client(run_cfg, self.client_host(inputs))
         try:
-            result = self.run_pipeline(client, run_cfg, inputs)
+            result = (self.verify_pipeline(client, run_cfg, inputs) if verifying
+                      else self.run_pipeline(client, run_cfg, inputs))
             identity = result["identity"]
             warnings = result.get("warnings", [])
             verification = result.get("verification", [])
@@ -729,7 +855,8 @@ class BenchConfigurator:
             extras = {k: v for k, v in result.items() if k not in PIPELINE_CORE_KEYS}
         except BaseException as e:  # noqa: BLE001 — SystemExit + any network error
             error = str(e)
-            self.logger.error("Provisioning FAILED: %s", e)
+            self.logger.error("%s FAILED: %s",
+                              "Verification" if verifying else "Provisioning", e)
         finally:
             self.logger.removeHandler(collector)
             client.close()
@@ -751,27 +878,52 @@ class BenchConfigurator:
         return run_stamp(self.operator_store.get(), self.station_id,
                          self.bench_version, self.config_hash)
 
+    def log_name_stem(self, entry: dict) -> Optional[str]:  # override
+        """What to name this run's JSON file after. The hostname by default;
+        override for a family that doesn't set one (see the TSW202, which uses
+        the serial)."""
+        return entry.get("device", {}).get("hostname")
+
     def _save_log(self, entry: dict) -> Optional[str]:
-        return save_run_record(self.log_dir, entry,
-                               name_stem=entry.get("device", {}).get("hostname"),
+        # Verify records get a `verify_` filename prefix so the two kinds of run
+        # are tellable apart in logs/ without opening anything — an operator
+        # asked to send "the log for that unit" picks the right file. Kept here
+        # rather than in the naming hook so a tool can't opt out of it by
+        # overriding the name.
+        prefix = "verify_" if entry.get("kind") == KIND_VERIFY else ""
+        return save_run_record(self.log_dir, entry, prefix=prefix,
+                               name_stem=self.log_name_stem(entry),
                                logger=self.logger)
 
-    async def execute_run(self, inputs: dict, label: str) -> bool:
+    async def execute_run(self, inputs: dict, label: str, *,
+                          mode: str = KIND_CONFIGURE) -> bool:
         """Run one device's pipeline. Returns False if a run is already in
         progress. The busy check-and-set is atomic (no await between them), so
-        the poll loop and /api/configure can never start two runs at once."""
+        the poll loop, /api/configure and /api/verify can never start two runs
+        at once — which is also what stops a Verify press landing in the middle
+        of a provision.
+
+        `mode` is `"configure"` or `"verify"` (TEC-348) and is stamped onto the
+        record here, so none of the per-tool `build_entry` hooks has to know the
+        verify mode exists.
+        """
         if self.state["busy"]:
             return False
+        verifying = mode == KIND_VERIFY
         self.state["busy"] = True
-        self.state["phase"] = "configuring"
-        self.state["message"] = f"Configuring {label}…"
+        self._run_kind = mode
+        self.state["phase"] = "verifying" if verifying else "configuring"
+        self.state["message"] = (f"Verifying {label}…" if verifying
+                                 else f"Configuring {label}…")
         self._run_t0 = time.monotonic()
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, self._do_configure, inputs)
+            runner = self._do_verify if verifying else self._do_configure
+            result = await loop.run_in_executor(None, runner, inputs)
             duration = int(time.monotonic() - self._run_t0)
             took = f"{duration // 60}m{duration % 60:02d}s"
             entry = self.build_entry(result, inputs, duration)
+            entry["kind"] = mode
             entry.update(self.run_stamp())  # who / where / which code (TEC-345)
             entry["log_file"] = self._save_log(entry)
             self.state["history"].insert(0, entry)
@@ -779,11 +931,15 @@ class BenchConfigurator:
             self.state["last_result"] = entry
             self.on_run_recorded(result, inputs, entry)
             if result["ok"]:
-                self.state["phase"] = "configured"
-                self.state["message"] = self.success_message(result, entry, took)
+                self.state["phase"] = "verified" if verifying else "configured"
+                self.state["message"] = (self.verify_message(result, entry, took)
+                                         if verifying
+                                         else self.success_message(result, entry, took))
             else:
                 self.state["phase"] = "error"
-                self.state["message"] = f"Failed after {took}: {result['error']}"
+                self.state["message"] = (
+                    f"{'FAILED verification' if verifying else 'Failed'} after "
+                    f"{took}: {result['error']}")
         finally:
             self.state["busy"] = False
             self._run_t0 = None
@@ -791,6 +947,10 @@ class BenchConfigurator:
             # (or the next unit, if the MAC can't be read) reuse it silently.
             self.clear_armed_label()
         return True
+
+    async def execute_verify(self, inputs: dict, label: str) -> bool:
+        """Run one device's mutation-free verify pass (TEC-348)."""
+        return await self.execute_run(inputs, label, mode=KIND_VERIFY)
 
     # ── detection loop (override `poll_once`) ─────────────────────────────────
 
@@ -817,6 +977,29 @@ class BenchConfigurator:
 
     def dismiss_message(self) -> str:
         return "Plug in the next device…"
+
+    # ── the verify route (shared, TEC-348) ───────────────────────────────────
+
+    def verify_inputs(self, body: "VerifyBody") -> dict:
+        """The `inputs` dict for a verify run. Override to add per-tool fields.
+
+        Deliberately shared rather than per-tool: a Verify press means the same
+        thing on every tool (check the unit that is plugged in, against what it
+        was configured to be) and duplicating that across five
+        `register_routes` is how the five drift apart. There is no password
+        field — a finished unit is on the station's shared password, and one
+        that isn't will fail its password row, which is the correct outcome.
+        """
+        return {"host": self.state.get("active_host") or self.cfg.get("host", ""),
+                "mac": self.state.get("active_mac"),
+                "expected_overrides": dict(body.expected or {}),
+                "password_source": "shared-fallback"}
+
+    def verify_label(self, inputs: dict) -> str:
+        """How the run is described in the "Verifying …" message. The device's
+        real identity isn't known until the pipeline logs in, so this is the
+        address it answered on."""
+        return inputs.get("host") or "the connected device"
 
     def build_app(self) -> FastAPI:
         @contextlib.asynccontextmanager
@@ -870,6 +1053,20 @@ class BenchConfigurator:
                 refusal = self.arm_label(body.raw)
                 if refusal:
                     return refusal
+                return self.public_state()
+
+        if self.verify_supported:
+            @app.post("/api/verify")
+            async def verify(body: VerifyBody):
+                # Same two guards as every /api/configure: a device has to
+                # actually be there, and one run at a time (execute_run's
+                # check-and-set is what makes the second one airtight).
+                if not self.state.get("detected"):
+                    return {"error": "No device is currently detected."}
+                inputs = self.verify_inputs(body)
+                if not await self.execute_verify(inputs,
+                                                 self.verify_label(inputs)):
+                    return {"error": "A run is already in progress."}
                 return self.public_state()
 
         @app.websocket("/ws/state")
