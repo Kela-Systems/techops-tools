@@ -23,6 +23,9 @@ Endpoints:
                            MASS. remote_base_url must be a FULL URL
                            ("http://192.168.88.50") — a bare IP is rejected
                            with a pydantic url_parsing error.
+  GET  /apu/v1/settings -> the same object, for reading the assignment back
+                           (see APUClient.get_radars; treated as absent on
+                           anything that doesn't answer with it).
 
   GET  /dshb/v1/networking -> {"netInterfaces":{"port1":{ip4Method, ip4Address,
                           ip4Netmask, ip4Gateway, ip4DNS[], ...}}, ...top-level...}
@@ -60,11 +63,14 @@ import logging
 import os
 import sys
 from getpass import getpass
+from typing import Optional
 
 try:
     import requests
 except ImportError:
     sys.exit("This script needs 'requests'.  Install it with:  pip install requests")
+
+from bench_core import format_verification
 
 # Reuse the radar tool's logger, identity lookup, schema-cleanup, and the radar
 # channel IPs (which the APU "controls").
@@ -73,6 +79,7 @@ from magos_configure import (  # noqa: E402
     DEFAULT_TIMEZONE,
     LOG_LINE_FORMAT,
     MagosError,
+    MagosHttpClient,
     _find_field,
     fetch_identity,
     load_factory_defaults,
@@ -189,23 +196,14 @@ def _remove_field(net: dict, field: str) -> None:
             iface.pop(field, None)
 
 
-class APUClient:
-    def __init__(self, host: str, scheme: str = "http", verify: bool = True, timeout: int = 15):
-        self.base = f"{scheme}://{host}/dshb/v1"
-        self.apu_base = f"{scheme}://{host}/apu/v1"   # multi-radar settings (3.1.2+)
-        self.s = requests.Session()
-        self.s.headers.update({"Content-Type": "application/json"})
-        self.s.verify = verify
-        self.timeout = timeout
+class APUClient(MagosHttpClient):
+    """The APU shares the dashboard API (and so the session, the login, the
+    reads and the read-only guard) with the radar; only the multi-radar
+    assignment under `/apu/v1` is its own."""
 
-    # --- auth ---------------------------------------------------------------
-    def login(self, username: str, password: str) -> None:
-        r = self.s.post(f"{self.base}/login",
-                        json={"username": username, "password": password},
-                        timeout=self.timeout)
-        if r.status_code != 200:
-            raise MagosError(f"Login failed (HTTP {r.status_code}): {r.text[:300]}")
-        log.info("Logged in as '%s'.", username)
+    def __init__(self, host: str, scheme: str = "http", verify: bool = True, timeout: int = 15):
+        super().__init__(host, scheme=scheme, verify=verify, timeout=timeout)
+        self.apu_base = f"{scheme}://{host}/apu/v1"   # multi-radar settings (3.1.2+)
 
     # --- identity -----------------------------------------------------------
     def get_identity(self) -> dict:
@@ -220,15 +218,14 @@ class APUClient:
 
     # --- NTP + timezone -----------------------------------------------------
     def set_ntp_tz(self, ntp_server: str, timezone: str) -> None:
-        cur = self.s.get(f"{self.base}/system", timeout=self.timeout)
-        cur.raise_for_status()
-        sysinfo = cur.json()
+        self._refuse_mutation(f"set the NTP server to {ntp_server}")
+        sysinfo = self.get_system()
         body = {
             "ntpAutomatic": False,
             "ntpServer": ntp_server or sysinfo.get("ntpServer"),
             "timezone": timezone or sysinfo.get("timezone"),
         }
-        r = self.s.post(f"{self.base}/system", json=body, timeout=self.timeout)
+        r = self._post(f"{self.base}/system", json=body)
         if r.status_code not in (200, 204):
             raise MagosError(f"system (NTP/TZ) update failed (HTTP {r.status_code}): {r.text[:300]}")
         log.info("NTP server = %s, timezone = %s.", body["ntpServer"], body["timezone"])
@@ -238,21 +235,44 @@ class APUClient:
         """Assign ALL the APU's controlled radars in one call. Each entry is
         {"radar_id","ip","name"}; POSTing the array replaces any previous
         assignment (the old single-radar /phoenix_ip is gone in 3.1.2)."""
+        self._refuse_mutation("reassign the controlled radars")
         body = {"radars": [{"radar_id": r["radar_id"],
                             "remote_base_url": radar_base_url(r["ip"]),
                             "name": r["name"]} for r in radars]}
-        r = self.s.post(f"{self.apu_base}/settings", json=body, timeout=self.timeout)
+        r = self._post(f"{self.apu_base}/settings", json=body)
         if r.status_code not in (200, 204):
             raise MagosError(f"apu settings (controlled radars) update failed "
                              f"(HTTP {r.status_code}): {r.text[:300]}")
         log.info("Controlled radars set: %s.",
                  ", ".join(f"{x['radar_id']}={x['ip']}" for x in radars))
 
+    def get_radars(self) -> Optional[list]:
+        """The radars this APU is currently assigned to control, or None when
+        the firmware has no readable settings endpoint.
+
+        `set_radars` POSTs to `/apu/v1/settings`; a GET on the same path is what
+        the dashboard reads its own form from, confirmed answering on 3.1.2-rc5.
+        None (rather than an empty list) for anything unreadable, so "no
+        assignment" and "cannot ask" stay distinguishable — one is a red row,
+        the other an amber one.
+        """
+        try:
+            r = self._get(f"{self.apu_base}/settings")
+        except requests.exceptions.RequestException:
+            return None
+        if r.status_code != 200:
+            return None
+        try:
+            data = r.json()
+        except ValueError:
+            return None
+        radars = data.get("radars") if isinstance(data, dict) else None
+        return radars if isinstance(radars, list) else None
+
     # --- networking (do last) ----------------------------------------------
     def set_network(self, iface: str, ip: str, netmask: str, gateway: str, dns: str) -> None:
-        cur = self.s.get(f"{self.base}/networking", timeout=self.timeout)
-        cur.raise_for_status()
-        net = cur.json()
+        self._refuse_mutation(f"move the APU to {ip}")
+        net = self.get_networking()
         ifaces = net.get("netInterfaces", {})
         if iface not in ifaces:
             raise MagosError(f"Interface '{iface}' not found. Available: {list(ifaces)}")
@@ -274,7 +294,7 @@ class APUClient:
         # until it accepts (or the IP change drops the connection).
         for _ in range(10):
             try:
-                r = self.s.post(f"{self.base}/networking", json=net, timeout=self.timeout)
+                r = self._post(f"{self.base}/networking", json=net)
             except requests.exceptions.RequestException as e:
                 log.info("Connection dropped after sending networking change (expected): %s", e)
                 return
@@ -402,9 +422,10 @@ def main():
                     return
             print("Updating networking (last step)...")
             client.set_network(args.iface, args.ip, args.netmask, args.gateway, args.dns)
-            verify_device_at(args.ip, scheme=args.scheme, username=args.username,
-                             password=pwd, expect_substring=args.ip,
-                             verify_tls=not args.insecure)
+            rows = verify_device_at(args.ip, scheme=args.scheme, username=args.username,
+                                    password=pwd, expect_substring=args.ip,
+                                    verify_tls=not args.insecure)
+            print(format_verification(rows))
     except MagosError as e:
         sys.exit(f"ERROR: {e}")
 

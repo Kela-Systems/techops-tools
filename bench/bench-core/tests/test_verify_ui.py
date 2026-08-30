@@ -8,12 +8,17 @@ label password), and when it is available (a device is detected and nothing is
 running). Driven for real in node against a fake DOM, in the style of
 `test_bench_js_focus.py`.
 
-The second is a per-page audit. Five pages each wire the same six things by
+The second is a per-page audit. Seven pages each wire the same six things by
 hand, and a page that quietly misses one is invisible in Python tests: the
 operator just never gets a button, or gets a verify run whose live log never
 appears because the page still compares `phase === 'configuring'`. Static
 assertions over the HTML catch that; they are crude, and they are the only
 thing standing between a copy-paste and a tool without the mode.
+
+The audit spans both bases. The Magos pair runs on its own engine (MagosBench,
+TEC-851) rather than BenchConfigurator, but it reuses this `bench.js`, this
+route and this row schema — so the pages have to pass the same audit, and a
+page that drifts is the same bug wherever it lives.
 
 Skipped (the node half) when node is absent; bench stations only need Python.
 """
@@ -29,14 +34,16 @@ BENCH = Path(__file__).resolve().parent.parent.parent          # bench/
 BENCH_JS = BENCH / "bench-core" / "src" / "bench_core" / "static" / "bench.js"
 BENCH_CSS = BENCH / "bench-core" / "src" / "bench_core" / "static" / "bench.css"
 
-# The five tools that support the mode. Magos radar/APU are deliberately absent
-# — a different base and a different verification shape, tracked separately.
+# Every page that supports the mode — including the two Magos pages, whose
+# engine is separate but whose Verify UI is this one (TEC-851).
 PAGES = {
     "tsw": BENCH / "tsw-config-ui" / "static" / "tsw.html",
     "rutm": BENCH / "rutm-config-ui" / "static" / "rutm.html",
     "otd": BENCH / "otd-config-ui" / "static" / "otd.html",
     "speaker": BENCH / "speaker-config-ui" / "static" / "speaker.html",
     "raythink": BENCH / "raythink-config-ui" / "static" / "raythink.html",
+    "magos": BENCH / "magos-config-ui" / "static" / "index.html",
+    "apu": BENCH / "magos-config-ui" / "static" / "apu.html",
 }
 
 
@@ -182,8 +189,8 @@ def test_the_button_is_unavailable_when_it_would_be_refused(state, why):
 
 @needs_node
 def test_a_tool_without_the_mode_shows_no_button():
-    # `verify_supported` is a class attribute, so a tool that has not been
-    # converted (or the Magos pair) must not show a button that 404s.
+    # `verify_supported` is a class attribute on both bases, so a tool that has
+    # not been converted must not show a button that 404s.
     out = drive(MOUNT + """
         verify.update({ verify_supported: false, detected: true, busy: false });
         return { hidden: btn.style.display };
@@ -203,7 +210,7 @@ def test_the_button_says_what_it_is_doing_while_it_runs():
 
 @needs_node
 def test_a_page_with_no_verify_button_is_not_broken_by_the_helper():
-    # bench.js is shared with the Magos pages, which have no such button.
+    # bench.js is shared by every page, including any that never mounts one.
     out = drive("""
         const verify = mountVerifyButton('verifyBtn');
         verify.update({ verify_supported: true, detected: true });

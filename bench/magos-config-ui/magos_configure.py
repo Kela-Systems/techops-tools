@@ -80,13 +80,21 @@ import sys
 import time
 from getpass import getpass
 from pathlib import Path
+from typing import Optional
 
 try:
     import requests
 except ImportError:
     sys.exit("This script needs 'requests'.  Install it with:  pip install requests")
 
-from bench_core import LOG_LINE_FORMAT, install_log_context, load_settings, set_log_serial
+from bench_core import (
+    LOG_LINE_FORMAT,
+    MutationBlocked,
+    format_verification,
+    install_log_context,
+    load_settings,
+    set_log_serial,
+)
 
 
 class MagosError(Exception):
@@ -114,6 +122,11 @@ SERIAL_KEYS = ("serialnumber", "serial", "serialno", "sn", "deviceserial", "prod
 MAC_KEYS = ("mac", "macaddress", "macaddr", "hwaddr", "hwaddress", "ethernetmac", "ethmac")
 MODEL_KEYS = ("model", "modelname", "productname", "product", "devicemodel",
               "hardwaremodel", "hwmodel", "devicetype", "boardtype", "productmodel")
+# Field names that may carry the RF channel a radar is currently on (see
+# MagosClient.current_variant). Deliberately NOT a bare "channel": the dashboard
+# payloads use that word for unrelated things, and a wrong read here would put a
+# green tick on the wrong frequency.
+VARIANT_KEYS = ("variant", "currentvariant", "activevariant", "selectedvariant")
 
 
 # --- factory-defaults config file --------------------------------------------
@@ -168,6 +181,16 @@ def netmask_to_prefix(netmask: str) -> int:
     return ipaddress.IPv4Network(f"0.0.0.0/{netmask}").prefixlen
 
 
+def prefix_to_netmask(prefix) -> str:
+    """Dotted netmask for a /NN prefix, or "" when it isn't a prefix. The
+    legacy networking schema stores one CIDR address where the current one has
+    a separate netmask, so a read-back has to be able to go back the other way."""
+    try:
+        return str(ipaddress.IPv4Network(f"0.0.0.0/{int(prefix)}").netmask)
+    except (TypeError, ValueError):
+        return ""
+
+
 def to_cidr(ip: str, netmask: str | None) -> str:
     """Return ip in CIDR form (the API stores ip4Address as 'x.x.x.x/NN')."""
     if "/" in ip:                      # already CIDR
@@ -218,22 +241,37 @@ def is_on_link(host: str, prefixlen: int = 24) -> bool:
 def verify_device_at(ip: str, scheme: str = "http", username: str | None = None,
                      password: str | None = None, expect_substring: str | None = None,
                      total_timeout: float = 45.0, interval: float = 3.0,
-                     verify_tls: bool = True) -> dict:
-    """Confirm a just-provisioned device actually answers on its NEW address.
+                     verify_tls: bool = True) -> list[dict]:
+    """The `reached at` verification row for a device we have just moved.
 
     Polls `ip` until it answers HTTP (any status), then — if credentials are
     given — logs in and checks that GET /networking mentions `expect_substring`
-    (the address we just set). Returns {"verified", "skipped", "detail"}.
+    (the address we just set). Effect-based: the address the device is actually
+    answering on, which is the one fact a configure run can establish about its
+    own networking change.
 
-    If the laptop has no adapter on the target subnet, verification is skipped
-    immediately (rather than burning `total_timeout` on a guaranteed miss).
+    Returns a one-row list in the shared schema (TEC-851), so a Magos run
+    records the same `{item, expected, actual, ok}` rows every other tool does:
+
+      * `ok=True`  — it answered, and the row says whether the address was also
+                     confirmed out of the device's own config
+      * `ok=False` — it never answered inside `total_timeout`
+      * `ok=None`  — this PC has no adapter on the target subnet, so the address
+                     could not be reached to confirm it either way. Skipped
+                     immediately rather than burning `total_timeout` on a
+                     guaranteed miss, and amber rather than green: "I could not
+                     look" is not "it is fine".
     """
     host = ip.split("/")[0]
+
+    def row(actual: str, ok: Optional[bool]) -> list[dict]:
+        return [{"item": "reached at", "expected": host, "actual": actual, "ok": ok}]
+
     if not is_on_link(host):
         detail = (f"skipped — this PC has no adapter on {host}'s subnet, "
                   "so the new address cannot be reached to confirm it")
         log.warning("Verification %s.", detail)
-        return {"verified": False, "skipped": True, "detail": detail}
+        return row(detail, None)
 
     log.info("Verifying the device answers at %s (up to %ds)...", host, int(total_timeout))
     deadline = time.monotonic() + total_timeout
@@ -253,13 +291,13 @@ def verify_device_at(ip: str, scheme: str = "http", username: str | None = None,
                 except requests.exceptions.RequestException:
                     pass  # reachable is already a pass; address check is best-effort
             log.info("Verified: %s.", detail)
-            return {"verified": True, "skipped": False, "detail": detail}
+            return row(detail, True)
         time.sleep(interval)
 
     detail = (f"no HTTP answer at {host} within {int(total_timeout)}s — the device may "
               "not have applied the change (or is still rebooting)")
     log.warning("Verification FAILED: %s.", detail)
-    return {"verified": False, "skipped": False, "detail": detail}
+    return row(detail, False)
 
 
 def _norm_key(k: str) -> str:
@@ -342,31 +380,88 @@ def fetch_identity(session, base: str, timeout: int, paths=("/systemStatus", "/s
     return identity
 
 
-class MagosClient:
+class MagosHttpClient:
+    """The dashboard-API plumbing both Magos devices share: the session, the
+    login, the reads a verification pass makes, and the read-only guard.
+
+    The guard is two layers, because "mutation-free" is a claim about code
+    nobody re-reads (TEC-851):
+
+    * **`_post` is the backstop.** Every change either device makes is a POST,
+      and the only POST that changes nothing is `/login`, so one gate there
+      covers the whole HTTP surface — a write added later has to go through it
+      to reach the device, so it cannot be forgotten. The radar's RF channel is
+      the one thing it cannot see, because that is pushed over a WebSocket;
+      `set_channel` checks for itself.
+    * **Each named mutator refuses up front**, so a refused change never
+      reaches the device at all — `set_ntp` reads the current settings before
+      writing them, and on a verify run even that read should not happen.
+    """
+
     def __init__(self, host: str, scheme: str = "http", verify: bool = True, timeout: int = 15):
         self.host = host
         self.scheme = scheme
         self.verify = verify
         self.base = f"{scheme}://{host}/dshb/v1"
-        # Radar-specific config (RF channel etc.) lives under a separate API base.
-        self.radar_base = f"{scheme}://{host}/radar/v1"
         self.s = requests.Session()
         self.s.headers.update({"Content-Type": "application/json"})
         self.s.verify = verify
         self.timeout = timeout
+        self.read_only = False
+
+    def set_read_only(self) -> None:
+        """Refuse every write from here on. One-way on purpose: nothing in a
+        verify pass has a reason to turn it back off."""
+        self.read_only = True
+        log.info("Client is now read-only — any write will be refused.")
+
+    def _refuse_mutation(self, what: str) -> None:
+        if self.read_only:
+            raise MutationBlocked(
+                f"refusing to {what}: this is a verify-only run and must not "
+                "change the device")
+
+    # --- transport ----------------------------------------------------------
+    def _get(self, url: str, **kw):
+        kw.setdefault("timeout", self.timeout)
+        return self.s.get(url, **kw)
+
+    def _post(self, url: str, **kw):
+        if self.read_only and not url.endswith("/login"):
+            raise MutationBlocked(
+                f"read-only client refused a write: POST {url}")
+        kw.setdefault("timeout", self.timeout)
+        return self.s.post(url, **kw)
 
     # --- auth ---------------------------------------------------------------
     def login(self, username: str, password: str) -> None:
-        r = self.s.post(
-            f"{self.base}/login",
-            json={"username": username, "password": password},
-            timeout=self.timeout,
-        )
+        r = self._post(f"{self.base}/login",
+                       json={"username": username, "password": password})
         if r.status_code != 200:
             raise MagosError(f"Login failed (HTTP {r.status_code}): {r.text[:300]}")
         if "session" not in self.s.cookies and not self.s.cookies:
             log.warning("No session cookie returned; continuing anyway.")
         log.info("Logged in as '%s'.", username)
+
+    # --- reads a verification pass makes ------------------------------------
+    def get_system(self) -> dict:
+        """`GET /system` — NTP server, timezone, component versions."""
+        r = self._get(f"{self.base}/system")
+        r.raise_for_status()
+        return r.json()
+
+    def get_networking(self) -> dict:
+        """`GET /networking` — the address config, in whichever of the two
+        schemas this firmware speaks (see the module docstring)."""
+        r = self._get(f"{self.base}/networking")
+        r.raise_for_status()
+        return r.json()
+
+class MagosClient(MagosHttpClient):
+    def __init__(self, host: str, scheme: str = "http", verify: bool = True, timeout: int = 15):
+        super().__init__(host, scheme=scheme, verify=verify, timeout=timeout)
+        # Radar-specific config (RF channel etc.) lives under a separate API base.
+        self.radar_base = f"{scheme}://{host}/radar/v1"
 
     # --- identity -----------------------------------------------------------
     def get_identity(self) -> dict:
@@ -380,7 +475,7 @@ class MagosClient:
             raw: dict = {}
             for path in ("/sensors", "/remoteProductInfo"):
                 try:
-                    r = self.s.get(f"{self.radar_base}{path}", timeout=self.timeout)
+                    r = self._get(f"{self.radar_base}{path}")
                 except requests.exceptions.RequestException:
                     continue
                 if r.status_code == 200:
@@ -406,16 +501,15 @@ class MagosClient:
 
     # --- NTP ----------------------------------------------------------------
     def set_ntp(self, ntp_server: str, timezone: str | None = None) -> None:
+        self._refuse_mutation(f"set the NTP server to {ntp_server}")
         log.info("Setting NTP server to %s ...", ntp_server)
-        cur = self.s.get(f"{self.base}/system", timeout=self.timeout)
-        cur.raise_for_status()
-        sysinfo = cur.json()
+        sysinfo = self.get_system()
         body = {
             "ntpAutomatic": False,          # manual NTP server
             "ntpServer": ntp_server,
             "timezone": timezone or sysinfo.get("timezone") or DEFAULT_TIMEZONE,
         }
-        r = self.s.post(f"{self.base}/system", json=body, timeout=self.timeout)
+        r = self._post(f"{self.base}/system", json=body)
         if r.status_code not in (200, 204):
             raise MagosError(f"NTP update failed (HTTP {r.status_code}): {r.text[:300]}")
         log.info("NTP server set to %s (timezone %s).", ntp_server, body["timezone"])
@@ -433,7 +527,7 @@ class MagosClient:
         callers can treat "no channel support" as a no-op rather than an error.
         """
         try:
-            r = self.s.get(f"{self.radar_base}/listVariants", timeout=self.timeout)
+            r = self._get(f"{self.radar_base}/listVariants")
         except requests.exceptions.RequestException:
             return {}
         if r.status_code != 200:
@@ -444,6 +538,36 @@ class MagosClient:
             return {}
         return {v["id"]: v.get("description", v["id"])
                 for v in data.get("variantList", []) if isinstance(v, dict) and "id" in v}
+
+    def current_variant(self) -> Optional[str]:
+        """The RF channel the radar is on NOW, or None when this firmware does
+        not report it.
+
+        `set_channel` pushes the variant over the detections WebSocket and the
+        firmware documents no read for it, so this searches the payloads that do
+        describe the radar for a variant field — and only trusts a value the
+        unit itself lists as one of its variants. An unrecognised value reads as
+        "cannot confirm" rather than as a mismatch, because a field named
+        `variant` on some future firmware need not mean the RF channel.
+        """
+        variants = self.list_variants()
+        if not variants:
+            return None
+        raw: dict = {}
+        for base, path in ((self.base, "/systemStatus"),
+                           (self.radar_base, "/sensors"),
+                           (self.radar_base, "/remoteProductInfo")):
+            try:
+                r = self._get(f"{base}{path}")
+            except requests.exceptions.RequestException:
+                continue
+            if r.status_code == 200:
+                try:
+                    raw[path] = r.json()
+                except ValueError:
+                    pass
+        found = _find_field(raw, VARIANT_KEYS)
+        return found if found in variants else None
 
     def set_channel(self, channel: str) -> None:
         """Set the radar's RF Channel (firmware >= 3.x only).
@@ -463,6 +587,9 @@ class MagosClient:
         Call this BEFORE set_network — changing the IP drops the connection this
         WebSocket rides on.
         """
+        # The one write that does not go through `_post`, so it carries its own
+        # guard: a WebSocket frame is invisible to the HTTP gate.
+        self._refuse_mutation(f"set the RF channel to {channel}")
         variants = self.list_variants()
         if not variants:
             log.info("Radar has no RF Channel setting (older firmware); skipping channel step.")
@@ -530,9 +657,8 @@ class MagosClient:
 
     # --- networking ---------------------------------------------------------
     def set_network(self, ip_cidr: str, gateway: str, dns: str) -> None:
-        cur = self.s.get(f"{self.base}/networking", timeout=self.timeout)
-        cur.raise_for_status()
-        net = cur.json()
+        self._refuse_mutation(f"move the radar to {ip_cidr}")
+        net = self.get_networking()
 
         iface = ipaddress.ip_interface(ip_cidr)
         ports = net.get("netInterfaces")
@@ -564,7 +690,7 @@ class MagosClient:
         # retry — so we don't have to hard-code the firmware's exact schema.
         for _ in range(10):
             try:
-                r = self.s.post(f"{self.base}/networking", json=net, timeout=self.timeout)
+                r = self._post(f"{self.base}/networking", json=net)
             except requests.exceptions.RequestException as e:
                 # No response usually means the IP changed and the socket died.
                 log.info("Connection dropped after sending networking change (expected): %s", e)
@@ -697,9 +823,10 @@ def main():
                     return
             print("Updating networking (do this last)...")
             client.set_network(ip_cidr, args.gateway, args.dns)
-            verify_device_at(ip_cidr, scheme=args.scheme, username=args.username,
-                             password=pwd, expect_substring=args.ip.split("/")[0],
-                             verify_tls=not args.insecure)
+            rows = verify_device_at(ip_cidr, scheme=args.scheme, username=args.username,
+                                    password=pwd, expect_substring=args.ip.split("/")[0],
+                                    verify_tls=not args.insecure)
+            print(format_verification(rows))
     except MagosError as e:
         sys.exit(f"ERROR: {e}")
 

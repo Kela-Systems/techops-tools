@@ -54,7 +54,9 @@ Every tool works the same way:
 - If a device is never detected, it's almost always plugged into the **wrong port / network**
 for that device — Magos uses a different network from the Teltonika and camera tools.
 - Each device ends up on a final `192.168.88.x` address. After that it will no longer answer on
-the factory address — that's expected, it means the move worked.
+the factory address — that's expected, it means the move worked. The tools also *look* for
+finished units on those addresses, which is what makes **Verify** (section 9) work; on the radar
+and the APU that means the bench adapter needs to reach `192.168.88.x` for a QA sweep.
 
 ---
 
@@ -64,7 +66,8 @@ the factory address — that's expected, it means the move worked.
 
 Radar opens on its own card; APU on another. Plug the unit in, then choose its **channel**
 (radar) or which **APU** it is (APU 0 or 1) and click configure. The tool sets the time and
-the device's permanent IP, then verifies it.
+the device's permanent IP, then reads the unit back on its new address and shows a table of
+checks — the same table the **Verify** button produces (section 9).
 
 **Radar: channel → address** (4 radars per system)
 
@@ -217,7 +220,7 @@ the switch to** `192.168.88.2` **as the last step**, then verifies it.
 
 ## 9. Checking a finished device — **Verify**  *(nothing is changed)*
 
-Next to **Configure** on every tool page except the Magos pair there is a **Verify** button. It
+Next to **Configure** on every tool page there is a **Verify** button. It
 checks a device that has **already** been configured and **changes nothing** — no password, no IP,
 no reboot. Use it when you want to be sure a unit is right before it goes in the box.
 
@@ -232,7 +235,10 @@ no reboot. Use it when you want to be sure a unit is right before it goes in the
 1. Plug the device in as usual, exactly as if you were going to configure it.
 2. Wait for it to be **detected**. A device that was already provisioned lives on its final
    `192.168.88.x` address, and the tools look for it there too — the page will say so
-   (*"already provisioned"* on the switch and router, *"already configured"* on the camera).
+   (*"already provisioned"* on the switch and router, *"already configured"* on the camera,
+   *"finished radar / finished APU detected"* on the two Magos tools). On the radar and the APU the
+   **Configure** button is greyed out for a finished unit, so a QA pass can't re-provision one by
+   accident; only Verify is offered.
 3. Click **Verify**. **There is nothing to type** — no site name, no label password. The tool
    looks up what this exact unit was configured to be and checks it against that.
 4. Read the check table. **Verified ✓** at the top and all-green rows means ready to ship.
@@ -256,6 +262,11 @@ add to the day's **done** count — it isn't another device provisioned.
    shared password.
 2. When it finishes, press **Verify** again.
 3. Still red? Set that unit aside and tell an engineer which row failed. Don't ship it.
+
+On the **radar and the APU** step 1 isn't available: those tools only configure a unit found on the
+factory `192.168.40.x` address, so **Configure** stays greyed out for a finished one. Tell an
+engineer instead of trying to force it — putting the unit back on its factory address means a
+factory reset, which is their call, not a bench step.
 
 **Two things worth knowing**
 

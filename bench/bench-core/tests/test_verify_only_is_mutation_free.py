@@ -1,4 +1,4 @@
-"""A verify-only run must not change the device (bench_core, TEC-348).
+"""A verify-only run must not change the device (TEC-348, TEC-851).
 
 "Mutation-free" is a claim about code nobody re-reads, so it gets two
 independent guards and this file tests both:
@@ -15,7 +15,16 @@ READ would make verification refuse to run. The first version did exactly that
 (`\\bsysupgrade\\b` matches `grep -v '^#' /etc/sysupgrade.conf`, a read the
 SIM-switch check makes on every OTD500), so every read the verification paths
 actually issue is pinned below.
+
+The second half of the file is the Magos pair. Their guard has nothing in
+common with this one — an HTTP API with a fixed set of endpoints instead of
+arbitrary shell, so it gates the request rather than screening a string — but
+the property being asserted is identical, and both halves belong wherever
+somebody goes to check that a Verify button cannot change a finished unit.
 """
+import sys
+from pathlib import Path
+
 import pytest
 
 from bench_core import (
@@ -23,6 +32,11 @@ from bench_core import (
     TeltonikaClient,
     _MUTATING_COMMANDS,
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "magos-config-ui"))
+from apu_configure import APUClient        # noqa: E402
+from magos_configure import MagosClient    # noqa: E402
+import magos_verify as magos               # noqa: E402
 
 SHARED = "Kelasys123!"
 
@@ -272,3 +286,209 @@ def test_mutation_blocked_is_not_absorbed_by_a_step_runner():
     # blocked mutation is a bug in the verify pipeline, not a device problem,
     # and must not be reported as one red row among many.
     assert not issubclass(MutationBlocked, SystemExit)
+
+
+# ── the Magos pair: the same property over an HTTP API (TEC-851) ─────────────
+#
+# No shell to screen here — every change is a POST to one of a handful of
+# dashboard endpoints. So the gate is on the request, which makes it stronger
+# than a deny-list (a write added later cannot fail to be covered) and gives it
+# one blind spot the tests below pin: the RF channel goes over a WebSocket.
+
+MAGOS_HOST = "192.168.88.51"
+APU_HOST = "192.168.88.60"
+
+
+class FakeMagosDevice:
+    """Records every request and answers reads plausibly, so a blocked write is
+    asserted on what reached the wire rather than on what the flag caught."""
+
+    def __init__(self):
+        self.requests: list[tuple[str, str]] = []
+        self.cookies = {"session": "abc"}
+        self.headers: dict = {}
+        self.verify = True
+
+    def get(self, url, **kw):
+        return self._answer("GET", url)
+
+    def post(self, url, json=None, **kw):
+        return self._answer("POST", url)
+
+    def _answer(self, method, url):
+        path = "/" + url.split("//", 1)[-1].split("/", 1)[-1]
+        self.requests.append((method, path))
+        return FakeMagosResponse(self._body(path))
+
+    def _body(self, path) -> dict:
+        if path.endswith("/system"):
+            return {"ntpServer": "192.168.88.10", "ntpAutomatic": False,
+                    "timezone": "Asia/Jerusalem"}
+        if path.endswith("/networking"):
+            return {"netInterfaces": {"port1": {
+                "ip4Method": "manual", "ip4Address": "192.168.88.51",
+                "ip4Netmask": "255.255.255.0", "ip4Gateway": "192.168.88.1",
+                "ip4DNS": ["192.168.88.1"]}}}
+        if path.endswith("/systemStatus"):
+            return {"serialNumber": "AR300-0091", "model": "AR-300",
+                    "softwareVersion": "3.1.2"}
+        if path.endswith("/apu/v1/settings"):
+            return {"radars": [{"radar_id": "radar_0",
+                                "remote_base_url": "http://192.168.88.50"}]}
+        return {}
+
+    @property
+    def writes(self) -> list[tuple[str, str]]:
+        """A POST to /login is a session, not a device change."""
+        return [(m, p) for m, p in self.requests
+                if m == "POST" and not p.endswith("/login")]
+
+
+class FakeMagosResponse:
+    def __init__(self, body, status_code=200):
+        self.status_code = status_code
+        self._body = body
+        self.headers: dict = {}
+
+    @property
+    def text(self):
+        return str(self._body)
+
+    def json(self):
+        return self._body
+
+    def raise_for_status(self):
+        pass
+
+
+def magos_client(cls=MagosClient, host=MAGOS_HOST, read_only=False):
+    c = cls(host)
+    c.s = FakeMagosDevice()
+    if read_only:
+        c.set_read_only()
+    return c
+
+
+MAGOS_MUTATORS = [
+    ("set_ntp", lambda c: c.set_ntp("192.168.88.10")),
+    ("set_channel", lambda c: c.set_channel("2")),
+    ("set_network", lambda c: c.set_network("192.168.88.99/24", "192.168.88.1",
+                                            "192.168.88.1")),
+]
+
+APU_MUTATORS = [
+    ("set_ntp_tz", lambda c: c.set_ntp_tz("192.168.88.10", "Asia/Jerusalem")),
+    ("set_radars", lambda c: c.set_radars([{"radar_id": "radar_0",
+                                           "ip": "192.168.88.50",
+                                           "name": "Radar 0"}])),
+    ("set_network", lambda c: c.set_network("port1", "192.168.88.99",
+                                           "255.255.255.0", "192.168.88.1",
+                                           "192.168.88.1")),
+]
+
+
+@pytest.mark.parametrize("name,call", MAGOS_MUTATORS, ids=[n for n, _ in MAGOS_MUTATORS])
+def test_every_radar_mutator_refuses_without_touching_the_device(name, call):
+    c = magos_client(read_only=True)
+    with pytest.raises(MutationBlocked):
+        call(c)
+    # Not "it was blocked" but "it never asked" — `set_ntp` reads the current
+    # settings before writing them, and on a verify run even that must not
+    # happen.
+    assert c.s.requests == []
+
+
+@pytest.mark.parametrize("name,call", APU_MUTATORS, ids=[n for n, _ in APU_MUTATORS])
+def test_every_apu_mutator_refuses_without_touching_the_device(name, call):
+    c = magos_client(APUClient, APU_HOST, read_only=True)
+    with pytest.raises(MutationBlocked):
+        call(c)
+    assert c.s.requests == []
+
+
+def test_the_rf_channel_is_refused_even_though_no_http_gate_sees_it():
+    # `set_channel` pushes the variant over the /radar/v1/detections WebSocket.
+    # The request gate cannot cover it, so it carries its own check — and this
+    # is the test that notices if somebody removes it.
+    c = magos_client(read_only=True)
+    with pytest.raises(MutationBlocked, match="RF channel"):
+        c.set_channel("2")
+
+
+@pytest.mark.parametrize("cls,host", [(MagosClient, MAGOS_HOST),
+                                      (APUClient, APU_HOST)])
+def test_any_post_other_than_login_is_refused_at_the_request(cls, host):
+    # The backstop, tested directly: a write added later is covered without
+    # anybody remembering to guard it.
+    c = magos_client(cls, host, read_only=True)
+    with pytest.raises(MutationBlocked):
+        c._post(f"{c.base}/some-endpoint-nobody-has-written-yet", json={})
+    assert c.s.requests == []
+
+
+@pytest.mark.parametrize("cls,host", [(MagosClient, MAGOS_HOST),
+                                      (APUClient, APU_HOST)])
+def test_logging_in_is_not_a_mutation(cls, host):
+    # A session is not a device change, and refusing it would make the mode
+    # unable to read anything at all.
+    c = magos_client(cls, host, read_only=True)
+    c.login("admin", SHARED)
+    assert c.s.writes == []
+
+
+@pytest.mark.parametrize("cls,host", [(MagosClient, MAGOS_HOST),
+                                      (APUClient, APU_HOST)])
+def test_a_read_only_magos_client_still_reads(cls, host):
+    # A guard that blocked the reads alongside the writes would make the mode
+    # useless while looking like it worked.
+    c = magos_client(cls, host, read_only=True)
+    assert c.get_system()["timezone"] == "Asia/Jerusalem"
+    assert c.get_networking()["netInterfaces"]["port1"]["ip4Method"] == "manual"
+
+
+@pytest.mark.parametrize("cls,host", [(MagosClient, MAGOS_HOST),
+                                      (APUClient, APU_HOST)])
+def test_read_only_is_off_by_default_on_the_magos_clients(cls, host):
+    # A flag you had to turn OFF to provision a device would be the wrong way
+    # round — the configure run is the normal case.
+    assert magos_client(cls, host).read_only is False
+
+
+MAGOS_SETTINGS = {"scheme": "http", "insecure": False, "username": "admin",
+                  "password": SHARED, "ntp": "192.168.88.10",
+                  "timezone": "Asia/Jerusalem", "netmask": "255.255.255.0",
+                  "gateway": "192.168.88.1", "dns": "192.168.88.1",
+                  "iface": "port1"}
+
+
+def test_a_radar_verify_pass_sends_only_reads_and_a_login():
+    # The strong guarantee, on the pass an operator actually presses: not "it
+    # was blocked", but "it never asked".
+    c = magos_client()
+    magos.verify_radar(c, settings=MAGOS_SETTINGS,
+                       resolve=lambda ident: ({"ip": MAGOS_HOST, "channel": "1"},
+                                              None),
+                       reached=MAGOS_HOST)
+    assert c.s.writes == []
+    assert [p for m, p in c.s.requests if m == "POST"] == ["/dshb/v1/login"]
+
+
+def test_an_apu_verify_pass_sends_only_reads_and_a_login():
+    c = magos_client(APUClient, APU_HOST)
+    magos.verify_apu(c, settings=MAGOS_SETTINGS,
+                     resolve=lambda ident: ({"ip": APU_HOST, "radars": []}, None),
+                     reached=APU_HOST)
+    assert c.s.writes == []
+    assert [p for m, p in c.s.requests if m == "POST"] == ["/dshb/v1/login"]
+
+
+@pytest.mark.parametrize("verify,cls,host", [
+    (magos.verify_radar, MagosClient, MAGOS_HOST),
+    (magos.verify_apu, APUClient, APU_HOST),
+])
+def test_a_magos_verify_pass_leaves_the_client_read_only(verify, cls, host):
+    c = magos_client(cls, host)
+    verify(c, settings=MAGOS_SETTINGS,
+           resolve=lambda ident: ({"ip": host, "channel": "1", "radars": []}, None),
+           reached=host)
+    assert c.read_only is True

@@ -122,7 +122,7 @@ RUTM08 arrive on `192.168.1.1`, the TSW202 on `192.168.1.2`.
 
 ### Verify: checking a finished device without changing it
 
-Every tool except the Magos pair has a **Verify** button next to Configure. It runs the same
+Every tool has a **Verify** button next to Configure. It runs the same
 checks a normal run ends with — against a device that was already provisioned — and **mutates
 nothing**: no password, no IP, no reboot, not even a `uci commit`. It needs nothing typed: the
 tool recovers what this unit was supposed to be from its own configure record (this station's
@@ -236,7 +236,7 @@ and every per-run JSON is written through one shared writer,
 benches — through `parse_run_record()`. Records carry `kind`
 (`configure` / `verify`), defaulting to `configure` when absent so every
 record written before the verify mode existed still reads correctly.
-- **Verify mode (TEC-348)** is one shared path, not five: `verify_supported`
+- **Verify mode (TEC-348, TEC-851)** is one shared path: `verify_supported`
 and the `verify_pipeline` hook on `BenchConfigurator`, the `POST /api/verify`
 route registered once in `build_app()`, the `verifying`/`verified` phases and
 their separate counts, and the expected-value lookup in
@@ -247,6 +247,13 @@ function; those set `client.set_read_only()` right after the login so the
 client itself refuses a write rather than trusting the pipeline to stay a
 read. What each check actually proves is catalogued in
 [`docs/verification-rows.md`](docs/verification-rows.md).
+The Magos pair reaches the same behaviour from its own engine: `MagosBench` is a
+full parallel implementation (own poll loop, auto/cycle state machine, settings
+persistence), so TEC-851 mirrored the orchestration onto it rather than porting
+the two tools. Everything that ships centrally *is* shared — the row schema, the
+`/api/verify` body, the record schema, the expected-value lookup and all of
+`bench.js` — and `tests/test_verify_ui.py` audits both bases' pages together so
+they cannot drift.
 - **Run provenance:** every per-run JSON (and history entry) is stamped with
 `operator`, `station_id`, `bench_version` and `config_hash`. The operator
 name is entered in the header of any tool page (badge scan or typed, once at

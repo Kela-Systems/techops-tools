@@ -17,6 +17,7 @@ from apu_configure import (
     firmware_version,
     radar_base_url,
 )
+import magos_bench
 from magos_bench import AUTO_IDLE_TIMEOUT_SEC, MISS_THRESHOLD
 
 apu = apu_mod.configurator
@@ -59,6 +60,7 @@ def clean_state(monkeypatch):
     apu._misses = 0
     apu.state.update({
         "phase": "waiting", "detected": False, "active_host": None, "busy": False,
+        "on_factory_ip": False, "settled_host": None,
         "message": "", "last_result": None, "history": [],
         "auto": {"enabled": False, "channel": None, "ip": None, "radar_ips": None},
         "cycle": {"enabled": False, "index": 0, "count": 0},
@@ -75,10 +77,16 @@ def device(monkeypatch):
 
 
 HOST = "192.168.40.60"
+FINISHED = "192.168.88.60"       # where a provisioned APU lives
 
 
-def poll(active):
-    asyncio.run(apu.poll_step(active))
+def poll(active, on_factory_ip=True):
+    asyncio.run(apu.poll_step(active, on_factory_ip))
+
+
+def poll_finished(active=FINISHED):
+    """An APU answering on a permanent address: finished, so Verify-only."""
+    poll(active, on_factory_ip=False)
 
 
 def unplug():
@@ -328,8 +336,13 @@ class FakeAPUClient:
 def fake_client(monkeypatch):
     FakeAPUClient.calls = []
     monkeypatch.setattr(apu_mod, "APUClient", FakeAPUClient)
-    monkeypatch.setattr(apu_mod, "verify_device_at",
-                        lambda *a, **k: {"verified": True, "detail": None})
+    # Both halves of the post-configure re-read are stubbed out: these tests are
+    # about the firmware gate, and the rows themselves are covered in
+    # test_apu_verify.py.
+    monkeypatch.setattr(apu_mod, "verify_device_at", lambda *a, **k: [
+        {"item": "reached at", "expected": "192.168.88.61",
+         "actual": "192.168.88.61", "ok": True}])
+    monkeypatch.setattr(apu_mod, "recheck_apu_at", lambda *a, **k: [])
     return FakeAPUClient
 
 
@@ -348,3 +361,164 @@ def test_firmware_gate_accepts_rc_build(fake_client):
     assert result["ok"] is True
     assert result["firmware"] == "3.1.2-rc5"
     assert fake_client.calls == ["ntp", ("radars", APU1_RADARS), "network"]
+
+
+def test_a_configure_run_records_the_same_rows_a_verify_pass_would(monkeypatch,
+                                                                  fake_client):
+    # The parity that makes the Verify button meaningful: an operator pressing it
+    # at the end of a batch has to see the table the provisioning run showed.
+    fake_client.version = REQUIRED_APU_FIRMWARE
+    monkeypatch.setattr(apu_mod, "recheck_apu_at", lambda *a, **k: [
+        {"item": "timezone", "expected": "Asia/Jerusalem",
+         "actual": "Asia/Jerusalem", "ok": True}])
+    result = apu.do_configure(apu.resolve_target("1", None), HOST, None)
+    assert [r["item"] for r in result["verification"]] == ["reached at", "timezone"]
+    assert result["verified"] is True
+    assert result["verify_detail"] is None
+
+
+def test_a_configure_run_that_cannot_be_re_read_is_not_verified(monkeypatch,
+                                                                fake_client):
+    # "Configured but NOT verified" stays a real end state — the mutations
+    # succeeded, and whether they took could not be established.
+    fake_client.version = REQUIRED_APU_FIRMWARE
+    monkeypatch.setattr(apu_mod, "verify_device_at", lambda *a, **k: [
+        {"item": "reached at", "expected": FINISHED,
+         "actual": "no HTTP answer", "ok": False}])
+    result = apu.do_configure(apu.resolve_target("1", None), HOST, None)
+    assert result["ok"] is True             # the writes went through
+    assert result["verified"] is False      # nothing confirms they took
+    assert "reached at" in result["verify_detail"]
+
+
+# ── detection of already-provisioned units (TEC-851) ─────────────────────────
+
+@pytest.fixture
+def answering(monkeypatch):
+    hosts = set()
+    monkeypatch.setattr(magos_bench, "probe_http",
+                        lambda host, *a, **k: host in hosts)
+    return hosts
+
+
+def test_the_sweep_covers_the_permanent_addresses(answering):
+    answering.add(FINISHED)
+    assert apu.detect() == (FINISHED, False)
+
+
+def test_a_fresh_apu_on_a_factory_address_wins(answering):
+    answering.update({HOST, FINISHED})
+    assert apu.detect() == (HOST, True)
+
+
+def test_a_finished_apu_is_offered_verify_not_configure():
+    poll_finished()
+    assert apu.state["phase"] == "detected"
+    assert apu.state["on_factory_ip"] is False
+    assert "Press Verify" in apu.state["message"]
+
+
+def test_auto_mode_never_configures_a_finished_apu(device):
+    apu.state["auto"] = {"enabled": True, "channel": "1", "ip": None,
+                         "radar_ips": None}
+    poll_finished()
+    assert device.runs == []
+
+
+def test_cycle_mode_never_configures_a_finished_apu(device):
+    apu.state["cycle"] = {"enabled": True, "index": 0, "count": 0}
+    poll_finished()
+    assert device.runs == []
+    assert apu.state["cycle"] == {"enabled": True, "index": 0, "count": 0}
+
+
+def test_the_configure_route_refuses_a_finished_apu():
+    poll_finished()
+    result = asyncio.run(apu.configure_request("0", None))
+    assert "already provisioned" in result["error"]
+
+
+def test_the_just_configured_apu_is_not_a_fresh_detection(device, answering):
+    poll(HOST)
+    asyncio.run(apu.run_configuration(apu.resolve_target("0", None), HOST))
+    assert apu.state["settled_host"] == FINISHED
+    answering.add(FINISHED)
+    assert apu.detect() == (None, False)
+
+
+# ── the verify pass (TEC-851) ────────────────────────────────────────────────
+
+@pytest.fixture
+def verifier(monkeypatch):
+    def fake(host, resolve):
+        return {
+            "ok": fake.ok, "skipped": False, "ip": host,
+            "identity": {"serial": "APU-001", "mac": "aa:bb",
+                         "model": "MSA1588APU"},
+            "raw": {}, "firmware": REQUIRED_APU_FIRMWARE, "steps": [], "log": "",
+            "error": None if fake.ok else "verify:controlled radars",
+            "verified": fake.ok,
+            "verify_detail": None if fake.ok else "failed: controlled radars",
+            "verification": [{"item": "controlled radars",
+                              "expected": "192.168.88.50, 192.168.88.51",
+                              "actual": "192.168.88.52", "ok": fake.ok}],
+        }
+
+    fake.ok = True
+    monkeypatch.setattr(apu, "do_verify", fake)
+    return fake
+
+
+def test_verify_refuses_when_nothing_is_detected():
+    assert "error" in asyncio.run(apu.verify_request())
+
+
+def test_verify_refuses_mid_run():
+    poll_finished()
+    apu.state["busy"] = True
+    assert asyncio.run(apu.verify_request())["error"] == \
+        "A run is already in progress."
+
+
+def test_a_verify_run_is_recorded_as_its_own_kind(verifier):
+    poll_finished()
+    asyncio.run(apu.verify_request())
+    entry = apu.state["history"][0]
+    assert entry["schema"] == RUN_RECORD_SCHEMA
+    assert entry["kind"] == "verify"
+    assert entry["tool"] == "magos-apu"
+    assert entry["status"] == "ok"
+    assert entry["firmware"] == REQUIRED_APU_FIRMWARE
+    assert entry["device"]["ip"] == FINISHED
+    assert "channel" not in entry["device"]
+    assert apu.state["phase"] == "verified"
+
+
+def test_operator_messages_spell_the_device_word_as_apu(verifier):
+    # str.capitalize() would render this tool's device_word as "Apu".
+    poll_finished()
+    assert "APU" in apu.state["message"] and "Apu" not in apu.state["message"]
+    asyncio.run(apu.verify_request())
+    assert "APU SN" in apu.state["message"]
+
+
+def test_a_failed_verify_run_ends_in_error(verifier):
+    verifier.ok = False
+    poll_finished()
+    asyncio.run(apu.verify_request())
+    assert apu.state["history"][0]["status"] == "error"
+    assert apu.state["phase"] == "error"
+
+
+def test_verify_runs_are_counted_separately_from_configures(device, verifier):
+    poll(HOST)
+    asyncio.run(apu.run_configuration(apu.resolve_target("0", None), HOST))
+    poll_finished()
+    asyncio.run(apu.verify_request())
+    assert apu.counts() == {"done": 1, "error": 0, "verified": 1,
+                            "verify_failed": 0}
+
+
+def test_the_verify_route_is_registered():
+    assert apu.verify_supported is True
+    assert "/api/verify" in {r.path for r in apu.build_app().routes}
