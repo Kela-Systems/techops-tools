@@ -21,7 +21,8 @@ def make_record(**over):
     stamps = {"operator": "Dana K", "station_id": "bench-1",
               "bench_version": "abc1234"}
     for key, value in over.items():
-        (kwargs if key in kwargs or key in ("ok", "error") else stamps)[key] = value
+        (kwargs if key in kwargs or key in ("ok", "error", "kind")
+         else stamps)[key] = value
     entry = build_run_entry(**kwargs)
     entry.update(stamps)
     if "timestamp" in over:
@@ -185,6 +186,52 @@ def test_migration_backfills_site_and_hostname(tmp_path):
     assert summary["hostname"] == "otd-old"
     assert [r["serial"] for r in
             client.get("/api/v1/runs?site=eilat").json()["runs"]] == ["SN-1"]
+
+
+# ── run kind: configure vs verify (TEC-348) ──────────────────────────────────
+
+def test_kind_is_queryable(client):
+    configured = make_record(serial="SN-A")
+    verified = make_record(serial="SN-A", kind="verify")
+    for record in (configured, verified):
+        assert client.post("/api/v1/runs", json=record).status_code == 201
+
+    both = client.get("/api/v1/runs?serial=SN-A").json()
+    assert {r["kind"] for r in both["runs"]} == {"configure", "verify"}
+
+    # The station-side lookup asks this exact question: what was this unit
+    # CONFIGURED as? A verify run carries no fresh intent, so it must not come
+    # back and be mistaken for one.
+    only_configure = client.get("/api/v1/runs?serial=SN-A&kind=configure").json()
+    assert [r["run_id"] for r in only_configure["runs"]] == [configured["run_id"]]
+
+
+def test_migration_backfills_kind_as_configure(tmp_path):
+    # A database from before the verify mode: every row in it mutated its
+    # device. Leaving kind NULL would make those rows invisible to the
+    # `kind=configure` lookup, i.e. every already-provisioned unit in the
+    # fleet would verify as "no prior run found".
+    db = tmp_path / "runs.db"
+    record = make_record(serial="SN-OLD")
+    stored = parse_run_record(record)
+    del stored["kind"]
+    with sqlite3.connect(db) as conn:
+        conn.execute("""CREATE TABLE runs (
+            run_id TEXT PRIMARY KEY, received_at TEXT NOT NULL, timestamp TEXT,
+            tool TEXT, status TEXT, serial TEXT, mac TEXT, model TEXT,
+            firmware TEXT, duration_s INTEGER, verified INTEGER, error TEXT,
+            operator TEXT, station_id TEXT, bench_version TEXT,
+            record TEXT NOT NULL)""")
+        conn.execute(
+            "INSERT INTO runs (run_id, received_at, timestamp, tool, status, "
+            "serial, record) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (record["run_id"], "2026-07-27T00:00:00+00:00",
+             record["timestamp"], "otd", "ok", record["serial"],
+             json.dumps(stored)))
+
+    client = TestClient(create_app(db))  # init_db migrates on startup
+    assert [r["serial"] for r in
+            client.get("/api/v1/runs?kind=configure").json()["runs"]] == ["SN-OLD"]
 
 
 def test_verified_comes_back_as_bool(client):
