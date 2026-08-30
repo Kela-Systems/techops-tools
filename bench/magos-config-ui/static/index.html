@@ -60,11 +60,22 @@
       <input id="manualIp" placeholder="e.g. 192.168.88.60 or 192.168.88.60/24" />
     </div>
 
-    <button id="configureBtn" class="btn-primary" style="margin-top:16px;width:100%;padding:12px;font-size:1rem;" onclick="configure()" disabled>
-      Configure radar
-    </button>
+    <div class="row" style="margin-top:16px;">
+      <button id="configureBtn" class="btn-primary" style="flex:1;padding:12px;font-size:1rem;" onclick="configure()" disabled>
+        Configure radar
+      </button>
+      <!-- Verify (TEC-851): checks a finished radar and changes nothing. Takes
+           no input — the tool looks up what this unit was configured to be. -->
+      <button id="verifyBtn" class="btn-outline" style="padding:12px;font-size:1rem;" disabled>
+        Verify
+      </button>
+    </div>
     <p class="muted" style="margin-top:10px;" id="configHint"></p>
     <div class="identity hidden" id="identity"></div>
+    <table class="verify hidden" id="verifyTable">
+      <thead><tr><th>check</th><th>result</th></tr></thead>
+      <tbody id="verifyBody"></tbody>
+    </table>
     <pre id="lastLog" class="log hidden"></pre>
   </div>
 
@@ -99,10 +110,18 @@
 
   <!-- HISTORY -->
   <div class="card">
-    <h3>Configured this session (<span id="histCount">0</span>)</h3>
+    <h3>This session (<span id="histCount">0</span>)</h3>
+    <!-- Verify counts are their own pills: a QA sweep re-checks radars that are
+         already in the done pile, so folding them in would double-count. -->
+    <div style="margin-bottom:8px;">
+      <span class="pill">done <b id="cDone">0</b></span>
+      <span class="pill">failed <b id="cErr">0</b></span>
+      <span class="pill">verified <b id="cVerified">0</b></span>
+      <span class="pill">verify failed <b id="cVerifyFailed">0</b></span>
+    </div>
     <table>
-      <thead><tr><th>Time</th><th>Model</th><th>Serial</th><th>MAC</th><th>Ch</th><th>New IP</th><th>Status</th></tr></thead>
-      <tbody id="histBody"><tr><td colspan="7" class="muted">Nothing configured yet.</td></tr></tbody>
+      <thead><tr><th>Time</th><th>Run</th><th>Model</th><th>Serial</th><th>MAC</th><th>Ch</th><th>IP</th><th>Status</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="8" class="muted">Nothing configured yet.</td></tr></tbody>
     </table>
     <p class="muted" style="margin-top:10px;">Step-by-step logs are saved under <span class="mono">magos-config-ui/logs/</span> (one JSON per radar, plus a rolling <span class="mono">magos-config.log</span>).</p>
   </div>
@@ -115,11 +134,18 @@ let channelIps = {};
 let selectedChannel = null;   // "0".."3" or "other"
 let settingsOpen = false;
 let lastPhase = null;
+const verifyBtn = mountVerifyButton('verifyBtn');
 
-function statusBadge(h) {
-  if (h.status !== 'ok') return '<span class="badge badge-err">FAILED</span>';
-  if (h.verified) return '<span class="badge badge-ok">OK ✓</span>';
-  return `<span class="badge badge-warn" title="${esc(h.verify_detail || 'not confirmed at the new IP')}">OK (unverified)</span>`;
+// A verify row badged DONE would read as "this radar was provisioned", which is
+// the one thing it does not mean.
+function statusBadge(r) {
+  if (r.kind === 'verify') {
+    return r.status === 'ok' ? '<span class="badge badge-ok">PASS</span>'
+                             : '<span class="badge badge-err">FAIL</span>';
+  }
+  if (r.status !== 'ok') return '<span class="badge badge-err">FAILED</span>';
+  if (r.verified) return '<span class="badge badge-ok">OK ✓</span>';
+  return `<span class="badge badge-warn" title="${esc(r.verify_detail || 'not confirmed at the new IP')}">OK (unverified)</span>`;
 }
 
 function buildChannels() {
@@ -217,7 +243,10 @@ function updateConfigureBtn() {
   const btn = $('configureBtn');
   // In auto or cycle mode there's no manual button — configuration happens on detect.
   btn.classList.toggle('hidden', autoOn || cycleOn);
-  const ready = s.phase === 'detected' && !s.busy && selectedChannel !== null
+  // `on_factory_ip` is the gate: a radar found on its permanent address is
+  // finished, and offering to configure it invites re-provisioning a done unit.
+  const ready = s.phase === 'detected' && !s.busy && s.on_factory_ip
+    && selectedChannel !== null
     && (selectedChannel !== 'other' || $('manualIp').value.trim() !== '');
   btn.disabled = !ready;
 }
@@ -225,6 +254,10 @@ function updateConfigureBtn() {
 function render(s) {
   window._state = s;
   cfg = s.config || {};
+  verifyBtn.update(s);
+  // Whether a run of either kind was in flight on the previous frame — the
+  // edge the auto-advance below keys off.
+  const wasRunning = isRunning({ phase: lastPhase });
   if (JSON.stringify(channelIps) !== JSON.stringify(s.channel_ips)) {
     channelIps = s.channel_ips; buildChannels();
   }
@@ -233,7 +266,8 @@ function render(s) {
   const st = $('status');
   st.className = 'status s-' + s.phase;
   const labels = { waiting: 'Waiting for radar', detected: 'New radar detected',
-                   configuring: 'Configuring…', configured: 'Configured ✓', error: 'Error' };
+                   configuring: 'Configuring…', configured: 'Configured ✓',
+                   verifying: 'Verifying…', verified: 'Verified ✓', error: 'Error' };
   $('phaseText').textContent = labels[s.phase] || s.phase;
   $('msgText').textContent = s.message || '';
 
@@ -242,9 +276,9 @@ function render(s) {
   if (s.net_warning) { nw.textContent = '⚠ ' + s.net_warning; nw.classList.remove('hidden'); }
   else { nw.classList.add('hidden'); }
 
-  // icon: spinner while configuring, pulsing dot while waiting
+  // icon: spinner while a run of either kind is in flight, pulsing dot while waiting
   const icon = $('statusIcon');
-  if (s.phase === 'configuring') { icon.className = 'spin'; }
+  if (isRunning(s)) { icon.className = 'spin'; }
   else { icon.className = 'dot' + (s.phase === 'waiting' || s.phase === 'detected' ? ' pulse' : ''); }
 
   // one-time "pop" + scroll-into-view the moment a radar is first detected,
@@ -306,10 +340,12 @@ function render(s) {
     $('autoHint').textContent = 'Pick a target below, then turn this on — every radar that gets plugged in is configured automatically.';
   }
 
-  // auto-advance channel after a successful manual configure (off in auto/cycle
-  // mode, where the server drives the target)
-  if (!auto.enabled && !cycle.enabled && s.phase === 'configured' && lastPhase === 'configuring'
-      && s.last_result && s.last_result.status === 'ok') {
+  // auto-advance channel after a successful manual CONFIGURE (off in auto/cycle
+  // mode, where the server drives the target — and off after a verify pass,
+  // which assigned nothing to advance from)
+  if (!auto.enabled && !cycle.enabled && s.phase === 'configured'
+      && s.last_result && s.last_result.status === 'ok'
+      && s.last_result.kind !== 'verify' && wasRunning) {
     const nxt = nextChannel((s.last_result.device||{}).channel);
     if (nxt !== null) selectChannel(nxt);
   }
@@ -318,21 +354,26 @@ function render(s) {
   // configure hint
   const hint = $('configHint');
   if (s.phase === 'waiting')      hint.textContent = 'No radar reachable at ' + (cfg.hosts || []).join(' / ') + '. Plug one in.';
+  else if (s.phase === 'detected' && !s.on_factory_ip) hint.textContent = 'This radar is already provisioned — press Verify to check it. Nothing will be changed.';
   else if (s.phase === 'detected') hint.textContent = 'Radar is reachable. Pick a channel, then Configure.';
   else if (s.phase === 'configured') hint.textContent = 'Unplug this radar and plug in the next one — selection auto-advanced.';
+  else if (s.phase === 'verified') hint.textContent = 'Nothing was changed. Unplug this radar and plug in the next one to check it.';
   else hint.textContent = '';
   updateConfigureBtn();
 
-  // radar identity (SN / MAC / model) of the most recent radar
+  // radar identity (SN / MAC / model) of the most recent radar, plus the check
+  // table for whichever kind of run produced it
   const idEl = $('identity');
   const lr = s.last_result;
   if (lr && (lr.serial || lr.model || lr.mac)) {
     idEl.innerHTML = `
       <span>model <b>${esc(lr.model || 'unknown')}</b></span>
       <span>serial <b class="mono">${esc(lr.serial || 'unknown')}</b></span>
-      <span>MAC <b class="mono">${esc(lr.mac || 'unknown')}</b></span>`;
+      <span>MAC <b class="mono">${esc(lr.mac || 'unknown')}</b></span>` +
+      (lr.kind === 'verify' ? '<span><b>verify — nothing was changed</b></span>' : '');
     idEl.classList.remove('hidden');
   } else { idEl.classList.add('hidden'); }
+  renderVerifyTable(lr && lr.verification, 'verifyTable', 'verifyBody');
 
   // last log (timestamped steps)
   const log = $('lastLog');
@@ -353,21 +394,27 @@ function render(s) {
     <span>dns <b>${esc(cfg.dns)}</b></span>
     <span>mask <b>${esc(cfg.netmask)}</b></span>`;
 
-  // history
+  // session counts + history
   $('histCount').textContent = s.history.length;
+  const c = s.counts || { done: 0, error: 0, verified: 0, verify_failed: 0 };
+  $('cDone').textContent = c.done;
+  $('cErr').textContent = c.error;
+  $('cVerified').textContent = c.verified || 0;
+  $('cVerifyFailed').textContent = c.verify_failed || 0;
   const body = $('histBody');
   if (!s.history.length) {
-    body.innerHTML = '<tr><td colspan="7" class="muted">Nothing configured yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="muted">Nothing configured yet.</td></tr>';
   } else {
-    body.innerHTML = s.history.map(h => `
+    body.innerHTML = s.history.map(r => `
       <tr>
-        <td class="muted">${esc(h.time)}</td>
-        <td>${esc(h.model || '—')}</td>
-        <td class="mono">${esc(h.serial || '—')}</td>
-        <td class="mono">${esc(h.mac || '—')}</td>
-        <td>${esc((h.device||{}).channel)}</td>
-        <td>${esc((h.device||{}).ip)}</td>
-        <td>${statusBadge(h)}</td>
+        <td class="muted">${esc(r.time)}</td>
+        <td class="muted">${r.kind === 'verify' ? 'verify' : 'configure'}</td>
+        <td>${esc(r.model || '—')}</td>
+        <td class="mono">${esc(r.serial || '—')}</td>
+        <td class="mono">${esc(r.mac || '—')}</td>
+        <td>${esc((r.device||{}).channel || '—')}</td>
+        <td>${esc((r.device||{}).ip)}</td>
+        <td>${statusBadge(r)}</td>
       </tr>`).join('');
   }
 }

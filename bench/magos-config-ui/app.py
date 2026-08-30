@@ -20,9 +20,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from bench_core.bench_ui import StepCollector
-from bench_core.run_record import build_run_entry
+from bench_core.run_record import build_run_entry, verification_outcome
 
 from magos_bench import MagosBench
+from magos_verify import recheck_radar_at, verify_radar
 from magos_configure import (
     CHANNEL_IPS,
     DEFAULT_DNS,
@@ -103,6 +104,8 @@ class RadarBench(MagosBench):
     channel_ips = CHANNEL_IPS
     uses_radar_ip = False
     config_section = "ar300"   # UI settings edits persist into this file section
+    record_tool = "magos-radar"
+    verify_supported = True
 
     def resolve_target(self, channel: Optional[str], ip: Optional[str],
                        radar_ip: Optional[str] = None) -> Optional[dict]:
@@ -115,11 +118,15 @@ class RadarBench(MagosBench):
 
     def do_configure(self, target: dict, host: str,
                      avoid_serial: Optional[str]) -> dict:
-        """login → identity → NTP → RF channel → networking → verify. Never raises.
+        """login → identity → NTP → RF channel → networking → re-read. Never raises.
 
         When `channel` is a channel number, the radar's RF channel is set to the
         matching variant before the IP change (firmware >= 3.x; older radars are
         left untouched). Manual-IP runs don't touch the channel.
+
+        The re-read at the end produces the same verification rows a Verify pass
+        does (TEC-851), on a read-only client, so the two agree about what a
+        finished radar has to look like.
         """
         ip = target["ip"]
         channel = target["channel"]
@@ -131,7 +138,9 @@ class RadarBench(MagosBench):
         identity = {"serial": "unknown", "mac": "unknown", "model": "unknown"}
         raw: dict = {}
         error: Optional[str] = None
-        ok = skipped = verified = False
+        ok = skipped = False
+        verified: Optional[bool] = False
+        verification: list[dict] = []
         verify_detail: Optional[str] = None
         try:
             self.log.info("Detected radar at %s — starting configuration.", host)
@@ -153,12 +162,18 @@ class RadarBench(MagosBench):
                 if channel in CHANNEL_IPS:
                     client.set_channel(channel)
                 client.set_network(ip_cidr, self.cfg["gateway"], self.cfg["dns"])
-                vres = verify_device_at(ip_cidr, scheme=self.cfg["scheme"],
-                                        username=self.cfg["username"], password=self.cfg["password"],
-                                        expect_substring=ip.split("/")[0],
-                                        verify_tls=not self.cfg["insecure"])
-                verified = vres["verified"]
-                verify_detail = vres["detail"]
+                verification = verify_device_at(
+                    ip_cidr, scheme=self.cfg["scheme"],
+                    username=self.cfg["username"], password=self.cfg["password"],
+                    expect_substring=ip.split("/")[0],
+                    verify_tls=not self.cfg["insecure"])
+                # Only worth re-reading the rest once it has answered at all —
+                # the row above already says why it hasn't, if it hasn't.
+                if verification[0]["ok"]:
+                    verification += recheck_radar_at(
+                        ip_cidr.split("/")[0], settings=self.cfg,
+                        expected={"channel": channel, "ip": ip_cidr})
+                verified, verify_detail = verification_outcome(verification)
                 self.log.info("Configuration complete — radar should now be at %s.", ip_cidr)
                 ok = True
         except Exception as e:  # MagosError + any requests/network error
@@ -173,6 +188,53 @@ class RadarBench(MagosBench):
             "ok": ok, "skipped": skipped, "ip": ip_cidr, "identity": identity,
             "raw": raw, "steps": steps, "log": log_text, "error": error,
             "verified": verified, "verify_detail": verify_detail,
+            "verification": verification,
+        }
+
+    def do_verify(self, host: str, resolve) -> dict:
+        """Re-check a finished radar, changing nothing (TEC-851). Never raises.
+
+        Unlike a configure run this one has no target: what the unit was meant
+        to be is recovered from its configure record by `resolve`.
+        """
+        collector = StepCollector()
+        self.log.addHandler(collector)
+        set_log_serial(None)
+
+        identity = {"serial": "unknown", "mac": "unknown", "model": "unknown"}
+        raw: dict = {}
+        error: Optional[str] = None
+        ok = False
+        verified: Optional[bool] = False
+        verification: list[dict] = []
+        verify_detail: Optional[str] = None
+        try:
+            self.log.info("Verifying the radar at %s — nothing will be changed.", host)
+            client = MagosClient(host, scheme=self.cfg["scheme"],
+                                 verify=not self.cfg["insecure"])
+            result = verify_radar(client, settings=self.cfg, resolve=resolve,
+                                  reached=host)
+            identity = result["identity"]
+            raw = identity.pop("raw", {})
+            verification = result["verification"]
+            verified, verify_detail = result["verified"], result["verify_detail"]
+            ok = result["ok"]
+            if not ok:
+                error = "; ".join(f"verify:{c['item']}" for c in verification
+                                  if c["ok"] is False)
+        except Exception as e:  # MagosError + any requests/network error
+            error = str(e)
+            self.log.error("Verification FAILED: %s", e)
+        finally:
+            self.log.removeHandler(collector)
+
+        steps = collector.steps
+        log_text = "\n".join(f"[{s['level']}] [{s['sn']}] {s['msg']}" for s in steps)
+        return {
+            "ok": ok, "skipped": False, "ip": host, "identity": identity,
+            "raw": raw, "steps": steps, "log": log_text, "error": error,
+            "verified": verified, "verify_detail": verify_detail,
+            "verification": verification,
         }
 
     def build_entry(self, target: dict, host: str, result: dict,
@@ -188,6 +250,7 @@ class RadarBench(MagosBench):
             duration_s=duration,
             verified=result["verified"],
             verify_detail=result["verify_detail"],
+            verification=result.get("verification") or [],
             steps=result["steps"],
             log=result["log"],
             device={
@@ -199,11 +262,36 @@ class RadarBench(MagosBench):
             },
         )
 
+    def build_verify_entry(self, host: str, result: dict, duration: int) -> dict:
+        """A verify run's record. The `device` block carries what the unit was
+        checked AGAINST, recovered from its configure run, so the record stands
+        on its own — `channel` is absent because a verify pass never assigns one.
+        """
+        ident = result["identity"]
+        return build_run_entry(
+            tool="magos-radar",
+            ok=result["ok"],
+            error=result["error"],
+            serial=ident["serial"],
+            mac=ident["mac"],
+            model=ident["model"],
+            duration_s=duration,
+            verified=result["verified"],
+            verify_detail=result["verify_detail"],
+            verification=result["verification"],
+            steps=result["steps"],
+            log=result["log"],
+            device={
+                "ip": result["ip"],
+                "from_host": host,
+                "ntp": self.cfg["ntp"],
+                "timezone": self.cfg["timezone"],
+            },
+        )
+
     def success_message(self, ident: dict, result: dict, target: dict) -> str:
-        verified_note = (" Verified at the new IP." if result["verified"]
-                         else f" NOT verified: {result['verify_detail']}.")
         return (f"Configured {ident['model']} (SN {ident['serial']}) as {result['ip']}."
-                + verified_note + " Unplug it and plug in the next one.")
+                + self.verified_note(result) + " Unplug it and plug in the next one.")
 
     def register_routes(self, app: FastAPI) -> None:
         @app.post("/api/settings")

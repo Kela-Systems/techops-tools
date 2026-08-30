@@ -23,7 +23,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from bench_core.bench_ui import StepCollector
-from bench_core.run_record import build_run_entry
+from bench_core.run_record import build_run_entry, verification_outcome
 
 from apu_configure import (
     APUClient,
@@ -44,6 +44,7 @@ from apu_configure import (
     radars_from_ips,
 )
 from magos_bench import MagosBench
+from magos_verify import recheck_apu_at, verify_apu
 from magos_configure import (
     MagosError,
     load_factory_defaults,
@@ -116,6 +117,8 @@ class ApuBench(MagosBench):
     channel_ips = APU_CHANNEL_IPS
     uses_radar_ip = True
     config_section = "apu"     # UI settings edits persist into this file section
+    record_tool = "magos-apu"
+    verify_supported = True
 
     def extra_public_state(self) -> dict:
         return {"apu_radars": APU_RADAR_ASSIGNMENTS}
@@ -146,7 +149,11 @@ class ApuBench(MagosBench):
     def do_configure(self, target: dict, host: str,
                      avoid_serial: Optional[str]) -> dict:
         """login → identity → firmware gate → NTP/TZ → controlled radars →
-        networking → verify. Never raises."""
+        networking → re-read. Never raises.
+
+        The re-read produces the same verification rows a Verify pass does
+        (TEC-851), on a read-only client.
+        """
         ip = target["ip"]
         radars = target.get("radars") or []
         collector = StepCollector()
@@ -157,7 +164,9 @@ class ApuBench(MagosBench):
         raw: dict = {}
         firmware: Optional[str] = None
         error: Optional[str] = None
-        ok = skipped = verified = False
+        ok = skipped = False
+        verified: Optional[bool] = False
+        verification: list[dict] = []
         verify_detail: Optional[str] = None
         try:
             self.log.info("Detected APU at %s — starting configuration.", host)
@@ -184,11 +193,15 @@ class ApuBench(MagosBench):
                     client.set_radars(radars)
                 client.set_network(self.cfg["iface"], ip, self.cfg["netmask"],
                                    self.cfg["gateway"], self.cfg["dns"])
-                vres = verify_device_at(ip, scheme=self.cfg["scheme"],
-                                        username=self.cfg["username"], password=self.cfg["password"],
-                                        expect_substring=ip, verify_tls=not self.cfg["insecure"])
-                verified = vres["verified"]
-                verify_detail = vres["detail"]
+                verification = verify_device_at(
+                    ip, scheme=self.cfg["scheme"],
+                    username=self.cfg["username"], password=self.cfg["password"],
+                    expect_substring=ip, verify_tls=not self.cfg["insecure"])
+                if verification[0]["ok"]:
+                    verification += recheck_apu_at(
+                        ip, settings=self.cfg, firmware=firmware,
+                        expected={"ip": ip, "radars": radars})
+                verified, verify_detail = verification_outcome(verification)
                 self.log.info("Configuration complete — APU should now be at %s.", ip)
                 ok = True
         except Exception as e:  # MagosError + any requests/network error
@@ -203,6 +216,56 @@ class ApuBench(MagosBench):
             "ok": ok, "skipped": skipped, "ip": ip, "identity": identity, "raw": raw,
             "firmware": firmware, "steps": steps, "log": log_text, "error": error,
             "verified": verified, "verify_detail": verify_detail,
+            "verification": verification,
+        }
+
+    def do_verify(self, host: str, resolve) -> dict:
+        """Re-check a finished APU, changing nothing (TEC-851). Never raises.
+
+        The firmware gate is a ROW here, not a refusal: on a configure run a
+        pre-3.1.2 unit is turned away before anything is written, but a finished
+        unit on the wrong firmware is a QA finding and belongs in the table.
+        """
+        collector = StepCollector()
+        self.log.addHandler(collector)
+        set_log_serial(None)
+
+        identity = {"serial": "unknown", "mac": "unknown", "model": "unknown"}
+        raw: dict = {}
+        firmware: Optional[str] = None
+        error: Optional[str] = None
+        ok = False
+        verified: Optional[bool] = False
+        verification: list[dict] = []
+        verify_detail: Optional[str] = None
+        try:
+            self.log.info("Verifying the APU at %s — nothing will be changed.", host)
+            client = APUClient(host, scheme=self.cfg["scheme"],
+                               verify=not self.cfg["insecure"])
+            result = verify_apu(client, settings=self.cfg, resolve=resolve,
+                                reached=host)
+            identity = result["identity"]
+            raw = identity.pop("raw", {})
+            firmware = result.get("firmware")
+            verification = result["verification"]
+            verified, verify_detail = result["verified"], result["verify_detail"]
+            ok = result["ok"]
+            if not ok:
+                error = "; ".join(f"verify:{c['item']}" for c in verification
+                                  if c["ok"] is False)
+        except Exception as e:  # MagosError + any requests/network error
+            error = str(e)
+            self.log.error("Verification FAILED: %s", e)
+        finally:
+            self.log.removeHandler(collector)
+
+        steps = collector.steps
+        log_text = "\n".join(f"[{s['level']}] [{s['sn']}] {s['msg']}" for s in steps)
+        return {
+            "ok": ok, "skipped": False, "ip": host, "identity": identity, "raw": raw,
+            "firmware": firmware, "steps": steps, "log": log_text, "error": error,
+            "verified": verified, "verify_detail": verify_detail,
+            "verification": verification,
         }
 
     def build_entry(self, target: dict, host: str, result: dict,
@@ -220,6 +283,7 @@ class ApuBench(MagosBench):
             duration_s=duration,
             verified=result["verified"],
             verify_detail=result["verify_detail"],
+            verification=result.get("verification") or [],
             steps=result["steps"],
             log=result["log"],
             device={
@@ -233,13 +297,40 @@ class ApuBench(MagosBench):
             },
         )
 
+    def build_verify_entry(self, host: str, result: dict, duration: int) -> dict:
+        """A verify run's record. `channel` and the radar assignment are absent:
+        a verify pass assigns nothing, and what it checked against is already in
+        the configure record it looked up."""
+        ident = result["identity"]
+        return build_run_entry(
+            tool="magos-apu",
+            ok=result["ok"],
+            error=result["error"],
+            serial=ident["serial"],
+            mac=ident["mac"],
+            model=ident["model"],
+            firmware=result.get("firmware"),
+            duration_s=duration,
+            verified=result["verified"],
+            verify_detail=result["verify_detail"],
+            verification=result["verification"],
+            steps=result["steps"],
+            log=result["log"],
+            device={
+                "ip": result["ip"],
+                "radar_ip": "—",
+                "from_host": host,
+                "ntp": self.cfg["ntp"],
+                "timezone": self.cfg["timezone"],
+            },
+        )
+
     def success_message(self, ident: dict, result: dict, target: dict) -> str:
         radars = self._radars_summary(target.get("radars") or [])
-        verified_note = (" Verified at the new IP." if result["verified"]
-                         else f" NOT verified: {result['verify_detail']}.")
         return (f"Configured {ident['model']} (SN {ident['serial']}) as {result['ip']}"
                 + (f", controlling {radars}" if radars else "")
-                + "." + verified_note + " Unplug it and plug in the next one.")
+                + "." + self.verified_note(result)
+                + " Unplug it and plug in the next one.")
 
     def register_routes(self, app: FastAPI) -> None:
         @app.post("/api/settings")

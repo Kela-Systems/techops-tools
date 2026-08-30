@@ -26,6 +26,7 @@ import os
 import sys
 import time
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +40,7 @@ from bench_core.bench_ui import (
     OPERATOR_FILENAME,
     OperatorBody,
     OperatorStore,
+    VerifyBody,
     bench_version,
     install_loop_exception_handler,
     prune_json_logs,
@@ -48,6 +50,8 @@ from bench_core.bench_ui import (
 )
 from bench_core.central import start_central_uploader
 from bench_core.config_check import config_fingerprint
+from bench_core.history import resolve_expected
+from bench_core.run_record import KIND_CONFIGURE, KIND_VERIFY
 
 # The Magos device clients log through the "magos" logger; reuse its line format
 # so step lines render the same in every tool.
@@ -87,6 +91,14 @@ class MagosBench:
     uses_radar_ip: bool = False           # APU also targets controlled radars
     config_section: str = ""              # this tool's section of the config file
                                           # ("ar300" / "apu"); "" = no persistence
+    record_tool: str = ""                 # this tool's name in the run records
+                                          # ("magos-radar" / "magos-apu"), which is
+                                          # also how a verify pass finds the unit's
+                                          # own configure run
+    # Opt in to the mutation-free Verify pass (TEC-851). Off by default so a
+    # subclass without `do_verify` gets no route and no button rather than a
+    # button that errors.
+    verify_supported: bool = False
 
     def __init__(self, base_dir: Path, default_cfg: dict) -> None:
         self.base_dir = base_dir
@@ -148,9 +160,19 @@ class MagosBench:
 
     def _initial_state(self) -> dict:
         return {
-            "phase": "waiting",          # waiting|detected|configuring|configured|error
+            # waiting|detected|configuring|configured|verifying|verified|error
+            "phase": "waiting",
             "detected": False,
-            "active_host": None,         # the factory IP the current unit answered on
+            "active_host": None,         # the address the current unit answered on
+            # Whether that address is a FACTORY one. A unit found on its
+            # permanent address is a finished unit: it can be verified, and it
+            # must never be configured — least of all by a hands-free mode
+            # (TEC-851).
+            "on_factory_ip": False,
+            # The permanent address of the unit we just configured. It answers
+            # there for as long as it stays plugged in, and re-detecting it would
+            # mean the "plug in the next one" prompt never came back.
+            "settled_host": None,
             "busy": False,
             "message": f"Waiting for a {self.device_word} at {self._hosts_str()}...",
             "last_result": None,
@@ -168,8 +190,17 @@ class MagosBench:
             "net_warning": None,
         }
 
+    @property
+    def device_word_cap(self) -> str:
+        """`device_word` at the start of a sentence. Not `str.capitalize()`,
+        which lowercases the rest and renders the APU tool's word as "Apu"."""
+        return self.device_word[:1].upper() + self.device_word[1:]
+
     def _hosts_str(self) -> str:
         return " / ".join(self.cfg.get("hosts", [])) or "(no hosts set)"
+
+    def _verify_hosts_str(self) -> str:
+        return " / ".join(self.verify_hosts()) or "(none)"
 
     @property
     def cycle_channels(self) -> list:
@@ -190,6 +221,16 @@ class MagosBench:
         raw, steps, log, error, verified, verify_detail."""
         raise NotImplementedError
 
+    def do_verify(self, host: str, resolve) -> dict:
+        """Re-check a finished unit in a worker thread, changing nothing
+        (TEC-851); never raises. Same result contract as `do_configure`, plus
+        `verification` — the rows the shared table renders.
+
+        `resolve` is `verify_resolver()`: call it once, with the identity, as
+        soon as the unit says what it is (see there for why the timing matters).
+        """
+        raise NotImplementedError
+
     def build_entry(self, target: dict, host: str, result: dict,
                     duration: int) -> dict:
         """Build the per-unit history entry from a configure result, via
@@ -197,8 +238,29 @@ class MagosBench:
         — per-family fields go in `device`."""
         raise NotImplementedError
 
+    def build_verify_entry(self, host: str, result: dict, duration: int) -> dict:
+        """`build_entry` for a verify run, which has no target. `kind` is stamped
+        by `run_verification` afterwards."""
+        raise NotImplementedError
+
     def success_message(self, ident: dict, result: dict, target: dict) -> str:
         raise NotImplementedError
+
+    @staticmethod
+    def verified_note(result: dict) -> str:
+        """The verification half of a configure run's success line.
+
+        Three outcomes, not two: rows that could not be read collapse to None,
+        and "I could not check" must not be worded like a pass — "configured but
+        NOT verified" is a real end state on these tools and the operator has to
+        be able to see it.
+        """
+        verified = result.get("verified")
+        if verified:
+            return " Verified at the new address — all checks passed."
+        if verified is None:
+            return " NOT verified — the checks could not be run."
+        return f" NOT verified — {result.get('verify_detail') or 'checks failed'}."
 
     def extra_public_state(self) -> dict:
         return {}
@@ -218,34 +280,91 @@ class MagosBench:
                 return host_str, default_port
         return host_str, default_port
 
-    def first_reachable_host(self) -> Optional[str]:
-        """First factory host where a dashboard answers HTTP (not just an open
-        port — a router squatting on the IP no longer reads as 'detected')."""
-        for candidate in self.cfg.get("hosts", []):
-            if probe_http(candidate, scheme=self.cfg["scheme"],
-                          timeout=DETECT_TIMEOUT_SEC, verify=not self.cfg["insecure"]):
-                return candidate
-        return None
+    def verify_hosts(self) -> list[str]:
+        """The permanent addresses a FINISHED unit lives on — the same
+        channel→IP map the tool provisions from, so an operator who changed a
+        channel's address in settings gets it swept without saying so twice.
+
+        Detection covers these as well as the factory hosts (TEC-851): a
+        provisioned radar or APU has long since left 192.168.40.x, so without
+        this there is nothing to press Verify on.
+        """
+        return [str(ip).split("/")[0] for ip in self.channel_ips.values()]
+
+    def _answering(self, hosts: list[str]) -> set[str]:
+        """Which of `hosts` a dashboard answers on, probed in parallel.
+
+        In parallel because the list is now the factory hosts plus every
+        permanent address: probed one after another at DETECT_TIMEOUT_SEC each,
+        a bench with nothing plugged in would take longer to sweep than the poll
+        interval it is being swept from.
+        """
+        if not hosts:
+            return set()
+        scheme, verify = self.cfg["scheme"], not self.cfg["insecure"]
+        with ThreadPoolExecutor(max_workers=min(16, len(hosts))) as pool:
+            futures = {pool.submit(probe_http, host, scheme, DETECT_TIMEOUT_SEC,
+                                   verify): host for host in hosts}
+            return {futures[f] for f in as_completed(futures) if f.result()}
+
+    def detect(self) -> tuple[Optional[str], bool]:
+        """Where a unit is answering and whether that is a factory address.
+
+        Factory hosts win: a fresh unit is the common case and the one with work
+        to do. A hit on a permanent address is a finished unit — except when it
+        is the one we just configured, which is still sitting on the bench and
+        must keep reading as "done, unplug it" rather than as a new arrival.
+        """
+        factory = list(self.cfg.get("hosts", []))
+        permanent = [h for h in self.verify_hosts() if h not in factory]
+        answering = self._answering(factory + permanent)
+
+        settled = self.state.get("settled_host")
+        if settled and settled not in answering:
+            # Unplugged at last. A unit that answers there later is a different
+            # one (or the same one brought back for a QA sweep), so let it be
+            # detected again.
+            self.state["settled_host"] = None
+            settled = None
+
+        for candidate in factory:
+            if candidate in answering:
+                return candidate, True
+        for candidate in permanent:
+            if candidate in answering and candidate != settled:
+                return candidate, False
+        return None, False
 
     def net_warning(self) -> Optional[str]:
-        """Warn when no local adapter sits on the factory subnet — without this,
-        a wrong NIC setup is indistinguishable from 'nothing plugged in'."""
+        """Warn when no local adapter can reach either subnet — without this, a
+        wrong NIC setup is indistinguishable from 'nothing plugged in'.
+
+        Either subnet, because the two things an operator does here need
+        different ones: provisioning happens on the factory 192.168.40.x, an
+        end-of-batch Verify sweep on the permanent 192.168.88.x.
+        """
         if not self.cfg.get("hosts"):
             return "No factory hosts configured."
-        for candidate in self.cfg["hosts"]:
+        for candidate in list(self.cfg["hosts"]) + self.verify_hosts():
             host, _ = self._split_host_port(candidate)
             if is_on_link(host):
                 return None
         return (f"This PC has no network adapter on the factory subnet "
-                f"({self._hosts_str()}) — {self.device_word}s cannot be detected. "
-                "Set the adapter to a static 192.168.40.x address.")
+                f"({self._hosts_str()}) or on the subnet finished units live on "
+                f"({self._verify_hosts_str()}) — {self.device_word}s cannot be "
+                "detected. Set the adapter to a static 192.168.40.x address to "
+                "configure, or 192.168.88.x to verify a finished unit.")
 
     # ── per-unit logging ──────────────────────────────────────────────────────
 
     def _save_log(self, entry: dict, raw: dict) -> Optional[str]:
+        # Verify records lead with `verify_` so the two kinds of run are tellable
+        # apart in logs/ without opening anything — an operator asked to send
+        # "the log for that unit" picks the right file.
+        prefix = ("verify_" if entry.get("kind") == KIND_VERIFY else "") + self.log_prefix
         return save_run_record(self.log_dir, entry,
                                name_stem=entry.get("serial"),
-                               prefix=self.log_prefix,
+                               prefix=prefix,
                                extra={"raw_identity_payloads": raw},
                                logger=self.log)
 
@@ -263,6 +382,19 @@ class MagosBench:
         return run_stamp(self.operator_store.get(), self.station_id,
                          self.bench_version, self.config_hash)
 
+    def counts(self) -> dict:
+        """Session tallies, with verify runs counted separately: a QA sweep
+        re-checks units that are already in the "done" pile, so folding the two
+        together would double-count the batch."""
+        configures = [h for h in self.state["history"]
+                      if h.get("kind", KIND_CONFIGURE) == KIND_CONFIGURE]
+        verifies = [h for h in self.state["history"]
+                    if h.get("kind") == KIND_VERIFY]
+        done = sum(1 for h in configures if h["status"] == "ok")
+        passed = sum(1 for h in verifies if h["status"] == "ok")
+        return {"done": done, "error": len(configures) - done,
+                "verified": passed, "verify_failed": len(verifies) - passed}
+
     def public_state(self) -> dict:
         return {
             **self.state,
@@ -275,6 +407,9 @@ class MagosBench:
                                     # worth self-checking (unlike the RUTM/OTD tools)
             "password_set": bool(self.cfg.get("password")),
             "channel_ips": self.channel_ips,
+            "verify_hosts": self.verify_hosts(),
+            "verify_supported": self.verify_supported,
+            "counts": self.counts(),
             **self.extra_public_state(),
         }
 
@@ -300,7 +435,7 @@ class MagosBench:
             self.state["busy"] = False
             self.state["phase"] = "configured"
             self.state["message"] = (
-                f"{self.device_word.capitalize()} SN {avoid} was already configured "
+                f"{self.device_word_cap} SN {avoid} was already configured "
                 f"and is still answering on {host} — unplug it and plug in the next one.")
             return None
 
@@ -316,6 +451,10 @@ class MagosBench:
         if result["ok"]:
             if ident["serial"] not in (None, "", "unknown"):
                 self.state["last_ok_serial"] = ident["serial"]
+            # It now answers on its permanent address, which detection also
+            # sweeps. Remember it so the unit still on the bench reads as "done,
+            # unplug it" instead of as a finished unit that just turned up.
+            self.state["settled_host"] = str(result["ip"]).split("/")[0]
             self.state["phase"] = "configured"
             self.state["message"] = self.success_message(ident, result, target)
         else:
@@ -323,11 +462,92 @@ class MagosBench:
             self.state["message"] = f"Configuration failed: {result['error']}"
         return entry
 
+    # ── the verify pass (shared orchestration, TEC-851) ───────────────────────
+
+    def verify_resolver(self, overrides: Optional[dict] = None):
+        """A callable `(identity) -> (expected, prior_run_row)` for a verify pass
+        to invoke once it knows what unit it is talking to.
+
+        A callable rather than pre-computed values because the lookup key is the
+        serial, and the serial comes off the device — so it cannot be resolved
+        before the pass has logged in.
+
+        `prior_run_row` is a FAILING row when no configure record exists
+        anywhere. A pass must include it, not drop it: without it a unit nobody
+        ever provisioned verifies green, and TEC-352 prints it a label.
+        """
+        def resolve(identity: dict) -> tuple[dict, Optional[dict]]:
+            expected, prior_row, source = resolve_expected(
+                self.log_dir,
+                serial=(identity or {}).get("serial", "") or "",
+                mac=(identity or {}).get("mac", "") or "",
+                tool=self.record_tool,
+                overrides=overrides or {})
+            self.log.info("Verifying against the %s configure record.", source)
+            return expected, prior_row
+
+        return resolve
+
+    async def run_verification(self, host: str,
+                               overrides: Optional[dict] = None) -> dict:
+        """Re-check one finished unit and record it as a `kind: "verify"` run.
+
+        Deliberately the same shape as `run_configuration` — a verify pass is a
+        first-class run with its own record, not a configure run with its steps
+        skipped, because "verified OK" is what an end-of-batch sweep counts and
+        what earns a QA label.
+        """
+        self.state["busy"] = True
+        self.state["phase"] = "verifying"
+        self.state["message"] = (f"Verifying the {self.device_word} at {host} — "
+                                 "nothing will be changed...")
+
+        loop = asyncio.get_event_loop()
+        run_t0 = time.monotonic()
+        resolve = self.verify_resolver(overrides)
+        result = await loop.run_in_executor(None, self.do_verify, host, resolve)
+        duration = int(time.monotonic() - run_t0)
+        ident = result["identity"]
+
+        entry = self.build_verify_entry(host, result, duration)
+        entry["kind"] = KIND_VERIFY
+        entry.update(self.run_stamp())  # who / where / which code (TEC-345)
+        entry["log_file"] = self._save_log(entry, result["raw"])
+
+        self.state["history"].insert(0, entry)
+        del self.state["history"][HISTORY_MAX:]
+        self.state["last_result"] = entry
+        self.state["busy"] = False
+
+        if result["ok"]:
+            self.state["phase"] = "verified"
+            self.state["message"] = (
+                f"{self.device_word_cap} SN {ident['serial']} PASSED "
+                "verification — nothing was changed. Unplug it and plug in the "
+                "next one.")
+        else:
+            self.state["phase"] = "error"
+            self.state["message"] = (
+                f"{self.device_word_cap} SN {ident['serial']} FAILED "
+                f"verification: {result['error']}")
+        return entry
+
+    async def verify_request(self, overrides: Optional[dict] = None) -> dict:
+        host = self.state["active_host"]
+        if not self.state["detected"] or not host:
+            return {"error": f"No {self.device_word} is currently detected to verify."}
+        if self.state["busy"]:
+            return {"error": "A run is already in progress."}
+        await self.run_verification(host, overrides)
+        return self.public_state()
+
     # ── detection loop ────────────────────────────────────────────────────────
 
-    async def poll_step(self, active: Optional[str]) -> None:
-        """One detection-loop iteration given the reachable host (or None).
-        Split out from the loop so the auto/cycle decision logic is testable."""
+    async def poll_step(self, active: Optional[str],
+                        on_factory_ip: bool = True) -> None:
+        """One detection-loop iteration given the reachable host (or None) and
+        whether it is a factory address. Split out from the loop so the
+        auto/cycle decision logic is testable."""
         # A configuration is running — mid-run the unit changes IP and briefly
         # drops, so leave detection state untouched until it finishes (matches
         # the Teltonika tools). Done first so a run isn't disturbed by a blip.
@@ -338,6 +558,7 @@ class MagosBench:
         self._misses = 0 if reachable else self._misses + 1
         self.state["detected"] = reachable
         self.state["active_host"] = active
+        self.state["on_factory_ip"] = reachable and on_factory_ip
 
         phase = self.state["phase"]
         auto = self.state["auto"]
@@ -359,7 +580,20 @@ class MagosBench:
             return
 
         if reachable:
-            if phase in ("waiting", "detected") and cycle["enabled"]:
+            if not on_factory_ip:
+                # A finished unit, answering on the address it was provisioned
+                # to. There is nothing to configure and everything to check, so
+                # it is Verify-only — and deliberately invisible to auto and
+                # cycle mode, which exist to provision fresh units and would
+                # otherwise re-provision a unit somebody brought back for QA.
+                if phase in ("waiting", "detected"):
+                    self.state["phase"] = "detected"
+                    # Rebuilt every poll, not just on the way in: swapping a
+                    # fresh unit for a finished one inside the miss window leaves
+                    # the phase at "detected", and the banner would otherwise
+                    # still be telling the operator to pick a channel for it.
+                    self.state["message"] = self._detected_message()
+            elif phase in ("waiting", "detected") and cycle["enabled"]:
                 channel = self.cycle_channels[cycle["index"]]
                 target = self.resolve_target(channel, None, None)
                 entry = await self.run_configuration(target, active, guard_repeat=True)
@@ -373,15 +607,17 @@ class MagosBench:
                     await self.run_configuration(target, active, guard_repeat=True)
                 elif phase != "detected":
                     self.state["phase"] = "detected"
-                    self.state["message"] = (f"{word.capitalize()} detected at {active} "
-                                             "(auto armed, but no target set).")
-            elif phase == "waiting":
+                    self.state["message"] = (f"{self.device_word_cap} detected at "
+                                             f"{active} (auto armed, but no "
+                                             "target set).")
+            elif phase in ("waiting", "detected"):
                 self.state["phase"] = "detected"
-                self.state["message"] = (f"{word.capitalize()} detected at {active}. "
-                                         "Pick a channel and configure it.")
-            # phase == configured/error while still plugged in: wait for unplug.
+                self.state["message"] = self._detected_message()   # see above
+            # phase == configured/verified/error while still plugged in: wait for
+            # unplug.
         else:  # nothing reachable for MISS_THRESHOLD polls in a row
-            if phase in ("detected", "configured", "error") and self._misses >= MISS_THRESHOLD:
+            if (phase in ("detected", "configured", "verified", "error")
+                    and self._misses >= MISS_THRESHOLD):
                 self.state["phase"] = "waiting"
                 if cycle["enabled"]:
                     nxt = self.cycle_channels[cycle["index"]]
@@ -397,9 +633,9 @@ class MagosBench:
         loop = asyncio.get_event_loop()
         while True:
             try:
-                active = await loop.run_in_executor(None, self.first_reachable_host)
+                active, on_factory = await loop.run_in_executor(None, self.detect)
                 self.state["net_warning"] = await loop.run_in_executor(None, self.net_warning)
-                await self.poll_step(active)
+                await self.poll_step(active, on_factory)
             except Exception:
                 self.log.exception("Detection loop error — recovering on next poll.")
             await asyncio.sleep(POLL_INTERVAL_SEC)
@@ -457,6 +693,14 @@ class MagosBench:
             return {"error": f"No {self.device_word} is currently detected to configure."}
         if self.state["busy"]:
             return {"error": "A configuration is already in progress."}
+        if not self.state["on_factory_ip"]:
+            # A finished unit answering on its permanent address. Re-provisioning
+            # it would be a mistake nobody asked for, so this is a refusal rather
+            # than a warning.
+            return {"error": (f"The {self.device_word} at {self.state['active_host']} "
+                              "is already provisioned — press Verify to check it. "
+                              f"To configure a fresh {self.device_word}, plug one in "
+                              "on the factory subnet.")}
         target = self.resolve_target(channel, ip, radar_ips)
         if not target:
             return {"error": f"Provide a channel ({'/'.join(self.channel_ips)}) "
@@ -509,12 +753,22 @@ class MagosBench:
                 self.state["message"] = self._idle_message("Cycle stopped.")
         return self.public_state()
 
+    def _detected_message(self) -> str:
+        """What the banner says about the unit on the bench. A unit found on its
+        permanent address is finished: telling the operator to pick a channel for
+        it would be inviting them to re-provision a unit that is already done."""
+        host = self.state["active_host"]
+        if not self.state["on_factory_ip"]:
+            return (f"Finished {self.device_word} detected at {host}. Press Verify "
+                    "to check it — nothing will be changed.")
+        return (f"{self.device_word_cap} detected at {host}. "
+                "Pick a channel and configure it.")
+
     def dismiss(self) -> dict:
         self.state["last_result"] = None
         self.state["phase"] = "detected" if self.state["detected"] else "waiting"
         if self.state["detected"]:
-            self.state["message"] = (f"{self.device_word.capitalize()} detected at "
-                                     f"{self.state['active_host']}. Pick a channel and configure it.")
+            self.state["message"] = self._detected_message()
         else:
             self.state["message"] = f"Waiting for a {self.device_word} at {self._hosts_str()}..."
         return self.public_state()
@@ -535,7 +789,7 @@ class MagosBench:
 
     def _idle_message(self, prefix: str) -> str:
         if self.state["detected"]:
-            return f"{prefix} {self.device_word.capitalize()} detected at {self.state['active_host']}."
+            return f"{prefix} {self._detected_message()}"
         return f"Waiting for a {self.device_word} at {self._hosts_str()}..."
 
     def _cycle_start_message(self, first_channel: str) -> str:
@@ -588,6 +842,14 @@ class MagosBench:
             name = self.operator_store.set(body.operator)
             self.log.info("Operator set to '%s'.", name or "(cleared)")
             return self.public_state()
+
+        # The Verify route is the shared one (same path, same body, same
+        # "nothing typed" contract as the five BenchConfigurator tools), so the
+        # shared button in bench.js works here untouched.
+        if self.verify_supported:
+            @app.post("/api/verify")
+            async def verify(body: VerifyBody):
+                return await self.verify_request(dict(body.expected or {}))
 
         @app.websocket("/ws/state")
         async def ws_state(websocket: WebSocket):

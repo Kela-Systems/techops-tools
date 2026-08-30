@@ -139,7 +139,8 @@
   <h2 id="magos">4. Magos Radar &amp; APU <span class="pill magos">network 192.168.40.x</span></h2>
   <p>Radar opens on its own card; APU on another. Plug the unit in, then choose its <b>channel</b>
      (radar) or which <b>APU</b> it is (0 or 1) and click configure. The tool sets the time and
-     the device's permanent IP, then verifies it.</p>
+     the device's permanent IP, then reads the unit back on its new address and shows a table of
+     checks — the same table the <b>Verify</b> button produces (section 9).</p>
 
   <h3>Radar: channel → address <span class="pill magos">4 radars per system</span></h3>
   <table>
@@ -242,7 +243,7 @@
 
   <!-- 9 -->
   <h2 id="verify">9. Checking a finished device — Verify <span class="pill">no changes made</span></h2>
-  <p>Next to <b>Configure</b> on every tool page except the Magos pair there is a <b>Verify</b>
+  <p>Next to <b>Configure</b> on every tool page there is a <b>Verify</b>
      button. It checks a device that has <b>already</b> been configured and <b>changes nothing</b> —
      no password, no IP, no reboot. Use it when you want to be sure a unit is right before it goes
      in the box.</p>
@@ -260,7 +261,9 @@
     <li>Wait for it to be <b>detected</b>. A device that was already provisioned lives on its final
         <code>192.168.88.x</code> address and the tools look for it there too — the page says so
         (<i>"already provisioned"</i> on the switch and router, <i>"already configured"</i> on the
-        camera).</li>
+        camera, <i>"finished radar / finished APU detected"</i> on the two Magos tools). On the radar
+        and the APU, <b>Configure</b> is greyed out for a finished unit, so a QA pass can't
+        re-provision one by accident.</li>
     <li>Click <b>Verify</b>. <b>There is nothing to type</b> — no site name, no label password. The
         tool looks up what this exact unit was configured to be and checks it against that.</li>
     <li>Read the check table. <b>Verified ✓</b> at the top with all-green rows means ready to ship.</li>
@@ -293,6 +296,10 @@
     <li>Still red? Set that unit aside and tell an engineer which row failed. Don't ship it.</li>
   </ol>
 
+  <div class="note">On the <b>radar and the APU</b> step 1 isn't available: those tools only
+    configure a unit found on the factory <code>192.168.40.x</code> address, so <b>Configure</b>
+    stays greyed out for a finished one. Tell an engineer instead of trying to force it — putting the
+    unit back on its factory address means a factory reset, which is their call, not a bench step.</div>
   <div class="note"><b>"prior run — none found on this station or in bench-central"</b> means nobody
     can say what this unit was supposed to be: it was never provisioned by us, or it was done on a
     station whose records never reached bench-central. Tell an engineer rather than guessing.</div>
