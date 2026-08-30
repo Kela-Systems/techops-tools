@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from bench_core import tcp_port_open
 from bench_core.bench_ui import (
     DETECT_TIMEOUT_SEC,
+    TERMINAL_PHASES,
     BenchConfigurator,
     read_device_mac,
 )
@@ -38,10 +39,13 @@ from raythink_configure import (
     DEFAULT_OCTET_MAX,
     DEFAULT_OCTET_MIN,
     DEFAULT_SCAN_SUBNETS,
+    camera_hosts,
     configure_camera,
     device_name,
+    find_camera,
     resolve_profile,
     target_ip_for,
+    verify_camera,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -78,6 +82,8 @@ class RaythinkConfigurator(BenchConfigurator):
     logger_name = "raythink"
     tailscale_label = "raythink"
     history_limit = 30
+    verify_supported = True    # mutation-free re-check of a finished camera (TEC-348)
+    record_tool = "raythink"
 
     # ── helpers: octet range + persisted cycle counter ───────────────────────
 
@@ -130,10 +136,12 @@ class RaythinkConfigurator(BenchConfigurator):
     def initial_state(self) -> dict:
         cycle_next, ip_mode = self._load_ip_state()
         return {
-            "phase": "waiting",        # waiting|detected|configuring|configured|error
+            "phase": "waiting",        # waiting|detected|configuring|configured|
+                                       # verifying|verified|error
             "detected": False,
             "active_host": None,
             "active_mac": None,
+            "on_factory_ip": False,    # False also means "nothing detected"
             "busy": False,
             "ip_mode": ip_mode,        # one of IP_MODES
             "cycle_next": cycle_next,
@@ -167,6 +175,12 @@ class RaythinkConfigurator(BenchConfigurator):
     # ── pipeline hooks ────────────────────────────────────────────────────────
 
     def hostname_for(self, inputs: dict) -> str:
+        """The name this run is about. A verify run may have neither an octet nor
+        a record yet (the record is keyed on the serial, which needs a login), so
+        fall back to the address detection found — the base only needs this for
+        the "Verifying …" line."""
+        if inputs.get("verifying") and inputs.get("octet") is None:
+            return f"the camera at {inputs.get('host') or 'the bench network'}"
         return device_name(inputs.get("octet"))
 
     def client_host(self, inputs: dict) -> str:
@@ -187,6 +201,40 @@ class RaythinkConfigurator(BenchConfigurator):
                                 octet=inputs.get("octet"), settings=run_cfg,
                                 mac=inputs.get("mac") or "")
 
+    def verify_pipeline(self, client, run_cfg: dict, inputs: dict) -> dict:
+        """Mutation-free re-check of a finished camera (TEC-348)."""
+        return verify_camera(client, settings=run_cfg,
+                             resolve=self.verify_resolver(inputs),
+                             profile_name=inputs.get("profile") or "",
+                             octet=inputs.get("octet"),
+                             ip_mode=inputs.get("ip_mode") or "")
+
+    def verify_inputs(self, body) -> dict:
+        """A camera has two per-unit expectations — which address the bench gave
+        it and which profile it got — so both can be stated by the operator when
+        the record is missing or wrong. Blank means "use the record".
+
+        `octet` is validated rather than trusted: an out-of-range one would
+        silently produce an expected address no camera could ever have.
+        """
+        inputs = super().verify_inputs(body)
+        overrides = inputs["expected_overrides"]
+        inputs["verifying"] = True
+        inputs["profile"] = str(overrides.get("profile") or "").strip()
+        inputs["ip_mode"] = "dhcp" if overrides.get("ip_mode") == "dhcp" else ""
+        octet = overrides.get("octet")
+        lo, hi = self._octet_range()
+        try:
+            inputs["octet"] = int(octet) if str(octet or "").strip() else None
+        except (TypeError, ValueError):
+            inputs["octet"] = None
+        if inputs["octet"] is not None and not (lo <= inputs["octet"] <= hi):
+            inputs["octet"] = None
+        return inputs
+
+    def verify_label(self, inputs: dict) -> str:
+        return f"the camera on {inputs.get('host') or 'the bench network'}"
+
     def build_entry(self, result: dict, inputs: dict, duration: int) -> dict:
         ident = result["identity"]
         return build_run_entry(
@@ -203,12 +251,18 @@ class RaythinkConfigurator(BenchConfigurator):
             steps=result["steps"],
             log=result["log"],
             device={
+                # Both pipelines report the name authoritatively as `hostname`:
+                # the one configure ASSIGNED, or the one verify CHECKED AGAINST
+                # (recovered from the configure record).
                 "hostname": result["hostname"],
-                "profile": inputs["profile"],
+                # A verify run's profile/address are what it checked against, so
+                # they come off the result rather than the request — the request
+                # may well have carried neither.
+                "profile": result.get("profile", inputs.get("profile", "")),
                 # The address the bench assigned — empty on a DHCP run, where
                 # the lease belongs to the DHCP server (it shows in the run's
                 # verification rows instead).
-                "ip": inputs["target_ip"],
+                "ip": result.get("ip", inputs.get("target_ip", "")),
                 "ip_mode": result.get("ip_mode", "static"),
             },
         )
@@ -225,6 +279,10 @@ class RaythinkConfigurator(BenchConfigurator):
         return (f"Configured camera {where} (SN {entry['serial']}) via "
                 f"'{dev['profile']}' in {took}. Connect the next camera.")
 
+    def verify_message(self, result: dict, entry: dict, took: str) -> str:
+        return (f"{result.get('name') or 'The camera'} PASSED verification in "
+                f"{took} — nothing was changed. Connect the next camera.")
+
     def dismiss_message(self) -> str:
         return "Connect the next camera…"
 
@@ -234,27 +292,50 @@ class RaythinkConfigurator(BenchConfigurator):
         port = 443 if self.cfg.get("scheme", "http") == "https" else 80
         return tcp_port_open(host, port, timeout=DETECT_TIMEOUT_SEC)
 
+    def _find_camera(self) -> Optional[str]:
+        """Where a camera is answering: the factory address, or anywhere in the
+        assigned static range.
+
+        The range half is what makes Verify reachable (TEC-348) — a camera this
+        bench already moved to 192.168.88.31 is invisible to a tool that only
+        ever probes the factory address. The last-seen address is tried alone
+        first, so the common case costs one connection.
+        """
+        scheme = self.cfg.get("scheme", "http")
+        return find_camera(camera_hosts(self.cfg),
+                           443 if scheme == "https" else 80, scheme,
+                           first_guess=self.state.get("active_host"))
+
     async def poll_once(self, loop) -> None:
         if self.state["busy"]:
             return  # mid-run the camera reboots / changes IP — leave detection alone
 
-        host = self.cfg.get("host", DEFAULT_HOST)
-        reachable = await loop.run_in_executor(None, self._reachable, host)
-        self.state["detected"] = reachable
+        host = await loop.run_in_executor(None, self._find_camera)
+        self.state["detected"] = bool(host)
 
-        if reachable:
+        if host:
             self.state["active_host"] = host
             mac = await loop.run_in_executor(None, read_device_mac, host)
             self.state["active_mac"] = mac
-            if self.state["phase"] in ("configured", "error"):
-                return  # a run finished but the camera is still on the factory IP
+            # A camera on the factory address is fresh; one in the assigned
+            # range has been through this tool already, which is what the page
+            # uses to make Verify the primary action.
+            factory = self.cfg.get("host", DEFAULT_HOST)
+            self.state["on_factory_ip"] = host == factory
+            if self.state["phase"] in TERMINAL_PHASES:
+                return  # a run finished but the camera is still answering
             self.state["phase"] = "detected"
-            self.state["message"] = (f"Camera detected on {host} (MAC {mac or 'unknown'}). "
-                                     "Pick a profile and the IP, then Configure.")
+            self.state["message"] = (
+                f"Camera detected on {host} (MAC {mac or 'unknown'}). "
+                + ("Pick a profile and the IP, then Configure."
+                   if host == factory
+                   else "It is already on an assigned address — press Verify to "
+                        "check it, or Configure to redo it."))
         else:
             self.state["active_host"] = None
             self.state["active_mac"] = None
-            if self.state["phase"] in ("detected", "configured", "error"):
+            self.state["on_factory_ip"] = False
+            if self.state["phase"] in ("detected", *TERMINAL_PHASES):
                 self.state["phase"] = "waiting"
                 self.state["message"] = "Connect the next camera…"
 

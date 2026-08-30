@@ -28,9 +28,9 @@ from pydantic import BaseModel
 from bench_core import DEFAULT_TIMEZONE, DEFAULT_USERNAME
 from bench_core.bench_ui import (
     DETECT_TIMEOUT_SEC,
+    TERMINAL_PHASES,
     BenchConfigurator,
     read_device_mac,
-    save_run_record,
 )
 from bench_core.run_record import build_run_entry
 
@@ -44,6 +44,7 @@ from tsw_configure import (
     EXPECTED_MODEL,
     TswClient,
     configure_tsw,
+    verify_tsw,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -65,12 +66,15 @@ class TswConfigurator(BenchConfigurator):
     tailscale_label = "tsw"   # unused — the switch baseline has no Tailscale step
     history_limit = 30  # full step logs per entry — the JSON files are the archive
     label_scan_enabled = True  # read the factory password off the QR label (TEC-349)
+    verify_supported = True    # mutation-free re-check of a finished switch (TEC-348)
+    record_tool = "tsw"
 
     # ── state ────────────────────────────────────────────────────────────────
 
     def initial_state(self) -> dict:
         return {
-            "phase": "waiting",        # waiting|detected|configuring|configured|error
+            "phase": "waiting",        # waiting|detected|configuring|configured|
+                                       # verifying|verified|error
             "detected": False,
             "active_host": None,       # the address the switch answered on
             "active_mac": None,
@@ -136,6 +140,16 @@ class TswConfigurator(BenchConfigurator):
         return configure_tsw(client, initial_password=inputs["initial_password"],
                              settings=run_cfg)
 
+    def verify_pipeline(self, client, run_cfg: dict, inputs: dict) -> dict:
+        """Mutation-free re-check of a finished switch (TEC-348).
+
+        Nothing about the TSW202 baseline is per-unit, so the only thing the
+        history lookup contributes here is whether this switch has a configure
+        record at all — a unit nobody provisioned must not verify green.
+        """
+        return verify_tsw(client, settings=run_cfg,
+                          resolve=self.verify_resolver(inputs))
+
     def build_entry(self, result: dict, inputs: dict, duration: int) -> dict:
         ident = result["identity"]
         return build_run_entry(
@@ -159,16 +173,20 @@ class TswConfigurator(BenchConfigurator):
             },
         )
 
-    def _save_log(self, entry: dict) -> Optional[str]:
+    def log_name_stem(self, entry: dict) -> Optional[str]:
         """Name the per-run JSON after the serial. The shared writer defaults to
         `device.hostname`, which this tool doesn't have — and the serial is the
         better handle anyway: it's what's on the sticker someone reads back."""
-        return save_run_record(self.log_dir, entry, name_stem=entry.get("serial"),
-                               logger=self.logger)
+        return entry.get("serial")
 
     def success_message(self, result: dict, entry: dict, took: str) -> str:
         return (f"Configured TSW202 SN {entry['serial']} at "
                 f"{entry['device']['ip']} in {took}. "
+                "Unplug it and plug in the next one.")
+
+    def verify_message(self, result: dict, entry: dict, took: str) -> str:
+        return (f"TSW202 SN {entry['serial']} at {entry['device']['ip']} PASSED "
+                f"verification in {took} — nothing was changed. "
                 "Unplug it and plug in the next one.")
 
     def dismiss_message(self) -> str:
@@ -207,7 +225,7 @@ class TswConfigurator(BenchConfigurator):
             mac = await loop.run_in_executor(None, read_device_mac, host)
             self.state["active_mac"] = mac
 
-            if self.state["phase"] in ("configured", "error"):
+            if self.state["phase"] in TERMINAL_PHASES:
                 pass  # still plugged in after a run; wait for unplug
             else:
                 self.state["phase"] = "detected"
@@ -225,7 +243,7 @@ class TswConfigurator(BenchConfigurator):
             self.state["active_host"] = None
             self.state["active_mac"] = None
             self.state["at_final_lan"] = False
-            if self.state["phase"] in ("detected", "configured", "error"):
+            if self.state["phase"] in ("detected", *TERMINAL_PHASES):
                 self.state["phase"] = "waiting"
                 self.state["message"] = "Plug in the next TSW202…"
 

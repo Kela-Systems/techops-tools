@@ -215,7 +215,63 @@ the switch to** `192.168.88.2` **as the last step**, then verifies it.
 
 
 
-## 9. Known issues & quick fixes
+## 9. Checking a finished device — **Verify**  *(nothing is changed)*
+
+Next to **Configure** on every tool page except the Magos pair there is a **Verify** button. It
+checks a device that has **already** been configured and **changes nothing** — no password, no IP,
+no reboot. Use it when you want to be sure a unit is right before it goes in the box.
+
+**When to use it**
+
+- **End of a batch.** Before boxing, plug each finished unit back in and press Verify.
+- **A unit you're not sure about** — came back from a job, sat on the shelf, someone else did it.
+- **After a failed run that you retried** and want a clean second opinion on.
+
+**How to do it**
+
+1. Plug the device in as usual, exactly as if you were going to configure it.
+2. Wait for it to be **detected**. A device that was already provisioned lives on its final
+   `192.168.88.x` address, and the tools look for it there too — the page will say so
+   (*"already provisioned"* on the switch and router, *"already configured"* on the camera).
+3. Click **Verify**. **There is nothing to type** — no site name, no label password. The tool
+   looks up what this exact unit was configured to be and checks it against that.
+4. Read the check table. **Verified ✓** at the top and all-green rows means ready to ship.
+
+**Reading the result**
+
+| What you see | What it means |
+| --- | --- |
+| Green **PASS** rows, header *Verified ✓* | The unit is what it should be. Unplug and box it. |
+| Any red **FAIL** row | **Don't ship it.** See below. |
+| Amber *skip* / *cannot confirm* rows | Not a failure. The tool is telling you it couldn't check that one thing (usually no signal at the bench) rather than pretending it's fine. |
+
+The session counters keep the two kinds apart: **verified** / **verify failed** are their own
+pills, and the history table's **Run** column says `verify` or `configure`. A verify pass does not
+add to the day's **done** count — it isn't another device provisioned.
+
+**If a row fails**
+
+1. Leave the device plugged in and click **Configure** (that one *is* allowed to change things).
+   On the Teltonika tools leave the label-password field **empty** — the unit is already on the
+   shared password.
+2. When it finishes, press **Verify** again.
+3. Still red? Set that unit aside and tell an engineer which row failed. Don't ship it.
+
+**Two things worth knowing**
+
+- **"prior run — none found on this station or in bench-central"** means nobody can say what this
+  unit was supposed to be: it was never provisioned by us, or it was done on a station whose
+  records never reached bench-central. Tell an engineer rather than guessing.
+- **OTD500 without an antenna** will report the 4G row as *cannot confirm* — the modem hasn't
+  attached to a network, so the tool won't claim it's on 4G. Expected at the bench.
+- Verify needs the bench adapter to reach `192.168.88.x` (same as the last step of a normal run).
+  If a finished unit is never detected, that's the usual cause.
+
+---
+
+
+
+## 10. Known issues & quick fixes
 
 **A tool card stays grey**
 The tool isn't up yet. On the first start of the day it's still installing — wait a minute and it
@@ -256,10 +312,11 @@ station more than once.
 
 
 
-## 10. When to call an engineer
+## 11. When to call an engineer
 
 - A tool card never turns green even after restarting `Start Bench Tools.bat`.
 - The page reports a **missing firmware image**, **missing media file**, or missing configuration.
 - The same device fails the same step twice after a retry.
+- A device **fails Verify** twice, or Verify says there's no record of it having been configured.
 - You're unsure which profile / channel / IP a job should use.
 

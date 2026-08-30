@@ -21,10 +21,11 @@ Read side:
                                TEC-575) — list/search runs, click into one
     GET /api/v1/health         liveness + row count + db size
     GET /api/v1/runs           summaries, newest first; filters:
-                               station_id, tool, status, serial, site,
-                               operator, q (substring across serial/mac/
-                               hostname/site/operator/model), since/until
-                               (ISO), limit (default 100, max 1000), offset
+                               station_id, tool, kind (configure|verify),
+                               status, serial, site, operator, q (substring
+                               across serial/mac/hostname/site/operator/model),
+                               since/until (ISO), limit (default 100, max
+                               1000), offset
     GET /api/v1/runs/{run_id}  the full stored record
     GET /api/v1/filters        distinct stations/tools/sites/operators for
                                the dashboard's dropdowns
@@ -80,6 +81,7 @@ CREATE TABLE IF NOT EXISTS runs (
     received_at   TEXT NOT NULL,
     timestamp     TEXT,
     tool          TEXT,
+    kind          TEXT,
     status        TEXT,
     serial        TEXT,
     mac           TEXT,
@@ -100,7 +102,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_station ON runs(station_id);
 CREATE INDEX IF NOT EXISTS idx_runs_serial  ON runs(serial);
 """
 
-_SUMMARY_COLS = ("run_id", "received_at", "timestamp", "tool", "status",
+_SUMMARY_COLS = ("run_id", "received_at", "timestamp", "tool", "kind", "status",
                  "serial", "mac", "model", "firmware", "duration_s",
                  "verified", "error", "operator", "station_id",
                  "bench_version", "site", "hostname")
@@ -139,6 +141,16 @@ def init_db(db_path: Path) -> None:
                         site     = json_extract(record, '$.device.site_name'),
                         hostname = json_extract(record, '$.device.hostname')
                 """)
+        # TEC-348 migration: a stored record from before the verify mode has no
+        # `kind`. Every run there was mutated the device, so the backfill says
+        # "configure" rather than leaving a NULL that a `kind=configure` filter
+        # would silently drop.
+        if "kind" not in cols:
+            with conn:
+                conn.execute("ALTER TABLE runs ADD COLUMN kind TEXT")
+                conn.execute(
+                    "UPDATE runs SET kind = "
+                    "COALESCE(json_extract(record, '$.kind'), 'configure')")
 
 
 def _row_from(entry: dict, received_at: str) -> dict:
@@ -151,6 +163,8 @@ def _row_from(entry: dict, received_at: str) -> dict:
         "received_at": received_at,
         "timestamp": entry.get("timestamp"),
         "tool": entry.get("tool"),
+        # parse_run_record() defaults this for pre-TEC-348 records.
+        "kind": entry.get("kind"),
         "status": entry.get("status"),
         "serial": entry.get("serial"),
         "mac": entry.get("mac"),
@@ -215,6 +229,7 @@ def create_app(db_path: Optional[Path] = None,
 
     @app.get("/api/v1/runs")
     def list_runs(station_id: Optional[str] = None, tool: Optional[str] = None,
+                  kind: Optional[str] = None,
                   status: Optional[str] = None, serial: Optional[str] = None,
                   site: Optional[str] = None, operator: Optional[str] = None,
                   q: Optional[str] = None,
@@ -223,6 +238,7 @@ def create_app(db_path: Optional[Path] = None,
                   offset: int = Query(default=0, ge=0)):
         clauses, params = [], []
         for col, value in (("station_id", station_id), ("tool", tool),
+                           ("kind", kind),
                            ("status", status), ("serial", serial),
                            ("site", site), ("operator", operator)):
             if value is not None:

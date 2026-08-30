@@ -105,6 +105,12 @@ input:focus, select:focus { border-color: var(--accent); }
 .s-configuring { border-color: rgba(251, 191, 36, .5); background: var(--yellow-bg); }
 .s-configured { border-color: rgba(52, 211, 153, .5); background: var(--green-bg); }
 .s-configured .dot { background: var(--green); }
+/* A verify run (TEC-348) reads the same as a configure run — same amber while
+   it works, same green when it passes. A PASS that looked different from a
+   DONE would invite the operator to read it as a lesser result. */
+.s-verifying { border-color: rgba(251, 191, 36, .5); background: var(--yellow-bg); }
+.s-verified { border-color: rgba(52, 211, 153, .5); background: var(--green-bg); }
+.s-verified .dot { background: var(--green); }
 .s-error { border-color: rgba(248, 113, 113, .5); background: var(--red-bg); }
 .s-error .dot { background: var(--red); }
 

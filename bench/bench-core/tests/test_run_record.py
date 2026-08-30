@@ -78,6 +78,26 @@ def test_verification_outcome_no_scoped_checks_is_none():
     assert verification_outcome([{"item": "RMS", "ok": None}]) == (None, None)
 
 
+# ── run kind (TEC-348) ────────────────────────────────────────────────────────
+
+def test_a_run_is_a_configure_run_unless_it_says_otherwise():
+    # The five build_entry hooks predate the verify mode and pass no kind; they
+    # must keep producing configure records without being touched.
+    assert build_run_entry(tool="otd", ok=True)["kind"] == "configure"
+
+
+def test_a_verify_run_says_so():
+    entry = build_run_entry(tool="tsw", ok=True, kind="verify")
+    assert entry["kind"] == "verify"
+
+
+def test_build_entry_rejects_an_unknown_kind():
+    # A typo must not produce a record that a `kind=configure` filter drops and
+    # a `kind=verify` filter also drops — i.e. a run nothing counts.
+    with pytest.raises(ValueError):
+        build_run_entry(tool="otd", ok=True, kind="verify-only")
+
+
 # ── parse_run_record: canonical records ───────────────────────────────────────
 
 def test_parse_canonical_roundtrip():
@@ -97,6 +117,15 @@ def test_parse_fills_missing_run_id_and_timestamp():
     parsed = parse_run_record(rec)
     assert parsed["run_id"] is None
     assert parsed["timestamp"] is None
+
+
+def test_parse_reads_a_record_from_before_the_verify_mode_as_a_configure_run():
+    # Every run in logs/ today mutated its device. "configure" is what those
+    # records mean, not just a convenient default — a verify-only sweep must
+    # not be able to find one of them and call it a QA pass.
+    rec = build_run_entry(tool="otd", ok=True)
+    del rec["kind"]
+    assert parse_run_record(rec)["kind"] == "configure"
 
 
 # ── parse_run_record: legacy (pre-schema) records, one per family ─────────────
@@ -122,6 +151,7 @@ def test_parse_legacy_otd():
     assert parsed["verified"] is True          # derived from the check list
     assert parsed["operator"] == "Dana K"      # provenance passes through
     assert parsed["run_id"] is None            # pre-run_id record: key present, empty
+    assert parsed["kind"] == "configure"       # pre-verify-mode: it mutated the device
 
 
 def test_parse_legacy_rutm():

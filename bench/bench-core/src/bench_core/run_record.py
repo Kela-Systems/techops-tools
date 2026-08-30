@@ -16,6 +16,10 @@ Schema `bench-run-record/1` — the common core, identical for every tool:
                   is built — the idempotency key for central upload (TEC-347)
     tool          which app produced it: "otd" | "rutm" | "tsw" | "raythink" |
                   "speaker" | "magos-radar" | "magos-apu"
+    kind          what the run DID: "configure" (mutated the device) or
+                  "verify" (TEC-348 — checked a finished device and changed
+                  nothing). A record without one predates the verify mode and
+                  reads as "configure".
     timestamp     run end, full ISO-8601 UTC datetime
     time          run end, UTC "HH:MM:SS" (kept for the UI history column)
     status        "ok" | "error"
@@ -73,6 +77,14 @@ RUN_RECORD_SCHEMA = "bench-run-record/1"
 
 TOOLS = ("otd", "rutm", "tsw", "raythink", "speaker", "magos-radar", "magos-apu")
 
+# What a run did to the device. A mutation-free check is a first-class kind of
+# run (TEC-348), not a configure run with most of its steps skipped: it has to
+# be tellable apart in the records, because "verified OK" is what earns a QA
+# label (TEC-352) and what an end-of-batch sweep counts.
+KIND_CONFIGURE = "configure"
+KIND_VERIFY = "verify"
+KINDS = (KIND_CONFIGURE, KIND_VERIFY)
+
 # Per-family keys that legacy (pre-schema) records carried at the top level;
 # parse_run_record() lifts them into the `device` block.
 _DEVICE_FIELDS = ("hostname", "site_name", "imei", "profile", "ip",
@@ -93,6 +105,7 @@ def verification_outcome(checks: Optional[list]) -> tuple[Optional[bool], Option
 
 
 def build_run_entry(*, tool: str, ok: bool, error: Optional[str] = None,
+                    kind: str = KIND_CONFIGURE,
                     serial: str = "unknown", mac: str = "unknown",
                     model: str = "unknown", firmware: Optional[str] = None,
                     duration_s: Optional[int] = None,
@@ -105,9 +118,14 @@ def build_run_entry(*, tool: str, ok: bool, error: Optional[str] = None,
     """Build one canonical run-record entry (see the module docstring for the
     field-by-field schema). When `verified` isn't supplied it is derived from
     the itemised `verification` checks, so the two verification styles
-    (single probe vs check list) land in the same core fields."""
+    (single probe vs check list) land in the same core fields.
+
+    `kind` defaults to "configure" so the five existing `build_entry` hooks
+    stay correct untouched; the bench bases overwrite it from the run mode."""
     if tool not in TOOLS:
         raise ValueError(f"Unknown tool '{tool}' — expected one of {TOOLS}.")
+    if kind not in KINDS:
+        raise ValueError(f"Unknown run kind '{kind}' — expected one of {KINDS}.")
     if verified is None and verification:
         verified, verify_detail = verification_outcome(verification)
     now = datetime.now(timezone.utc)
@@ -115,6 +133,7 @@ def build_run_entry(*, tool: str, ok: bool, error: Optional[str] = None,
         "schema": RUN_RECORD_SCHEMA,
         "run_id": str(uuid.uuid4()),
         "tool": tool,
+        "kind": kind,
         "timestamp": now.isoformat(),
         "time": now.strftime("%H:%M:%S"),
         "status": "ok" if ok else "error",
@@ -164,12 +183,17 @@ def parse_run_record(data: dict) -> dict:
     Extra keys (operator, station_id, bench_version, log_file,
     raw_identity_payloads, ...) pass through unchanged. Records written before
     run_id/timestamp joined the core get None for whichever is missing, so
-    consumers can rely on the keys being present."""
+    consumers can rely on the keys being present.
+
+    A record written before the verify mode existed carries no `kind` and is
+    read as "configure" — every run there was mutated the device, so that is
+    the truth rather than a convenient default."""
     if data.get("schema") == RUN_RECORD_SCHEMA:
         entry = dict(data)
         entry.setdefault("device", {})
         entry.setdefault("run_id", None)
         entry.setdefault("timestamp", None)
+        entry.setdefault("kind", KIND_CONFIGURE)
         return entry
 
     tool = _infer_legacy_tool(data)
@@ -177,6 +201,7 @@ def parse_run_record(data: dict) -> dict:
     entry["schema"] = RUN_RECORD_SCHEMA
     entry["tool"] = tool
     entry["device"] = {k: data[k] for k in _DEVICE_FIELDS if k in data}
+    entry.setdefault("kind", KIND_CONFIGURE)
     entry.setdefault("run_id", None)
     entry.setdefault("timestamp", None)  # per-run JSON files carry one; history entries don't
     entry.setdefault("error", None)

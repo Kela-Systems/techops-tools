@@ -8,6 +8,7 @@ import json
 
 import pytest
 
+from bench_core.bench_ui import VerifyBody      # /api/verify is shared, TEC-348
 from bench_core.run_record import RUN_RECORD_SCHEMA
 
 import rutm_app as mod
@@ -171,3 +172,90 @@ def test_re_running_a_provisioned_router_still_needs_no_scan(monkeypatch):
     set_detection(monkeypatch, FINAL_LAN, mac=LABEL_MAC)
     poll()
     assert cfg.resolve_label_password("") == ("", "shared-fallback")
+
+
+# ── /api/verify (TEC-348) ────────────────────────────────────────────────────
+
+def verify_result(ok=True, name="rut-haifa", verification=None):
+    result = fake_result(ok=ok)
+    result["name"] = name
+    result["verification"] = verification or []
+    return result
+
+
+def route(path):
+    return next(r for r in mod.app.routes if getattr(r, "path", None) == path)
+
+
+def post_verify(**body):
+    return asyncio.run(route("/api/verify").endpoint(VerifyBody(**body)))
+
+
+def test_verify_records_a_verify_run(monkeypatch):
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    set_detection(monkeypatch, FINAL_LAN)
+    poll()
+    assert "error" not in post_verify()
+    entry = cfg.state["history"][0]
+    assert entry["kind"] == "verify"
+    assert entry["tool"] == "rutm"
+    assert cfg.state["phase"] == "verified"
+
+
+def test_verify_needs_no_site_name(monkeypatch):
+    # The point of the mode: the operator holding a provisioned router has no
+    # idea what site name was typed weeks ago, and must not have to.
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    set_detection(monkeypatch, FINAL_LAN)
+    poll()
+    assert "error" not in post_verify()
+    assert cfg.state["history"][0]["status"] == "ok"
+
+
+def test_the_record_says_which_name_was_checked_against(monkeypatch):
+    # A verify record has to be readable on its own later: "this unit was
+    # checked as rut-haifa and passed".
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: verify_result(name="rut-golan"))
+    set_detection(monkeypatch, FINAL_LAN)
+    poll()
+    post_verify()
+    assert cfg.state["history"][0]["device"]["hostname"] == "rut-golan"
+
+
+def test_an_unresolvable_name_is_left_empty_not_faked(monkeypatch):
+    # When no configure record names this unit, the record must not quietly
+    # carry the run label (which is the device's IP address) as its hostname.
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result(name=""))
+    set_detection(monkeypatch, FINAL_LAN)
+    poll()
+    post_verify()
+    assert cfg.state["history"][0]["device"]["hostname"] == ""
+
+
+def test_an_operator_can_supply_the_site_name(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: seen.update(inputs) or verify_result())
+    set_detection(monkeypatch, FINAL_LAN)
+    poll()
+    post_verify(expected={"site_name": "haifa"})
+    assert seen["site_name"] == "haifa"
+    assert seen["expected_overrides"] == {"site_name": "haifa"}
+
+
+def test_the_run_label_falls_back_to_the_address(monkeypatch):
+    # hostname_for is called before login, when there is no site name and no
+    # serial yet. It must not raise — the "Verifying …" line needs something.
+    assert cfg.hostname_for({"host": FINAL_LAN}) == FINAL_LAN
+    assert cfg.hostname_for({}) == "the connected router"
+
+
+def test_verify_runs_are_counted_separately(monkeypatch):
+    set_detection(monkeypatch, FINAL_LAN)
+    poll()
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: verify_result(ok=False))
+    post_verify()
+    assert cfg.counts() == {"done": 0, "error": 0,
+                            "verified": 0, "verify_failed": 1}

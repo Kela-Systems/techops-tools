@@ -31,6 +31,7 @@ top of it.
 
 CLI (single device):
   python3 tsw_configure.py --label-password 'Xy7Kp2Lm9Qa'
+  python3 tsw_configure.py --verify        # check a finished switch, change nothing
 """
 from __future__ import annotations
 
@@ -355,11 +356,81 @@ def configure_tsw(client: TswClient, *, initial_password: str,
             "firmware_note": firmware_note}
 
 
+# --- verify-only pass (TEC-348) -----------------------------------------------
+
+def verify_tsw(client: TswClient, *, settings: dict, resolve=None) -> dict:
+    """Check ONE finished TSW202 against the baseline, changing nothing.
+
+    The simplest of the five verify passes, because nothing about a TSW202's
+    intended state is per-unit: the baseline is password, firmware floor, NTP
+    server, timezone and management address, and every one of those comes from
+    the station config. So there is nothing to look up — but `resolve` is still
+    called, because "was this switch ever provisioned by us at all" is a real
+    question a pre-ship gate should ask, and its answer is the one row that
+    cannot come from the config.
+
+    `resolve` is `BenchConfigurator.verify_resolver`'s callable, or None for a
+    CLI run — in which case there is no prior-run row and an engineer is taking
+    responsibility for knowing the unit is one of ours.
+
+    The switch is logged into on the SHARED password. That is not an assumption
+    to be worked around: a finished unit is on it, and one that is not fails the
+    password row, which is the correct and useful outcome.
+    """
+    new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    ntp_server = settings.get("ntp_server", DEFAULT_TSW_NTP_SERVER)
+    zonename = settings.get("timezone", DEFAULT_TIMEZONE)
+    minimum = ((settings.get("firmware", {}) or {}).get("minimum_version") or "").strip()
+
+    client.login(new_password)
+    # Everything past the login is a read. The client enforces that rather than
+    # trusting this function to stay read-only as it is edited.
+    client.set_read_only()
+
+    identity = client.get_identity()
+    assert_device_model(identity, EXPECTED_MODEL, "TSW202 configurator")
+
+    verification: list[dict] = []
+    prior_run_row = resolve(identity)[1] if resolve else None
+    if prior_run_row is not None:
+        verification.append(prior_run_row)
+    verification += client.verify_configuration(
+        new_password=new_password, zonename=zonename,
+        ntp_server=ntp_server, minimum_firmware=minimum)
+
+    # The management address, asked by having reached the switch rather than by
+    # moving it — see TeltonikaClient.lan_ip_check.
+    lan_ip = (settings.get("lan_ip") or "").strip()
+    if lan_ip:
+        verification.append(client.lan_ip_check(lan_ip))
+
+    for line in format_verification(verification).splitlines():
+        log.info("%s", line)
+
+    failed = [c["item"] for c in verification if c["ok"] is False]
+    ok = not failed
+    name = f"TSW202 {identity.get('serial', 'unknown')}"
+    if ok:
+        log.info("%s PASSED verification — nothing was changed.", name)
+    else:
+        log.error("%s FAILED verification: %s", name, ", ".join(failed))
+    # `ip` is where the switch was actually reached, which on a verify pass is
+    # the finding rather than a restatement of the config. The firmware NOTE is
+    # about what the firmware step decided to do; there is no firmware step here
+    # (the firmware version itself is still checked, as a row).
+    return {"identity": identity, "warnings": [], "failures": [],
+            "verification": verification, "ok": ok,
+            "ip": client.host, "firmware_note": "no firmware step on a verify run"}
+
+
 def main():
     p = argparse.ArgumentParser(description="Provision a single Teltonika TSW202.")
     p.add_argument("--label-password",
                    help="factory password from the device label (prompts if omitted; "
                         "pass '' for a switch already on the shared password)")
+    p.add_argument("--verify", action="store_true",
+                   help="check a finished switch against the baseline and change "
+                        "nothing (TEC-348); exits 0 only on a full PASS")
     p.add_argument("--config", default=str(BASE_DIR / "config" / "tsw.config.json"),
                    help="shared settings JSON (default: config/tsw.config.json)")
     args = p.parse_args()
@@ -378,18 +449,24 @@ def main():
         settings["firmware"] = fw_cfg
 
     label_pw = args.label_password
-    if label_pw is None:
+    if label_pw is None and not args.verify:
         label_pw = getpass("Label password (empty = already on the shared password): ")
 
     set_log_serial(None)
+    # A verify run reaches a finished switch on its FINAL address, not the
+    # factory one — that is where the unit it is checking actually is.
+    host = (settings.get("lan_ip", DEFAULT_TSW_LAN_IP) if args.verify
+            else settings.get("host", DEFAULT_TSW_HOST))
     client = TswClient(
-        host=settings.get("host", DEFAULT_TSW_HOST),
+        host=host,
         username=settings.get("username", DEFAULT_USERNAME),
         scheme=settings.get("scheme", DEFAULT_SCHEME),
         verify=not settings.get("insecure", True),
     )
     try:
-        result = configure_tsw(client, initial_password=label_pw, settings=settings)
+        result = (verify_tsw(client, settings=settings) if args.verify
+                  else configure_tsw(client, initial_password=label_pw,
+                                     settings=settings))
     finally:
         client.close()
     sys.exit(0 if result["ok"] else 1)

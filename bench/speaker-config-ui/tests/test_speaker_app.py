@@ -8,6 +8,7 @@ import asyncio
 
 import pytest
 
+from bench_core.bench_ui import VerifyBody      # /api/verify is shared, TEC-348
 from bench_core.run_record import RUN_RECORD_SCHEMA
 
 import speaker_app as mod
@@ -106,3 +107,102 @@ def test_failed_configure_sets_error(monkeypatch):
 
 def test_hostname_uses_target_ip_octet():
     assert cfg.hostname_for({}) == f"speaker-{cfg._target_ip().rsplit('.', 1)[-1]}"
+
+
+# ── /api/verify (TEC-348) ────────────────────────────────────────────────────
+
+def verify_result(ok=True, verification=None):
+    result = fake_result(ok=ok)
+    result["name"] = result["hostname"]
+    result["ip"] = "192.168.88.70"
+    result["verification"] = verification or []
+    return result
+
+
+def route(path):
+    return next(r for r in mod.app.routes if getattr(r, "path", None) == path)
+
+
+def post_verify(**body):
+    return asyncio.run(route("/api/verify").endpoint(VerifyBody(**body)))
+
+
+def test_the_verify_route_exists_because_the_tool_opted_in():
+    assert cfg.verify_supported is True
+    assert "POST" in route("/api/verify").methods
+    assert cfg.public_state()["verify_supported"] is True
+
+
+def test_verify_refuses_when_no_speaker_is_detected():
+    assert post_verify() == {"error": "No device is currently detected."}
+
+
+def test_verify_records_a_verify_run(monkeypatch):
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    set_detection(monkeypatch, "192.168.88.70")
+    poll()
+    assert "error" not in post_verify()
+    entry = cfg.state["history"][0]
+    assert entry["kind"] == "verify"
+    assert entry["tool"] == "speaker"
+    assert cfg.state["phase"] == "verified"
+
+
+def test_verify_reaches_the_speaker_where_the_scan_found_it(monkeypatch):
+    # The whole "reached at" row depends on this: the pipeline must be pointed
+    # at the address detection actually found, not at the target static IP.
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: seen.update(inputs) or verify_result())
+    set_detection(monkeypatch, HOST)
+    poll()
+    post_verify()
+    assert seen["host"] == HOST
+
+
+def test_verify_passes_the_configured_media_file(monkeypatch, tmp_path):
+    media = tmp_path / "alarm.mp3"
+    media.write_bytes(b"x")
+    monkeypatch.setattr(mod, "resolve_media", lambda cfgdict: media)
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: seen.update(inputs) or verify_result())
+    set_detection(monkeypatch, HOST)
+    poll()
+    post_verify()
+    assert seen["media_path"] == str(media)
+
+
+def test_a_missing_media_file_does_not_block_a_verify(monkeypatch):
+    # Configure refuses to run without it; verify must not. The file's absence
+    # from this bench PC says nothing about the speaker in front of us.
+    monkeypatch.setattr(mod, "resolve_media",
+                        lambda cfgdict: (_ for _ in ()).throw(
+                            mod.SpeakerError("media file not found")))
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: seen.update(inputs) or verify_result())
+    set_detection(monkeypatch, HOST)
+    poll()
+    assert "error" not in post_verify()
+    assert seen["media_path"] == ""
+
+
+def test_verify_asks_for_no_password(monkeypatch):
+    assert set(VerifyBody.model_fields) == {"expected"}
+
+
+def test_a_verify_run_cannot_start_while_a_configure_run_is_going(monkeypatch):
+    set_detection(monkeypatch, HOST)
+    poll()
+    cfg.state["busy"] = True
+    assert post_verify() == {"error": "A run is already in progress."}
+
+
+def test_verify_runs_are_counted_separately(monkeypatch):
+    set_detection(monkeypatch, HOST)
+    poll()
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    post_verify()
+    assert cfg.counts() == {"done": 0, "error": 0,
+                            "verified": 1, "verify_failed": 0}

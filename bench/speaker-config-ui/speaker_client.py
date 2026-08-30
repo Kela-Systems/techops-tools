@@ -40,6 +40,7 @@ except ImportError:
     sys.exit("This script needs 'requests'.  Install it with:  pip install requests")
 
 from bench_core import (
+    MutationBlocked,
     format_verification,
     host_iface_for,
     install_log_context,
@@ -99,6 +100,18 @@ class SpeakerClient:
         self.s = requests.Session()
         self.password: Optional[str] = None
         self.forced_changepwd = False   # login said changepwd==85
+        # A verify-only run must not be able to change the speaker even by
+        # accident (TEC-348). Every write on this device is a `?config=*.set`
+        # POST or the media upload, so one gate on cgi_post plus one on the
+        # upload covers the whole surface — reads are GETs and login is a POST
+        # to ?login, which is not a config write.
+        self.read_only = False
+
+    def set_read_only(self) -> None:
+        """Refuse every write from here on. One-way on purpose: nothing in a
+        verify run has a reason to turn it back off."""
+        self.read_only = True
+        log.info("Client is now read-only — any write will be refused.")
 
     # --- transport ------------------------------------------------------------
     def _cgi_url(self, query: str) -> str:
@@ -139,6 +152,11 @@ class SpeakerClient:
         """POST ?<query> with form fields — returns the full JSON reply. Raises
         SpeakerError unless result==0; re-logs-in once on a -500 session drop."""
         what = what or query
+        # Every cgi_post this client makes is a `?config=*.set` write. Refusing
+        # the whole method rather than matching `.set` means a POST added later
+        # has to be thought about rather than silently allowed through.
+        if self.read_only:
+            raise MutationBlocked(f"read-only client refused a write: {query}")
         for attempt in (1, 2):
             try:
                 r = self.s.post(self._cgi_url(query), data=form, timeout=self.timeout)
@@ -288,6 +306,8 @@ class SpeakerClient:
         """Upload a .mp3/.wav to user-file slot `idx` (0-9). The device's free
         space is tiny (~4 MB), so we check it first. Success is the literal
         "OK" the CGI prints. Raises SpeakerError on failure."""
+        if self.read_only:
+            raise MutationBlocked("read-only client refused a media upload")
         if not os.path.isfile(path):
             raise SpeakerError(f"media file not found: {path}")
         name = os.path.basename(path)
@@ -403,9 +423,14 @@ class SpeakerClient:
             checks.append({"item": item, "expected": expected, "actual": actual, "ok": ok})
 
         # Password: we are authenticated on new_password (re-logged-in under it).
-        add("admin password", new_password,
-            "in use" if self.password == new_password else (self.password or "unknown"),
-            self.password == new_password)
+        # Neither side of this row may carry an actual password — these rows go
+        # to bench-central verbatim, and `actual` on a failure would be the
+        # password the speaker is still on (TEC-349).
+        on_target = self.password == new_password
+        add("admin password", "the shared password",
+            "in use" if on_target else "NOT set — the speaker is still on another "
+                                       "password",
+            on_target)
 
         try:
             dt = self.get_datetime()
