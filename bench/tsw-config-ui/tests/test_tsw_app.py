@@ -14,6 +14,7 @@ import json
 
 import pytest
 
+from bench_core.bench_ui import VerifyBody      # /api/verify is shared, TEC-348
 from bench_core.run_record import RUN_RECORD_SCHEMA
 
 import tsw_app as mod
@@ -323,6 +324,161 @@ def test_password_source_is_inferred_for_direct_runs(monkeypatch, typed, expecte
     monkeypatch.setattr(cfg, "_do_configure", lambda inputs: fake_result())
     configure({"initial_password": typed, "mac": None})
     assert cfg.state["history"][0]["device"]["password_source"] == expected
+
+
+# ── /api/verify (TEC-348) ────────────────────────────────────────────────────
+
+def verify_result(ok=True, serial="6010212527", verification=None):
+    result = fake_result(ok=ok, serial=serial)
+    result["verification"] = verification or []
+    result["firmware_note"] = "no firmware step on a verify run"
+    return result
+
+
+def post_verify(**body):
+    return asyncio.run(route("/api/verify").endpoint(VerifyBody(**body)))
+
+
+def test_the_verify_route_exists_because_the_tool_opted_in():
+    assert cfg.verify_supported is True
+    assert "POST" in route("/api/verify").methods
+
+
+def test_verify_refuses_when_nothing_is_detected():
+    assert post_verify() == {"error": "No device is currently detected."}
+
+
+def test_verify_records_a_verify_run_not_a_configure_one(monkeypatch):
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    set_detection(monkeypatch, FINAL_IP)
+    poll()
+    assert "error" not in post_verify()
+
+    entry = cfg.state["history"][0]
+    assert entry["kind"] == "verify"
+    assert entry["tool"] == "tsw"
+    assert entry["status"] == "ok"
+    assert cfg.state["phase"] == "verified"
+
+
+def test_a_verify_pass_does_not_say_configured(monkeypatch):
+    # The operator has to be able to tell the two apart at a glance; only one
+    # of them changed the switch.
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    set_detection(monkeypatch, FINAL_IP)
+    poll()
+    post_verify()
+    assert "PASSED verification" in cfg.state["message"]
+    assert "Configured" not in cfg.state["message"]
+
+
+def test_a_failed_verify_is_recorded_as_an_error(monkeypatch):
+    failing = [{"item": "timezone", "expected": "Asia/Jerusalem",
+                "actual": "clock at +0000", "ok": False}]
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: verify_result(ok=False,
+                                                     verification=failing))
+    set_detection(monkeypatch, FINAL_IP)
+    poll()
+    post_verify()
+    entry = cfg.state["history"][0]
+    assert entry["kind"] == "verify"
+    assert entry["status"] == "error"
+    assert entry["verified"] is False
+    assert cfg.state["phase"] == "error"
+
+
+def test_verify_reaches_the_switch_where_detection_found_it(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: seen.update(inputs) or verify_result())
+    set_detection(monkeypatch, FINAL_IP)
+    poll()
+    post_verify()
+    assert seen["host"] == FINAL_IP
+
+
+def test_verify_asks_for_no_password(monkeypatch):
+    # A finished unit is on the station's shared password. Asking the operator
+    # for one would be asking for something they don't have, and a unit that is
+    # NOT on it fails its password row — which is the useful answer.
+    assert set(VerifyBody.model_fields) == {"expected"}
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: seen.update(inputs) or verify_result())
+    set_detection(monkeypatch, FINAL_IP)
+    poll()
+    post_verify()
+    assert seen["password_source"] == "shared-fallback"
+    assert "initial_password" not in seen
+
+
+def test_a_verify_run_cannot_start_while_a_configure_run_is_going(monkeypatch):
+    set_detection(monkeypatch, FINAL_IP)
+    poll()
+    cfg.state["busy"] = True
+    assert post_verify() == {"error": "A run is already in progress."}
+
+
+def test_verify_runs_are_counted_separately_from_configures(monkeypatch):
+    # An end-of-batch sweep re-checks every unit already in the done pile.
+    # Folding those into `done` would report twice as many switches provisioned
+    # as the bench actually saw.
+    set_detection(monkeypatch, FINAL_IP)
+    poll()
+    monkeypatch.setattr(cfg, "_do_configure", lambda inputs: fake_result())
+    post_configure()
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    post_verify()
+    post_verify()
+
+    counts = cfg.counts()
+    assert counts == {"done": 1, "error": 0, "verified": 2, "verify_failed": 0}
+
+
+def test_a_verify_record_is_filed_under_its_own_name(monkeypatch, tmp_path):
+    # Two kinds of run in one folder. Someone asked to send "the log for that
+    # switch" should not have to open files to find out which is which.
+    monkeypatch.setattr(cfg, "log_dir", tmp_path)
+    monkeypatch.setattr(cfg, "_save_log", type(cfg)._save_log.__get__(cfg))
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    set_detection(monkeypatch, FINAL_IP)
+    poll()
+    post_verify()
+    written = [p.name for p in tmp_path.glob("*.json")]
+    assert len(written) == 1
+    assert written[0].startswith("verify_")
+    assert "6010212527" in written[0]
+
+
+def test_a_verify_run_still_stamps_who_ran_it(monkeypatch):
+    # TEC-345 provenance is not configure-only: a QA pass an operator signed
+    # off on is exactly the kind of run you need to trace back to a person.
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    set_detection(monkeypatch, FINAL_IP)
+    poll()
+    post_verify()
+    entry = cfg.state["history"][0]
+    assert entry["station_id"]
+    assert entry["bench_version"]
+    assert entry["config_hash"]
+
+
+def test_detection_leaves_a_finished_verify_result_on_screen(monkeypatch):
+    # `verified` is a terminal phase like `configured`; detection must not reset
+    # the page to "detected" under the operator while the unit is still plugged
+    # in and its PASS/FAIL is being read.
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    set_detection(monkeypatch, FINAL_IP)
+    poll()
+    post_verify()
+    assert cfg.state["phase"] == "verified"
+    poll()
+    assert cfg.state["phase"] == "verified"
+
+
+def test_the_page_is_told_the_tool_supports_verifying():
+    assert cfg.public_state()["verify_supported"] is True
 
 
 # ── config surface the page reads ────────────────────────────────────────────

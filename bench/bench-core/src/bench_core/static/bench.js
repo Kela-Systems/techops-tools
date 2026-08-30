@@ -504,13 +504,57 @@ function connectBenchWS(onState, opts) {
   return { close() { closed = true; if (ws) { try { ws.close(); } catch (_e) {} } } };
 }
 
+// A run is in flight, either kind (TEC-348). Pages use this instead of
+// comparing against 'configuring', so a Verify pass gets the same live log,
+// the same disabled controls and the same spinner without per-page changes.
+const RUNNING_PHASES = ['configuring', 'verifying'];
+// A run has finished and its result is on screen.
+const FINISHED_PHASES = ['configured', 'verified', 'error'];
+
+function isRunning(s) { return RUNNING_PHASES.includes(s.phase); }
+function isFinished(s) { return FINISHED_PHASES.includes(s.phase); }
+function isVerifyRun(s) { return s.phase === 'verifying' || s.phase === 'verified'; }
+
+// Press Verify: check the connected device against what it was configured to
+// be, changing nothing. Takes no password and no site name — the point of the
+// mode is that the operator needs to know nothing about the unit in front of
+// them (the server recovers that from the device's configure record).
+async function submitVerify(btn, expected) {
+  const el = (typeof btn === 'string') ? $(btn) : btn;
+  if (el) el.disabled = true;
+  return postJSON('/api/verify', { expected: expected || {} },
+    { buttons: el ? [el] : [] });
+}
+
+// Wire up a #verifyBtn if the page has one and the tool supports the mode.
+// Enabled whenever a device is detected and nothing is running; deliberately
+// NOT gated on a form being filled in, because a QA sweep has nothing to fill.
+//
+// `opts.expected` is an optional function returning per-unit expectations the
+// operator typed (a site name, say). Blanks are ignored server-side, so a tool
+// can pass its form field unconditionally.
+function mountVerifyButton(id, opts) {
+  const btn = $(id || 'verifyBtn');
+  if (!btn) return { update() {} };
+  const expected = (opts || {}).expected;
+  btn.addEventListener('click', () => submitVerify(btn, expected ? expected() : {}));
+  return {
+    update(s) {
+      if (!s.verify_supported) { btn.style.display = 'none'; return; }
+      btn.style.display = '';
+      btn.disabled = !s.detected || s.busy;
+      btn.textContent = s.phase === 'verifying' ? 'Verifying…' : 'Verify';
+    },
+  };
+}
+
 // Shared "live progress" log panel (Teltonika-style tools). Shows the live
-// step log while configuring and keeps it pinned to the bottom unless the
+// step log while a run is going and keeps it pinned to the bottom unless the
 // operator has scrolled up. No-op if the page has no #liveCard/#liveLog.
 function renderLiveLog(s) {
   const lc = $('liveCard'), ll = $('liveLog');
   if (!lc || !ll) return;
-  if (s.phase === 'configuring' && (s.live_steps || []).length) {
+  if (isRunning(s) && (s.live_steps || []).length) {
     lc.style.display = '';
     const txt = s.live_steps.map(t => `[${t.time}] [${t.sn}] ${t.msg}`).join('\n');
     if (ll.textContent !== txt) {

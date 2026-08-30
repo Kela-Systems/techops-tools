@@ -84,8 +84,9 @@
     <a href="#camera">6. Raythink camera</a><br>
     <a href="#speaker">7. Provision-ISR speaker</a><br>
     <a href="#switch">8. Teltonika TSW202 switch</a><br>
-    <a href="#issues">9. Known issues &amp; fixes</a><br>
-    <a href="#help">10. When to call an engineer</a>
+    <a href="#verify">9. Checking a finished device (Verify)</a><br>
+    <a href="#issues">10. Known issues &amp; fixes</a><br>
+    <a href="#help">11. When to call an engineer</a>
   </div>
 
   <!-- 1 -->
@@ -240,7 +241,68 @@
     other switch that isn't detected is the usual causes (wrong port, not booted yet).</div>
 
   <!-- 9 -->
-  <h2 id="issues">9. Known issues &amp; quick fixes</h2>
+  <h2 id="verify">9. Checking a finished device — Verify <span class="pill">no changes made</span></h2>
+  <p>Next to <b>Configure</b> on every tool page except the Magos pair there is a <b>Verify</b>
+     button. It checks a device that has <b>already</b> been configured and <b>changes nothing</b> —
+     no password, no IP, no reboot. Use it when you want to be sure a unit is right before it goes
+     in the box.</p>
+
+  <h3>When to use it</h3>
+  <ul>
+    <li><b>End of a batch.</b> Before boxing, plug each finished unit back in and press Verify.</li>
+    <li><b>A unit you're not sure about</b> — came back from a job, sat on the shelf, someone else did it.</li>
+    <li><b>After a failed run that you retried</b> and want a clean second opinion on.</li>
+  </ul>
+
+  <h3>How to do it</h3>
+  <ol class="big">
+    <li>Plug the device in as usual, exactly as if you were going to configure it.</li>
+    <li>Wait for it to be <b>detected</b>. A device that was already provisioned lives on its final
+        <code>192.168.88.x</code> address and the tools look for it there too — the page says so
+        (<i>"already provisioned"</i> on the switch and router, <i>"already configured"</i> on the
+        camera).</li>
+    <li>Click <b>Verify</b>. <b>There is nothing to type</b> — no site name, no label password. The
+        tool looks up what this exact unit was configured to be and checks it against that.</li>
+    <li>Read the check table. <b>Verified ✓</b> at the top with all-green rows means ready to ship.</li>
+  </ol>
+
+  <h3>Reading the result</h3>
+  <table>
+    <thead><tr><th>What you see</th><th>What it means</th></tr></thead>
+    <tbody>
+      <tr><td>Green <b>PASS</b> rows, header <i>Verified ✓</i></td>
+          <td>The unit is what it should be. Unplug and box it.</td></tr>
+      <tr><td>Any red <b>FAIL</b> row</td>
+          <td><b>Don't ship it.</b> See below.</td></tr>
+      <tr><td>Amber <i>skip</i> / <i>cannot confirm</i> rows</td>
+          <td>Not a failure. The tool couldn't check that one thing (usually no signal at the
+              bench) and says so rather than pretending it's fine.</td></tr>
+    </tbody>
+  </table>
+  <p>The session counters keep the two kinds apart: <b>verified</b> / <b>verify failed</b> are their
+     own pills, and the history table's <b>Run</b> column says <code>verify</code> or
+     <code>configure</code>. A verify pass does not add to the day's <b>done</b> count — it isn't
+     another device provisioned.</p>
+
+  <h3>If a row fails</h3>
+  <ol>
+    <li>Leave the device plugged in and click <b>Configure</b> (that one <i>is</i> allowed to change
+        things). On the Teltonika tools leave the label-password field <b>empty</b> — the unit is
+        already on the shared password.</li>
+    <li>When it finishes, press <b>Verify</b> again.</li>
+    <li>Still red? Set that unit aside and tell an engineer which row failed. Don't ship it.</li>
+  </ol>
+
+  <div class="note"><b>"prior run — none found on this station or in bench-central"</b> means nobody
+    can say what this unit was supposed to be: it was never provisioned by us, or it was done on a
+    station whose records never reached bench-central. Tell an engineer rather than guessing.</div>
+  <div class="note"><b>OTD500 without an antenna</b> reports the 4G row as <i>cannot confirm</i> —
+    the modem hasn't attached to a network, so the tool won't claim it's on 4G. Expected at the bench.</div>
+  <div class="note warn">Verify needs the bench adapter to reach <code>192.168.88.x</code> (same as
+    the last step of a normal run). If a finished unit is never detected, that's the usual cause.</div>
+
+  <!-- 10 -->
+  <h2 id="issues">10. Known issues &amp; quick fixes</h2>
 
   <div class="card">
     <h3><span class="dot"></span> A tool card stays grey</h3>
@@ -278,12 +340,13 @@
        <i>tab</i> is fine — the tools keep running; reopen the tab from the dashboard.)</p>
   </div>
 
-  <!-- 10 -->
-  <h2 id="help">10. When to call an engineer</h2>
+  <!-- 11 -->
+  <h2 id="help">11. When to call an engineer</h2>
   <ul>
     <li>A tool card never turns green even after restarting <code>Start Bench Tools.bat</code>.</li>
     <li>The page reports a <b>missing firmware image</b>, <b>missing media file</b>, or missing configuration.</li>
     <li>The same device fails the same step twice after a retry.</li>
+    <li>A device <b>fails Verify</b> twice, or Verify says there's no record of it having been configured.</li>
     <li>You're unsure which profile / channel / IP a job should use.</li>
   </ul>
 

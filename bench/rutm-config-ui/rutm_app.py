@@ -26,12 +26,19 @@ from pydantic import BaseModel
 from bench_core import DEFAULT_HOST, DEFAULT_USERNAME, device_name
 from bench_core.bench_ui import (
     DETECT_TIMEOUT_SEC,
+    TERMINAL_PHASES,
     BenchConfigurator,
     read_device_mac,
 )
 from bench_core.run_record import build_run_entry
 
-from rutm_configure import DEFAULT_RUTM_LAN_IP, DEFAULT_RUTM_PREFIX, RutmClient, configure_rutm
+from rutm_configure import (
+    DEFAULT_RUTM_LAN_IP,
+    DEFAULT_RUTM_PREFIX,
+    RutmClient,
+    configure_rutm,
+    verify_rutm,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -50,12 +57,15 @@ class RutmConfigurator(BenchConfigurator):
     tailscale_label = "rutm"
     history_limit = 30  # full step logs per entry — the JSON files are the archive
     label_scan_enabled = True  # read the factory password off the QR label (TEC-349)
+    verify_supported = True    # mutation-free re-check of a finished router (TEC-348)
+    record_tool = "rutm"
 
     # ── state ────────────────────────────────────────────────────────────────
 
     def initial_state(self) -> dict:
         return {
-            "phase": "waiting",        # waiting|detected|configuring|configured|error
+            "phase": "waiting",        # waiting|detected|configuring|configured|
+                                       # verifying|verified|error
             "detected": False,
             "active_host": None,       # the address the router answered on
             "active_mac": None,
@@ -72,7 +82,15 @@ class RutmConfigurator(BenchConfigurator):
     # ── pipeline hooks ─────────────────────────────────────────────────────────
 
     def hostname_for(self, inputs: dict) -> str:
-        return device_name(inputs["site_name"], self.cfg.get("name_prefix", DEFAULT_RUTM_PREFIX))
+        """The name this run is about. On a verify run there may be no site name
+        — it is recovered from the unit's configure record, which needs the
+        serial and so can't happen until the pipeline has logged in. The base
+        only needs this for the "Verifying …" line, so fall back to the address.
+        """
+        site = inputs.get("site_name") or ""
+        if not site:
+            return inputs.get("host") or "the connected router"
+        return device_name(site, self.cfg.get("name_prefix", DEFAULT_RUTM_PREFIX))
 
     def client_host(self, inputs: dict) -> str:
         return inputs["host"]
@@ -88,6 +106,21 @@ class RutmConfigurator(BenchConfigurator):
     def run_pipeline(self, client, run_cfg: dict, inputs: dict) -> dict:
         return configure_rutm(client, site_name=inputs["site_name"],
                               initial_password=inputs["initial_password"], settings=run_cfg)
+
+    def verify_pipeline(self, client, run_cfg: dict, inputs: dict) -> dict:
+        """Mutation-free re-check of a finished router (TEC-348)."""
+        return verify_rutm(client, settings=run_cfg,
+                           resolve=self.verify_resolver(inputs),
+                           site_name=inputs.get("site_name") or "")
+
+    def verify_inputs(self, body) -> dict:
+        """The site name is the one per-unit expectation a RUTM08 has, and the
+        operator may know it when the record doesn't. Routed through the shared
+        `expected` overrides so the lookup treats it as the deliberate override
+        it is (and blanks stay blanks)."""
+        inputs = super().verify_inputs(body)
+        inputs["site_name"] = (body.expected or {}).get("site_name", "")
+        return inputs
 
     def build_entry(self, result: dict, inputs: dict, duration: int) -> dict:
         ident = result["identity"]
@@ -105,8 +138,14 @@ class RutmConfigurator(BenchConfigurator):
             steps=result["steps"],
             log=result["log"],
             device={
-                "hostname": result["hostname"],
-                "site_name": inputs["site_name"],
+                # Both pipelines report the name authoritatively as `name`: the
+                # one configure WROTE, or the one verify CHECKED AGAINST
+                # (recovered from the configure record). Empty on a verify run
+                # that found no recorded name — better an empty field than the
+                # run label, which is the device's address.
+                "hostname": result["name"] if "name" in result else result["hostname"],
+                "site_name": inputs.get("site_name")
+                             or (inputs.get("expected") or {}).get("site_name", ""),
                 "password_source": self.password_source(inputs, "initial_password"),
             },
         )
@@ -146,7 +185,7 @@ class RutmConfigurator(BenchConfigurator):
             mac = await loop.run_in_executor(None, read_device_mac, host)
             self.state["active_mac"] = mac
 
-            if self.state["phase"] in ("configured", "error"):
+            if self.state["phase"] in TERMINAL_PHASES:
                 pass  # still plugged in after a run; wait for unplug
             else:
                 self.state["phase"] = "detected"
@@ -163,7 +202,7 @@ class RutmConfigurator(BenchConfigurator):
             self.state["active_host"] = None
             self.state["active_mac"] = None
             self.state["at_final_lan"] = False
-            if self.state["phase"] in ("detected", "configured", "error"):
+            if self.state["phase"] in ("detected", *TERMINAL_PHASES):
                 self.state["phase"] = "waiting"
                 self.state["message"] = "Plug in the next RUTM08…"
 

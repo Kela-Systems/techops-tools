@@ -8,6 +8,7 @@ quota-sync -> RMS -> Tailscale -> [optional] eSIM) and the single-device CLI.
 
 CLI (single device):
   python3 otd_configure.py --site haifa-port --label-password 'Xy7Kp2Lm9Qa'
+  python3 otd_configure.py --verify --site haifa-port   # check, change nothing
 """
 from __future__ import annotations
 
@@ -213,9 +214,92 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
             "failures": failures, "verification": verification, "ok": ok}
 
 
+# --- verify-only pass (TEC-348) ---------------------------------------------
+
+def verify_device(client: TeltonikaClient, *, settings: dict, resolve=None,
+                  site_name: str = "") -> dict:
+    """Check ONE finished OTD500 against its intended state, changing nothing.
+
+    The widest row set of the five tools — password, hostname, timezone, SIM
+    4G-only, the SIM-switch/quota-sync block, RMS, Tailscale, eSIM and firmware
+    — because the OTD500 baseline touches all of it. Every row is the same check
+    the configure pipeline runs, asked without writing anything first.
+
+    The hostname is per-unit (built from a site name typed during the original
+    run), so `resolve` recovers it from the unit's configure record and
+    `site_name` lets an operator state it instead. An OTD500 keeps its factory
+    address, so unlike the router and the switch there is no LAN-move row here.
+    """
+    new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    sim_switch = settings.get("sim_switch", {}) or {}
+    rms = settings.get("rms", {}) or {}
+    ts = settings.get("tailscale", {}) or {}
+    esim = settings.get("esim", {}) or {}
+    fw = settings.get("firmware", {}) or {}
+
+    client.login(new_password)
+    # Everything past the login is a read, enforced rather than intended.
+    client.set_read_only()
+
+    identity = client.get_identity()
+    assert_device_model(identity, "OTD", "OTD500 configurator")
+
+    expected, prior_run_row = resolve(identity) if resolve else ({}, None)
+    prefix = settings.get("name_prefix", DEFAULT_NAME_PREFIX)
+    name = (device_name(site_name, prefix) if site_name
+            else expected.get("hostname") or "")
+
+    verification: list[dict] = []
+    if prior_run_row is not None:
+        verification.append(prior_run_row)
+    if not name:
+        # Nothing to compare against. Reading the device's hostname and calling
+        # it expected would pass by construction — the tautology TEC-348 exists
+        # to remove — so report what is missing instead.
+        actual = client.ssh_exec("uci get system.system.hostname 2>/dev/null",
+                                 check=False).strip()
+        verification.append({
+            "item": "hostname",
+            "expected": "the name from this unit's configure run",
+            "actual": f"{actual or '(unset)'} — no recorded name to compare it with",
+            "ok": False})
+
+    # An eSIM row only makes sense if this station loads eSIM profiles at all.
+    # Whether THIS unit got one is a per-unit fact and lives in its record.
+    esim_expected = bool(esim.get("enabled")) and (
+        bool(expected.get("esim_activation_code")) if expected else True)
+
+    verification += [c for c in client.verify_configuration(
+        hostname=name,
+        zonename=settings.get("timezone", DEFAULT_TIMEZONE),
+        new_password=new_password,
+        sim_4g=bool(settings.get("sim_4g_only", True)),
+        sim_switch=sim_switch,
+        rms=bool(rms.get("enabled")),
+        tailscale=bool(ts.get("enabled")),
+        esim=esim_expected,
+        expected_firmware=(fw.get("expected_version") or ""),
+        rms_api_token=rms.get("api_token", ""),
+        serial=identity.get("serial", ""),
+    ) if not (c["item"] == "hostname" and not name)]   # already reported above
+
+    for line in format_verification(verification).splitlines():
+        log.info("%s", line)
+
+    failed = [c["item"] for c in verification if c["ok"] is False]
+    ok = not failed
+    label = name or f"OTD500 {identity.get('serial', 'unknown')}"
+    if ok:
+        log.info("%s PASSED verification — nothing was changed.", label)
+    else:
+        log.error("%s FAILED verification: %s", label, ", ".join(failed))
+    return {"name": name, "identity": identity, "warnings": [], "failures": [],
+            "verification": verification, "ok": ok}
+
+
 def main():
     p = argparse.ArgumentParser(description="Provision a single Teltonika OTD500.")
-    p.add_argument("--site", required=True, help="site name -> device becomes otd-<site>")
+    p.add_argument("--site", help="site name -> device becomes otd-<site>")
     p.add_argument("--label-password", help="the device's factory label password "
                    "(else prompted)")
     p.add_argument("--config", default="config/site.config.json",
@@ -224,10 +308,17 @@ def main():
     p.add_argument("--username", default=DEFAULT_USERNAME)
     p.add_argument("--scheme", default=DEFAULT_SCHEME, choices=["http", "https"])
     p.add_argument("--no-firmware", action="store_true", help="skip the firmware upgrade")
+    p.add_argument("--verify", action="store_true",
+                   help="check a finished device against its intended state and "
+                        "change nothing (TEC-348); needs --site to know the "
+                        "hostname to expect. Exits 0 only on a full PASS.")
     p.add_argument("--serial", help="expected serial (verification)")
     p.add_argument("--imei", help="expected IMEI (verification)")
     p.add_argument("--mac", help="expected LAN MAC (verification)")
     args = p.parse_args()
+
+    if not args.verify and not args.site:
+        p.error("--site is required when provisioning a device")
 
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter(LOG_LINE_FORMAT))
@@ -244,15 +335,21 @@ def main():
     if args.no_firmware:
         settings["firmware"] = {"mode": "none"}
 
-    label_pw = args.label_password or getpass("Device label password: ")
+    label_pw = args.label_password or (
+        "" if args.verify else getpass("Device label password: "))
 
     client = TeltonikaClient(host=args.host, username=args.username, scheme=args.scheme,
                              verify=not settings.get("insecure", True))
     try:
-        result = configure_device(
-            client, label_password=label_pw, site_name=args.site, settings=settings,
-            expected={"serial": args.serial, "imei": args.imei, "mac": args.mac},
-        )
+        if args.verify:
+            result = verify_device(client, settings=settings,
+                                   site_name=args.site or "")
+        else:
+            result = configure_device(
+                client, label_password=label_pw, site_name=args.site,
+                settings=settings,
+                expected={"serial": args.serial, "imei": args.imei, "mac": args.mac},
+            )
     finally:
         client.close()
 

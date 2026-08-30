@@ -19,6 +19,7 @@ CLI (single speaker):
   python3 speaker_configure.py                      # scan, then configure
   python3 speaker_configure.py --host 192.168.1.57  # skip the scan
   python3 speaker_configure.py --scan-only          # just report what's found
+  python3 speaker_configure.py --verify             # check, change nothing
 """
 from __future__ import annotations
 
@@ -225,6 +226,94 @@ def configure_speaker(client: SpeakerClient, *, settings: dict,
             "ip": target_ip}
 
 
+# --- verify-only pass (TEC-348) ----------------------------------------------
+
+def verify_speaker(client: SpeakerClient, *, settings: dict,
+                   media_path: Optional[str] = None) -> dict:
+    """Check ONE finished speaker against its intended state, changing nothing.
+
+    Every expectation is station-wide (static IP, netmask, gateway, NTP server,
+    media file, shared password), so unlike the router and the OTD500 there is
+    nothing per-unit to look up: the config IS the expectation.
+
+    Two rows here are effect-based rather than read-back:
+
+      * "reached at" — we are talking to this speaker on the target static
+        address. The scan found it there, which is the same evidence the
+        configure run's `set_static_ip` row waits for.
+      * "admin password" — the login below is the check. A speaker that still
+        answers to the factory password has not had it changed, whatever any
+        settings page says.
+    """
+    static = settings.get("static", {}) or {}
+    target_ip = static.get("ip", DEFAULT_STATIC_IP)
+    netmask = static.get("netmask", DEFAULT_NETMASK)
+    gateway = static.get("gateway", DEFAULT_GATEWAY)
+    ntp = settings.get("ntp", {}) or {}
+    ntp_server = ntp.get("server", DEFAULT_NTP_SERVER)
+    initial_pw = settings.get("initial_password", DEFAULT_INITIAL_PASSWORD)
+    new_pw = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    media_slot = int(settings.get("media_slot", 0))
+    media_name = Path(media_path).name if media_path else ""
+    name = device_name(target_ip)
+
+    set_log_serial(None)
+
+    verification: list[dict] = []
+
+    # The address we reached it on. `client.host` may carry a port (a dev
+    # port-forward), so compare the host half.
+    reached = client.host.split(":")[0]
+    verification.append({
+        "item": "reached at", "expected": target_ip, "actual": reached,
+        "ok": reached == target_ip})
+
+    # The login IS the password check. Falling back to the factory password
+    # tells us WHY it failed rather than just that it did — and a speaker that
+    # accepts 123456 is the single worst thing a sweep can find.
+    still_factory = False
+    try:
+        client.login(new_pw)
+    except SpeakerError as e:
+        log.info("Target password rejected (%s) — trying the factory password.", e)
+        try:
+            client.login(initial_pw)
+            still_factory = True
+        except SpeakerError:
+            raise SpeakerError(
+                "Cannot log in with either the shared or the factory password — "
+                "this speaker is on neither, so nothing can be checked.")
+
+    # Everything past the login is a read, enforced rather than intended.
+    client.set_read_only()
+
+    identity = client.get_identity()
+
+    if still_factory:
+        verification.append({
+            "item": "admin password", "expected": "the shared password",
+            "actual": "NOT set — the speaker still answers to the factory "
+                      "password", "ok": False})
+    verification += [c for c in client.verify_configuration(
+        new_password=new_pw, ntp_server=ntp_server, ip=target_ip,
+        netmask=netmask, gateway=gateway,
+        media_name=media_name, media_slot=media_slot,
+    ) if not (still_factory and c["item"] == "admin password")]
+
+    for line in format_verification(verification).splitlines():
+        log.info("%s", line)
+
+    failed = [c["item"] for c in verification if c["ok"] is False]
+    ok = not failed
+    if ok:
+        log.info("%s (%s) PASSED verification — nothing was changed.", name, reached)
+    else:
+        log.error("%s (%s) FAILED verification: %s", name, reached, ", ".join(failed))
+    return {"name": name, "hostname": name, "identity": identity, "warnings": [],
+            "failures": [], "verification": verification, "ok": ok,
+            "ip": target_ip}
+
+
 def main():
     p = argparse.ArgumentParser(description="Provision a single Provision-ISR IP speaker.")
     p.add_argument("--host", default="",
@@ -234,6 +323,9 @@ def main():
                    help="media file to upload (overrides media_file in the config)")
     p.add_argument("--scan-only", action="store_true",
                    help="scan the bench subnets for a speaker, print it, and exit")
+    p.add_argument("--verify", action="store_true",
+                   help="check a finished speaker against the config and change "
+                        "nothing (TEC-348). Exits 0 only on a full PASS.")
     p.add_argument("--config", default=str(BASE_DIR / "config" / "speaker.config.json"),
                    help="shared settings JSON (default: config/speaker.config.json)")
     args = p.parse_args()
@@ -275,10 +367,11 @@ def main():
                            username=settings.get("username", DEFAULT_USERNAME),
                            scheme=scheme)
     try:
-        result = configure_speaker(client, settings=settings,
-                                   media_path=str(media_path) if media_path else None)
+        pipeline = verify_speaker if args.verify else configure_speaker
+        result = pipeline(client, settings=settings,
+                          media_path=str(media_path) if media_path else None)
     except SpeakerError as e:
-        log.error("Provisioning FAILED: %s", e)
+        log.error("%s FAILED: %s", "Verification" if args.verify else "Provisioning", e)
         sys.exit(1)          # the finally below closes the client exactly once
     finally:
         client.close()

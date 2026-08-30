@@ -20,6 +20,7 @@ field-tested copy both configurators import).
 
 CLI (single device):
   python3 rutm_configure.py --site haifa-port --label-password 'Xy7Kp2Lm9Qa'
+  python3 rutm_configure.py --verify --site haifa-port   # check, change nothing
 """
 from __future__ import annotations
 
@@ -236,15 +237,106 @@ def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
             "failures": failures, "verification": verification, "ok": ok}
 
 
+# --- verify-only pass (TEC-348) -----------------------------------------------
+
+def verify_rutm(client: RutmClient, *, settings: dict, resolve=None,
+                site_name: str = "") -> dict:
+    """Check ONE finished RUTM08 against its intended state, changing nothing.
+
+    Unlike the TSW202, one expectation here IS per-unit: the hostname is built
+    from a site name somebody typed during the original run, and on a QA sweep
+    nobody remembers it. So `resolve` (`BenchConfigurator.verify_resolver`) reads
+    it back out of the device's own configure record, and `site_name` lets an
+    operator state it instead.
+
+    The LAN IP row is where this mode earns its keep. On a configure run the
+    check is "did the router come back on 192.168.88.1 after we restarted its
+    network", and a no-answer there is genuinely inconclusive — the station's
+    DHCP lease may be stale. Here the router is in front of us at a known
+    address, so `lan_ip_check` reports a fact instead of a maybe.
+    """
+    new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    rms = settings.get("rms", {}) or {}
+    ts = settings.get("tailscale", {}) or {}
+    fw = settings.get("firmware", {}) or {}
+
+    client.login(new_password)
+    # Everything past the login is a read, enforced rather than intended.
+    client.set_read_only()
+
+    identity = client.get_identity()
+    assert_device_model(identity, "RUTM", "RUTM08 configurator")
+
+    expected, prior_run_row = resolve(identity) if resolve else ({}, None)
+    # An explicit site name wins over the record: an engineer checking a unit
+    # against what it SHOULD be needs to be able to say so.
+    prefix = settings.get("name_prefix", DEFAULT_RUTM_PREFIX)
+    name = (device_name(site_name, prefix) if site_name
+            else expected.get("hostname") or "")
+
+    verification: list[dict] = []
+    if prior_run_row is not None:
+        verification.append(prior_run_row)
+    if not name:
+        # No recorded hostname and none supplied. Reporting the device's own
+        # hostname back to itself would pass by construction, which is the
+        # tautology this whole issue is about — so say what is missing instead.
+        actual = client.ssh_exec("uci get system.system.hostname 2>/dev/null",
+                                 check=False).strip()
+        verification.append({
+            "item": "hostname",
+            "expected": "the name from this unit's configure run",
+            "actual": f"{actual or '(unset)'} — no recorded name to compare it with",
+            "ok": False})
+
+    verification += [c for c in client.verify_configuration(
+        hostname=name,
+        zonename=settings.get("timezone", DEFAULT_TIMEZONE),
+        new_password=new_password,
+        sim_4g=False,
+        rms=bool(rms.get("enabled")),
+        tailscale=bool(ts.get("enabled")),
+        esim=False,
+        expected_firmware=(fw.get("expected_version") or ""),
+        rms_api_token=rms.get("api_token", ""),
+        serial=identity.get("serial", ""),
+    ) if c["item"] != "SIM 4G-only"           # no modem on a RUTM08
+        and not (c["item"] == "hostname" and not name)]  # already reported above
+
+    lan_ip = (settings.get("lan_ip") or "").strip()
+    if lan_ip:
+        verification.append(client.lan_ip_check(lan_ip))
+
+    for line in format_verification(verification).splitlines():
+        log.info("%s", line)
+
+    failed = [c["item"] for c in verification if c["ok"] is False]
+    ok = not failed
+    label = name or f"RUTM08 {identity.get('serial', 'unknown')}"
+    if ok:
+        log.info("%s PASSED verification — nothing was changed.", label)
+    else:
+        log.error("%s FAILED verification: %s", label, ", ".join(failed))
+    return {"name": name, "identity": identity, "warnings": [], "failures": [],
+            "verification": verification, "ok": ok}
+
+
 def main():
     p = argparse.ArgumentParser(description="Provision a single Teltonika RUTM08.")
-    p.add_argument("--site", required=True, help="site name -> hostname rut-<site>")
+    p.add_argument("--site", help="site name -> hostname rut-<site>")
     p.add_argument("--label-password",
                    help="factory password from the device label (prompts if omitted; "
                         "pass '' for a device already on the shared password)")
+    p.add_argument("--verify", action="store_true",
+                   help="check a finished router against its intended state and "
+                        "change nothing (TEC-348); needs --site to know the "
+                        "hostname to expect. Exits 0 only on a full PASS.")
     p.add_argument("--config", default=str(BASE_DIR / "config" / "rutm.config.json"),
                    help="shared settings JSON (default: config/rutm.config.json)")
     args = p.parse_args()
+
+    if not args.verify and not args.site:
+        p.error("--site is required when provisioning a device")
 
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter(LOG_LINE_FORMAT))
@@ -253,19 +345,24 @@ def main():
 
     settings = load_settings(args.config)
     label_pw = args.label_password
-    if label_pw is None:
+    if label_pw is None and not args.verify:
         label_pw = getpass("Label password (empty = already on the shared password): ")
 
     set_log_serial(None)
+    # A finished router answers on its FINAL address, not the factory one.
+    host = (settings.get("lan_ip", DEFAULT_RUTM_LAN_IP) if args.verify
+            else settings.get("host", DEFAULT_HOST))
     client = RutmClient(
-        host=settings.get("host", DEFAULT_HOST),
+        host=host,
         username=settings.get("username", DEFAULT_USERNAME),
         scheme=settings.get("scheme", DEFAULT_SCHEME),
         verify=not settings.get("insecure", True),
     )
     try:
-        result = configure_rutm(client, site_name=args.site,
-                                initial_password=label_pw, settings=settings)
+        result = (verify_rutm(client, settings=settings, site_name=args.site or "")
+                  if args.verify
+                  else configure_rutm(client, site_name=args.site,
+                                      initial_password=label_pw, settings=settings))
     finally:
         client.close()
     sys.exit(0 if result["ok"] else 1)

@@ -49,6 +49,7 @@ except ImportError:
     sys.exit("This script needs 'requests'.  Install it with:  pip install requests")
 
 from bench_core import (
+    MutationBlocked,
     arp_table,
     canonical_mac,
     find_ip_by_mac,
@@ -79,6 +80,21 @@ DEFAULT_NTP_SERVER = "192.168.88.10"
 DHCP_SETTLE_SEC = 10        # before looking: let it drop its old address
 DHCP_HOST_RENEW_SEC = 45    # re-renew this PC's own lease while waiting
 DHCP_PROGRESS_SEC = 20      # how often to log that we are still looking
+
+# Every RPC2 method this tool uses that changes the camera (TEC-348). `_rpc`
+# refuses these outright on a read-only client, which covers set_ntp,
+# sync_time_to_pc, import_config, set_static_ip and set_dhcp in one place. Kept
+# as an explicit list rather than a name pattern because `configManager.getConfig`
+# and `setConfig` differ by three letters and a heuristic that got that wrong
+# would either block reads or let writes through.
+MUTATING_RPC_METHODS = frozenset({
+    "configManager.setConfig",
+    "global.setCurrentTime",
+    "userManager.modifyPassword",
+    "userManager.addUser",
+    "userManager.deleteUser",
+    "magicBox.reboot",
+})
 
 # Login error codes from the web's interfaceLogin.js.
 ERR_USER_INVALID = 268632070
@@ -120,6 +136,18 @@ class RaythinkCameraClient:
         self.encryption = "Default"
         self.realm = ""
         self.hash_uppercase = True   # which hex case the device accepted at login
+        # A verify-only run must not be able to change the camera even by
+        # accident (TEC-348). Every write on this device goes through one of a
+        # handful of named RPC methods, so the gate sits in `_rpc` against a
+        # deny-list — a new write method has to be added to it, but a new READ
+        # never breaks.
+        self.read_only = False
+
+    def set_read_only(self) -> None:
+        """Refuse every write from here on. One-way on purpose: nothing in a
+        verify run has a reason to turn it back off."""
+        self.read_only = True
+        log.info("Client is now read-only — any write will be refused.")
 
     # --- transport ----------------------------------------------------------
     def _port(self) -> int:
@@ -129,6 +157,8 @@ class RaythinkCameraClient:
              session: Optional[int] = None, raise_on_error: bool = True) -> dict:
         """One RPC2 call. Returns the parsed JSON. Raises CameraError when
         raise_on_error and the device reports result=false."""
+        if self.read_only and method in MUTATING_RPC_METHODS:
+            raise MutationBlocked(f"read-only client refused a write: {method}")
         self._id += 1
         body = {"method": method, "params": params, "id": self._id,
                 "session": self.session if session is None else session}
@@ -696,7 +726,12 @@ class RaythinkCameraClient:
         ONVIF SetUser op (the web UI's Setup > System > Account > ONVIF User).
         Idempotent: if ONVIF already authenticates on new_password, do nothing.
         Otherwise authenticate with the first working candidate (the factory ONVIF
-        password is 'admin') and change it. Raises CameraError on failure."""
+        password is 'admin') and change it. Raises CameraError on failure.
+
+        ONVIF is a separate protocol from RPC2, so `_rpc`'s deny-list does not
+        cover it — the read-only gate has to be here."""
+        if self.read_only:
+            raise MutationBlocked("read-only client refused an ONVIF SetUser")
         ok, _detail, _users = self.onvif_get_users(new_password)
         if ok:
             log.info("ONVIF password already set to the target; skipping.")
@@ -742,16 +777,21 @@ class RaythinkCameraClient:
         def add(item, expected, actual, ok):
             checks.append({"item": item, "expected": expected, "actual": actual, "ok": ok})
 
-        # Password: we are authenticated on new_password (we re-logged-in under it).
-        add("admin password", new_password,
-            "in use" if self.password == new_password else (self.password or "unknown"),
-            self.password == new_password)
+        # Password: we are authenticated on new_password (we re-logged-in under
+        # it). Neither side of this row may carry an actual password — these rows
+        # go to bench-central verbatim, and `actual` on a failure would be the
+        # password the camera is still on (TEC-349).
+        on_target = self.password == new_password
+        add("admin password", "the shared password",
+            "in use" if on_target else "NOT set — the camera is still on another "
+                                       "password",
+            on_target)
 
         # ONVIF user: a separate credential we set explicitly; confirm it answers
         # an authenticated ONVIF call with admin/new_password.
         if check_onvif:
             ok, detail, _users = self.onvif_get_users(new_password)
-            add(f"ONVIF login ({self.username})", new_password, detail, ok)
+            add(f"ONVIF login ({self.username})", "the shared password", detail, ok)
 
         if profile_name:
             applied = len((imported or {}).get("applied", []))
@@ -791,7 +831,11 @@ class RaythinkCameraClient:
                 add("subnet mask", "(from DHCP)", got_mask or "?", None)
                 add("gateway", "(from DHCP)", got_gw or "?", None)
             else:
-                add("static IP", ip, f"{got_ip} (dhcp={got_dhcp})", got_ip == ip)
+                # DHCP has to be OFF as well as the address being right: a lease
+                # that happens to match the assignment today is not the static
+                # assignment, and the next lease need not match.
+                add("static IP", ip, f"{got_ip} (dhcp={got_dhcp})",
+                    got_ip == ip and not got_dhcp)
                 add("subnet mask", netmask, got_mask or "?", got_mask == netmask)
                 add("gateway", gateway, got_gw or "?", got_gw == gateway)
         except CameraError as e:

@@ -732,6 +732,128 @@ def test_a_router_still_gets_only_ipaddr(monkeypatch):
                           "&& uci commit network")
 
 
+# ── the verify-only pass (TEC-348) ───────────────────────────────────────────
+
+def verify_client(monkeypatch, *, host="192.168.88.2", version=FLOOR,
+                  model="TSW202", uci=None, network=None):
+    """A finished switch, reachable on its final management address."""
+    c = client(version=version, model=model, uci=uci or configured_uci(),
+               network=network if network is not None else {"lan_mgmt": host})
+    c.host = host
+    monkeypatch.setattr(c, "login", lambda pw: setattr(c, "password", pw))
+    return c
+
+
+def prior_run(row=None):
+    """`BenchConfigurator.verify_resolver`'s contract: (expected, prior_row)."""
+    return lambda identity: ({}, row)
+
+
+def test_a_finished_switch_passes_and_says_where_it_was_reached(monkeypatch):
+    c = verify_client(monkeypatch)
+    result = mod.verify_tsw(c, settings=settings(), resolve=prior_run())
+    assert result["ok"] is True
+    assert result["ip"] == "192.168.88.2"
+    assert [check["item"] for check in result["verification"]] == [
+        "admin/root password", "timezone", "NTP server", "firmware", "LAN IP"]
+
+
+def test_the_verify_pass_changes_nothing(monkeypatch):
+    # The whole point. Asserted on what was SENT, not on what was blocked —
+    # a pipeline that tried and got refused would fail the run instead, which
+    # is a different (and much louder) outcome than this test allows.
+    c = verify_client(monkeypatch)
+    mod.verify_tsw(c, settings=settings(), resolve=prior_run())
+    offenders = [cmd for cmd in c.switch.commands
+                 if bench_core._MUTATING_COMMANDS.search(cmd)]
+    assert offenders == []
+
+
+def test_the_client_is_read_only_for_the_whole_pass(monkeypatch):
+    # The seatbelt is actually engaged, not just intended: if a later edit adds
+    # a mutating step it fails loudly rather than quietly provisioning.
+    c = verify_client(monkeypatch)
+    mod.verify_tsw(c, settings=settings(), resolve=prior_run())
+    assert c.read_only is True
+
+
+def test_the_lan_ip_row_is_not_a_move(monkeypatch):
+    # move_lan would re-address the switch. If verify_tsw ever reaches for it,
+    # this blows up rather than silently restarting a shipped unit's network.
+    c = verify_client(monkeypatch)
+    monkeypatch.setattr(c, "move_lan",
+                        lambda *a, **k: pytest.fail("verify moved the LAN"))
+    row_ = row(mod.verify_tsw(c, settings=settings(),
+                              resolve=prior_run())["verification"], "LAN IP")
+    assert row_["ok"] is True
+    assert "answering on 192.168.88.2" in row_["actual"]
+
+
+def test_a_switch_still_on_the_factory_address_fails(monkeypatch):
+    # The ambiguity TEC-348 opens with, resolved: on a configure run "no answer
+    # on the final address" might just be a stale station lease. Here the switch
+    # is in front of us on 192.168.1.2, which is conclusive.
+    c = verify_client(monkeypatch, host="192.168.1.2")
+    result = mod.verify_tsw(c, settings=settings(), resolve=prior_run())
+    assert result["ok"] is False
+    assert row(result["verification"], "LAN IP")["ok"] is False
+
+
+def test_a_switch_never_configured_by_us_fails(monkeypatch):
+    # No configure record anywhere. The rows themselves can all pass (a unit set
+    # up by hand to the same baseline would), so this row is the only thing
+    # standing between an unprovisioned box and a QA label.
+    missing = {"item": "prior run", "expected": "a recorded configure run",
+               "actual": "none found", "ok": False}
+    c = verify_client(monkeypatch)
+    result = mod.verify_tsw(c, settings=settings(), resolve=prior_run(missing))
+    assert result["ok"] is False
+    assert result["verification"][0]["item"] == "prior run"
+
+
+def test_a_wrong_clock_fails_the_verify_pass(monkeypatch):
+    # The TSW202 bring-up bug, caught by the mode that exists to catch it.
+    c = verify_client(monkeypatch)
+    c.switch.offset = "+0000"
+    result = mod.verify_tsw(c, settings=settings(), resolve=prior_run())
+    assert result["ok"] is False
+    assert row(result["verification"], "timezone")["ok"] is False
+
+
+def test_a_switch_on_another_password_fails_rather_than_erroring(monkeypatch):
+    # login() is stubbed to accept anything here; on a real device it would
+    # raise and the run would be recorded as an error. What this pins is the
+    # in-between state: authenticated, but not on the shared password.
+    c = verify_client(monkeypatch)
+    monkeypatch.setattr(c, "login", lambda pw: setattr(c, "password", LABEL_PW))
+    result = mod.verify_tsw(c, settings=settings(), resolve=prior_run())
+    assert result["ok"] is False
+    assert row(result["verification"], "admin/root password")["ok"] is False
+
+
+def test_a_verify_pass_carries_no_password(monkeypatch):
+    c = verify_client(monkeypatch)
+    result = mod.verify_tsw(c, settings=settings(), resolve=prior_run())
+    for check in result["verification"]:
+        assert DEFAULT_NEW_PASSWORD not in str(check), check
+
+
+def test_the_wrong_model_is_refused_before_anything_is_reported(monkeypatch):
+    c = verify_client(monkeypatch, model="TSW212")
+    with pytest.raises(SystemExit):
+        mod.verify_tsw(c, settings=settings(), resolve=prior_run())
+
+
+def test_a_cli_verify_needs_no_resolver(monkeypatch):
+    # `--verify` from the command line has no station log dir to look in. It
+    # runs the config-derived rows and simply carries no prior-run row.
+    c = verify_client(monkeypatch)
+    result = mod.verify_tsw(c, settings=settings())
+    assert result["ok"] is True
+    assert not any(check["item"] == "prior run"
+                   for check in result["verification"])
+
+
 def test_the_defaults_match_the_committed_example():
     # The module defaults are what the CLI and a config-less run fall back to,
     # so they must not drift from the example the installer seeds.

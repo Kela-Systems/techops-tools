@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from bench_core.bench_ui import BenchConfigurator, read_device_mac
+from bench_core.bench_ui import TERMINAL_PHASES, BenchConfigurator, read_device_mac
 from bench_core.run_record import build_run_entry
 
 from speaker_client import (
@@ -39,6 +39,7 @@ from speaker_configure import (
     device_name,
     resolve_media,
     scan_for_speaker,
+    verify_speaker,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -53,6 +54,8 @@ class SpeakerConfigurator(BenchConfigurator):
     logger_name = "speaker"
     tailscale_label = "speaker"
     history_limit = 30
+    verify_supported = True    # mutation-free re-check of a finished speaker (TEC-348)
+    record_tool = "speaker"
 
     # ── config helpers ────────────────────────────────────────────────────────
 
@@ -80,7 +83,8 @@ class SpeakerConfigurator(BenchConfigurator):
 
     def initial_state(self) -> dict:
         return {
-            "phase": "waiting",        # waiting|detected|configuring|configured|error
+            "phase": "waiting",        # waiting|detected|configuring|configured|
+                                       # verifying|verified|error
             "detected": False,
             "active_host": None,
             "active_mac": None,
@@ -127,6 +131,28 @@ class SpeakerConfigurator(BenchConfigurator):
         return configure_speaker(client, settings=run_cfg,
                                  media_path=inputs.get("media_path") or None)
 
+    def verify_pipeline(self, client, run_cfg: dict, inputs: dict) -> dict:
+        """Mutation-free re-check of a finished speaker (TEC-348). No resolver:
+        every expectation a speaker has is station-wide, so the config is the
+        expectation and there is no per-unit record to consult."""
+        return verify_speaker(client, settings=run_cfg,
+                              media_path=inputs.get("media_path") or None)
+
+    def verify_inputs(self, body) -> dict:
+        """The media file the pipeline should expect in the slot. A missing or
+        unconfigured file leaves the row out rather than failing it — the file
+        not being on THIS bench PC says nothing about the speaker."""
+        inputs = super().verify_inputs(body)
+        try:
+            media = resolve_media(self.cfg)
+        except SpeakerError:
+            media = None
+        inputs["media_path"] = str(media) if media else ""
+        return inputs
+
+    def verify_label(self, inputs: dict) -> str:
+        return f"the speaker on {inputs.get('host') or 'the bench network'}"
+
     def build_entry(self, result: dict, inputs: dict, duration: int) -> dict:
         ident = result["identity"]
         return build_run_entry(
@@ -153,6 +179,10 @@ class SpeakerConfigurator(BenchConfigurator):
         return (f"Configured speaker at {entry['device']['ip']} (SN {entry['serial']}) "
                 f"in {took}. Unplug it and connect the next one.")
 
+    def verify_message(self, result: dict, entry: dict, took: str) -> str:
+        return (f"Speaker {entry['serial']} PASSED verification in {took} — nothing "
+                "was changed. Unplug it and connect the next one.")
+
     def dismiss_message(self) -> str:
         return "Connect the next speaker…"
 
@@ -178,7 +208,7 @@ class SpeakerConfigurator(BenchConfigurator):
             self.state["active_host"] = host
             mac = await loop.run_in_executor(None, read_device_mac, host.split(":")[0])
             self.state["active_mac"] = mac
-            if self.state["phase"] in ("configured", "error"):
+            if self.state["phase"] in TERMINAL_PHASES:
                 return  # a run finished but a speaker is still visible
             self.state["phase"] = "detected"
             self.state["message"] = (f"Speaker detected on {host} (MAC {mac or 'unknown'}). "
@@ -186,7 +216,7 @@ class SpeakerConfigurator(BenchConfigurator):
         else:
             self.state["active_host"] = None
             self.state["active_mac"] = None
-            if self.state["phase"] in ("detected", "configured", "error"):
+            if self.state["phase"] in ("detected", *TERMINAL_PHASES):
                 self.state["phase"] = "waiting"
                 self.state["message"] = "Connect the next speaker…"
 

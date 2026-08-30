@@ -29,12 +29,13 @@ from bench_core import (
 )
 from bench_core.bench_ui import (
     DETECT_TIMEOUT_SEC,
+    TERMINAL_PHASES,
     BenchConfigurator,
     read_device_mac,
 )
 from bench_core.run_record import build_run_entry
 
-from otd_configure import configure_device
+from otd_configure import configure_device, verify_device
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -53,12 +54,15 @@ class OtdConfigurator(BenchConfigurator):
     tailscale_label = "otd"
     history_limit = 20  # full step logs per entry — the JSON files are the archive
     label_scan_enabled = True  # read the factory password off the QR label (TEC-349)
+    verify_supported = True    # mutation-free re-check of a finished device (TEC-348)
+    record_tool = "otd"
 
     # ── state ────────────────────────────────────────────────────────────────
 
     def initial_state(self) -> dict:
         return {
-            "phase": "waiting",        # waiting|detected|configuring|configured|error
+            "phase": "waiting",        # waiting|detected|configuring|configured|
+                                       # verifying|verified|error
             "detected": False,
             "active_mac": None,
             "busy": False,
@@ -73,7 +77,15 @@ class OtdConfigurator(BenchConfigurator):
     # ── pipeline hooks ─────────────────────────────────────────────────────────
 
     def hostname_for(self, inputs: dict) -> str:
-        return device_name(inputs["site_name"], self.cfg.get("name_prefix", DEFAULT_NAME_PREFIX))
+        """The name this run is about. On a verify run there may be no site name
+        — it is recovered from the unit's configure record, which needs the
+        serial and so can't happen until the pipeline has logged in. The base
+        only needs this for the "Verifying …" line, so fall back to the MAC
+        detection already read."""
+        site = inputs.get("site_name") or ""
+        if not site:
+            return f"the device at {inputs.get('mac') or 'the factory address'}"
+        return device_name(site, self.cfg.get("name_prefix", DEFAULT_NAME_PREFIX))
 
     def client_host(self, inputs: dict) -> str:
         return self.cfg.get("host", DEFAULT_HOST)
@@ -93,6 +105,21 @@ class OtdConfigurator(BenchConfigurator):
             expected={"mac": inputs.get("mac") or ""},
         )
 
+    def verify_pipeline(self, client, run_cfg: dict, inputs: dict) -> dict:
+        """Mutation-free re-check of a finished device (TEC-348)."""
+        return verify_device(client, settings=run_cfg,
+                             resolve=self.verify_resolver(inputs),
+                             site_name=inputs.get("site_name") or "")
+
+    def verify_inputs(self, body) -> dict:
+        """The site name is the one per-unit expectation an OTD500 has, and the
+        operator may know it when the record doesn't. Routed through the shared
+        `expected` overrides so the lookup treats it as the deliberate override
+        it is (and blanks stay blanks)."""
+        inputs = super().verify_inputs(body)
+        inputs["site_name"] = (body.expected or {}).get("site_name", "")
+        return inputs
+
     def build_entry(self, result: dict, inputs: dict, duration: int) -> dict:
         ident = result["identity"]
         return build_run_entry(
@@ -109,8 +136,14 @@ class OtdConfigurator(BenchConfigurator):
             steps=result["steps"],
             log=result["log"],
             device={
-                "hostname": result["hostname"],
-                "site_name": inputs["site_name"],
+                # Both pipelines report the name authoritatively as `name`: the
+                # one configure WROTE, or the one verify CHECKED AGAINST
+                # (recovered from the configure record). Empty on a verify run
+                # that found no recorded name — better an empty field than the
+                # run label, which is not a hostname.
+                "hostname": result["name"] if "name" in result else result["hostname"],
+                "site_name": inputs.get("site_name")
+                             or (inputs.get("expected") or {}).get("site_name", ""),
                 "imei": ident.get("imei", "unknown"),
                 "password_source": self.password_source(inputs, "label_password"),
             },
@@ -119,6 +152,11 @@ class OtdConfigurator(BenchConfigurator):
     def success_message(self, result: dict, entry: dict, took: str) -> str:
         warn = f" ({len(result['warnings'])} verify warning(s))" if result["warnings"] else ""
         return (f"Configured {result['hostname']} (SN {entry['serial']}) in {took}{warn}. "
+                "Unplug it and plug in the next one.")
+
+    def verify_message(self, result: dict, entry: dict, took: str) -> str:
+        name = result.get("name") or f"SN {entry['serial']}"
+        return (f"{name} PASSED verification in {took} — nothing was changed. "
                 "Unplug it and plug in the next one.")
 
     def dismiss_message(self) -> str:
@@ -140,7 +178,7 @@ class OtdConfigurator(BenchConfigurator):
 
         if not reachable:
             self.state["active_mac"] = None
-            if self.state["phase"] in ("detected", "configured", "error"):
+            if self.state["phase"] in ("detected", *TERMINAL_PHASES):
                 self.state["phase"] = "waiting"
                 self.state["message"] = "Plug in the next OTD500…"
             return
@@ -149,7 +187,7 @@ class OtdConfigurator(BenchConfigurator):
             None, read_device_mac, self.cfg.get("host", DEFAULT_HOST))
         self.state["active_mac"] = mac
 
-        if self.state["phase"] in ("configured", "error"):
+        if self.state["phase"] in TERMINAL_PHASES:
             return  # still plugged in after a run; wait for unplug
         self.state["phase"] = "detected"
         self.state["message"] = (f"Device detected (MAC {mac or 'unknown'}). Enter the "

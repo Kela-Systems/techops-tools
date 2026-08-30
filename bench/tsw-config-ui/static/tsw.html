@@ -28,7 +28,7 @@
 
   <!-- DEVICE FORM (visible while a switch is detected and idle) -->
   <div class="card form-card" id="formCard" style="display:none;">
-    <h3>New switch</h3>
+    <h3 id="formTitle">New switch</h3>
     <div class="form-row">
       <div class="field">
         <label for="labelPw">Label password (factory)</label>
@@ -38,15 +38,18 @@
       </div>
       <div class="field field-actions">
         <label aria-hidden="true">&nbsp;</label>
+        <!-- Verify needs nothing typed: it checks the switch against what it
+             was configured to be, and changes nothing (TEC-348). -->
         <div class="btn-row">
           <button id="goBtn" class="btn-primary" onclick="submitConfigure()">Configure</button>
+          <button id="verifyBtn" class="btn-outline" type="button">Verify</button>
         </div>
       </div>
     </div>
     <div class="preview" id="namePreview"></div>
   </div>
 
-  <!-- LIVE PROGRESS (visible while configuring) -->
+  <!-- LIVE PROGRESS (visible while a run is going) -->
   <div class="card" id="liveCard" style="display:none;">
     <h3>Progress log</h3>
     <pre id="liveLog" class="log" style="margin-top:0;max-height:300px;"></pre>
@@ -54,7 +57,7 @@
 
   <!-- LAST RESULT -->
   <div class="card" id="resultCard" style="display:none;">
-    <h3>Last switch</h3>
+    <h3 id="resultTitle">Last switch</h3>
     <div class="identity" id="identity"></div>
     <table class="verify hidden" id="verifyTable">
       <thead><tr><th>check</th><th>result</th></tr></thead>
@@ -69,13 +72,17 @@
       <h3 style="margin:0;">This session</h3>
       <button class="btn-outline" onclick="reloadAll()">Reload config</button>
     </div>
+    <!-- Verify counts are their own pills: a QA sweep re-checks switches that
+         are already in the done pile, so folding them in would double-count. -->
     <div style="margin-bottom:8px;">
       <span class="pill">done <b id="cDone">0</b></span>
       <span class="pill">failed <b id="cErr">0</b></span>
+      <span class="pill">verified <b id="cVerified">0</b></span>
+      <span class="pill">verify failed <b id="cVerifyFailed">0</b></span>
     </div>
     <table>
-      <thead><tr><th>Status</th><th>Serial</th><th>MAC</th><th>FW</th><th>Firmware step</th><th>Took</th><th>Time</th></tr></thead>
-      <tbody id="histBody"><tr><td colspan="7" class="muted">No switches configured yet.</td></tr></tbody>
+      <thead><tr><th>Status</th><th>Run</th><th>Serial</th><th>MAC</th><th>FW</th><th>Firmware step</th><th>Took</th><th>Time</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="8" class="muted">No switches configured yet.</td></tr></tbody>
     </table>
   </div>
 
@@ -92,6 +99,7 @@
 let lastPhase = null;
 let lastFormMac = null;   // clear the form when a different switch is plugged in
 let curState = {};
+const verifyBtn = mountVerifyButton('verifyBtn');   // TEC-348
 
 async function reloadAll(){ await postJSON('/api/reload'); }
 async function dismiss(){ await postJSON('/api/dismiss'); }
@@ -104,21 +112,23 @@ async function submitConfigure(){
 
 function render(s){
   curState = s;
+  verifyBtn.update(s);
   const st = $('status');
   st.className = 'status s-' + s.phase;
   const labels = { waiting:'Waiting', detected:'Switch detected',
-    configuring:'Configuring…', configured:'Configured ✓', error:'Error' };
+    configuring:'Configuring…', configured:'Configured ✓',
+    verifying:'Verifying…', verified:'Verified ✓', error:'Error' };
   let phaseLabel = labels[s.phase] || s.phase;
-  if (s.phase === 'configuring' && s.run_seconds != null)
-    phaseLabel = `Configuring… ${fmtDur(s.run_seconds)}`;
+  if (isRunning(s) && s.run_seconds != null)
+    phaseLabel = `${labels[s.phase]} ${fmtDur(s.run_seconds)}`;
   $('phaseText').textContent = phaseLabel;
   $('msgText').textContent = s.message || '';
 
   const icon = $('statusIcon');
-  icon.className = s.phase === 'configuring' ? 'spin'
+  icon.className = isRunning(s) ? 'spin'
     : 'dot' + ((s.phase === 'waiting' || s.phase === 'detected') ? ' pulse' : '');
 
-  $('dismissBtn').classList.toggle('hidden', s.phase !== 'error' && s.phase !== 'configured');
+  $('dismissBtn').classList.toggle('hidden', !isFinished(s));
 
   // device form: shown while detected and idle; cleared when the MAC changes
   const showForm = s.phase === 'detected' && !s.busy;
@@ -134,13 +144,23 @@ function render(s){
     fc.style.display = 'none';
   }
 
-  // There is no name to preview, so the line says what Configure will DO —
+  // A switch already on the final management address was almost certainly
+  // provisioned before, so Verify is the action the operator wants and
+  // Configure is the one to think twice about. Swap their emphasis rather than
+  // disabling anything — re-running a switch is legitimate.
+  const finished = !!s.at_final_lan;
+  $('formTitle').textContent = finished ? 'Switch already provisioned' : 'New switch';
+  $('goBtn').className = finished ? 'btn-outline' : 'btn-primary';
+  $('verifyBtn').className = finished ? 'btn-primary' : 'btn-outline';
+
+  // There is no name to preview, so the line says what each button will DO —
   // including the address the switch leaves on, which is the surprising part.
   const cfg = s.config || {};
   $('namePreview').innerHTML =
-    `Will set the shared password, NTP <b>${esc(s.ntp_server||'—')}</b>, timezone `
-    + `<b>${esc(cfg.timezone||'—')}</b>, and move the switch to `
-    + `<b>${esc(cfg.lan_ip||'192.168.88.2')}</b> as the last step.`;
+    `<b>Configure</b> will set the shared password, NTP <b>${esc(s.ntp_server||'—')}</b>, `
+    + `timezone <b>${esc(cfg.timezone||'—')}</b>, and move the switch to `
+    + `<b>${esc(cfg.lan_ip||'192.168.88.2')}</b> as the last step. `
+    + `<b>Verify</b> checks all of that and changes nothing.`;
 
   renderLiveLog(s);
 
@@ -150,17 +170,25 @@ function render(s){
   lastPhase = s.phase;
 
   // session counts + history
-  const c = s.counts || {done:0,error:0};
+  const c = s.counts || {done:0,error:0,verified:0,verify_failed:0};
   $('cDone').textContent = c.done; $('cErr').textContent = c.error;
+  $('cVerified').textContent = c.verified || 0;
+  $('cVerifyFailed').textContent = c.verify_failed || 0;
   const body = $('histBody');
   const rows = s.history || [];
   if (!rows.length){
-    body.innerHTML = '<tr><td colspan="7" class="muted">No switches configured yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="muted">No switches configured yet.</td></tr>';
   } else {
-    const badge = (st)=> st==='ok' ? '<span class="badge badge-ok">DONE</span>'
-      : '<span class="badge badge-err">FAILED</span>';
+    // A verify row that said DONE would read as "this switch was provisioned",
+    // which is the one thing it does not mean.
+    const badge = (r)=> r.kind === 'verify'
+      ? (r.status==='ok' ? '<span class="badge badge-ok">PASS</span>'
+                         : '<span class="badge badge-err">FAIL</span>')
+      : (r.status==='ok' ? '<span class="badge badge-ok">DONE</span>'
+                         : '<span class="badge badge-err">FAILED</span>');
     body.innerHTML = rows.map(r=>`<tr>
-      <td>${badge(r.status)}</td>
+      <td>${badge(r)}</td>
+      <td class="muted">${r.kind === 'verify' ? 'verify' : 'configure'}</td>
       <td class="mono">${esc(r.serial||'—')}</td>
       <td class="mono">${esc(r.mac||'')}</td>
       <td>${esc(r.firmware||'—')}</td>
@@ -173,6 +201,8 @@ function render(s){
   const lr = s.last_result;
   if (lr){
     $('resultCard').style.display = '';
+    $('resultTitle').textContent = lr.kind === 'verify'
+      ? 'Last switch (verify — nothing was changed)' : 'Last switch';
     $('identity').innerHTML = `
       <span>model <b>${esc(lr.model||'—')}</b></span>
       <span>serial <b class="mono">${esc(lr.serial||'—')}</b></span>

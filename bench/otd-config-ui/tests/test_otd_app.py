@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from bench_core.bench_ui import OperatorStore
+from bench_core.bench_ui import OperatorStore, VerifyBody  # /api/verify: shared
 from bench_core.run_record import RUN_RECORD_SCHEMA
 
 import otd_app as mod
@@ -439,3 +439,96 @@ def test_public_state_exposes_station_fields(monkeypatch, tmp_path):
     assert s["config_hash"] == cfg.config_hash
     assert s["config_warnings"] == cfg.config_warnings
     assert isinstance(s["config_warnings"], list)
+
+
+# ── /api/verify (TEC-348) ────────────────────────────────────────────────────
+
+def verify_result(ok=True, name="otd-haifa", verification=None):
+    result = fake_result(ok=ok)
+    result.pop("hostname")     # a verify pipeline reports `name`, not `hostname`
+    result["name"] = name
+    result["verification"] = verification or []
+    return result
+
+
+def route(path):
+    return next(r for r in mod.app.routes if getattr(r, "path", None) == path)
+
+
+def post_verify(**body):
+    return asyncio.run(route("/api/verify").endpoint(VerifyBody(**body)))
+
+
+def test_verify_records_a_verify_run(monkeypatch):
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    set_detection(monkeypatch, True)
+    poll()
+    assert "error" not in post_verify()
+    entry = cfg.state["history"][0]
+    assert entry["kind"] == "verify"
+    assert entry["tool"] == "otd"
+    assert cfg.state["phase"] == "verified"
+
+
+def test_verify_asks_for_neither_a_site_name_nor_a_label_password(monkeypatch):
+    # The whole point of the mode: the operator holding a finished OTD500 has
+    # the shared password (it is on the station) and no idea what site name was
+    # typed weeks ago, nor the factory sticker any more.
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
+    set_detection(monkeypatch, True)
+    poll()
+    assert "error" not in post_verify()
+    assert cfg.state["history"][0]["status"] == "ok"
+
+
+def test_the_record_says_which_name_was_checked_against(monkeypatch):
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: verify_result(name="otd-golan"))
+    set_detection(monkeypatch, True)
+    poll()
+    post_verify()
+    assert cfg.state["history"][0]["device"]["hostname"] == "otd-golan"
+
+
+def test_an_unresolvable_name_is_left_empty_not_faked(monkeypatch):
+    # When no configure record names this unit, the record must not carry the
+    # run label ("the device at aa:bb:...") in a hostname field.
+    monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result(name=""))
+    set_detection(monkeypatch, True)
+    poll()
+    post_verify()
+    assert cfg.state["history"][0]["device"]["hostname"] == ""
+
+
+def test_an_operator_can_supply_the_site_name(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: seen.update(inputs) or verify_result())
+    set_detection(monkeypatch, True)
+    poll()
+    post_verify(expected={"site_name": "haifa"})
+    assert seen["site_name"] == "haifa"
+    assert seen["expected_overrides"] == {"site_name": "haifa"}
+    assert cfg.state["history"][0]["device"]["site_name"] == "haifa"
+
+
+def test_the_run_label_survives_having_no_site_name(monkeypatch):
+    # hostname_for runs before login, when there is no site name and no serial.
+    # It must not raise — the "Verifying …" line needs something to print.
+    assert cfg.hostname_for({"mac": "aa:bb:cc:dd:ee:01"}).endswith(
+        "aa:bb:cc:dd:ee:01")
+    assert "factory address" in cfg.hostname_for({})
+
+
+def test_verify_runs_are_counted_separately(monkeypatch):
+    set_detection(monkeypatch, True)
+    poll()
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: verify_result(ok=False))
+    post_verify()
+    assert cfg.counts() == {"done": 0, "error": 0,
+                            "verified": 0, "verify_failed": 1}
+
+
+def test_the_page_is_told_the_tool_supports_verifying():
+    assert cfg.public_state()["verify_supported"] is True

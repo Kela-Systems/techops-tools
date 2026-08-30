@@ -120,6 +120,34 @@ RUTM08 arrive on `192.168.1.1`, the TSW202 on `192.168.1.2`.
 > both `192.168.1.x` and `192.168.88.x`). Without it the device still moves
 > correctly, but the run reports its final-address check as failed.
 
+### Verify: checking a finished device without changing it
+
+Every tool except the Magos pair has a **Verify** button next to Configure. It runs the same
+checks a normal run ends with — against a device that was already provisioned — and **mutates
+nothing**: no password, no IP, no reboot, not even a `uci commit`. It needs nothing typed: the
+tool recovers what this unit was supposed to be from its own configure record (this station's
+`logs/`, then bench-central), so an operator can sweep a finished batch knowing nothing about any
+individual unit.
+
+Use it as the pre-ship gate at the end of a batch, or on any unit whose history is unclear. The
+operator-facing procedure is section 9 of the [Operator guide](OPERATOR-GUIDE.md).
+
+Three things make the result trustworthy rather than decorative:
+
+- **A missing record fails.** If neither the station nor bench-central has a configure run for the
+  unit, the pass emits a red `prior run` row instead of quietly dropping the checks that needed
+  it. A verify pass that skips what it can't check is a green tick that means nothing.
+- **Rows have to be able to fail.** Which row proves what — effect-based, read-back or a known gap
+  — is written down per tool in [`docs/verification-rows.md`](docs/verification-rows.md), and is
+  the first thing to read before adding or changing a check.
+- **Mutation-freedom is tested, not intended.** `test_verify_only_is_mutation_free.py` runs the
+  verify paths against a fake device and asserts nothing mutating was ever sent; the read-only
+  client refuses one at runtime as a seatbelt.
+
+Verify runs are stamped `kind: "verify"` in the run record and counted separately in the session
+(their own pills, their own history badge), so a QA sweep never inflates the day's device count or
+gets mistaken for a provisioning run centrally. On the CLI it is `--verify` on each tool's script.
+
 ### Scanning the label instead of typing the password
 
 On the three Teltonika tools, the factory password can be read off the device's QR
@@ -204,8 +232,21 @@ fields (site name, channel, profile, radar IP, ...) live under the entry's
 which also mints a unique `run_id` and a full ISO UTC `timestamp` per run,
 and every per-run JSON is written through one shared writer,
 `bench_core.bench_ui.save_run_record()`. Consumers (central reporting,
-label printing) read any record — including pre-schema JSONs from old
-benches — through `parse_run_record()`.
+  label printing) read any record — including pre-schema JSONs from old
+benches — through `parse_run_record()`. Records carry `kind`
+(`configure` / `verify`), defaulting to `configure` when absent so every
+record written before the verify mode existed still reads correctly.
+- **Verify mode (TEC-348)** is one shared path, not five: `verify_supported`
+and the `verify_pipeline` hook on `BenchConfigurator`, the `POST /api/verify`
+route registered once in `build_app()`, the `verifying`/`verified` phases and
+their separate counts, and the expected-value lookup in
+`bench-core/src/bench_core/history.py` (operator override → this station's
+`logs/` → bench-central → a failing `prior run` row). A tool opts in by
+setting the flag and implementing the hook, which calls its `verify_*()`
+function; those set `client.set_read_only()` right after the login so the
+client itself refuses a write rather than trusting the pipeline to stay a
+read. What each check actually proves is catalogued in
+[`docs/verification-rows.md`](docs/verification-rows.md).
 - **Run provenance:** every per-run JSON (and history entry) is stamped with
 `operator`, `station_id`, `bench_version` and `config_hash`. The operator
 name is entered in the header of any tool page (badge scan or typed, once at
