@@ -166,10 +166,18 @@ field differs. Each face leads with the identity **that tool actually wrote**:
 | any of TSW / speaker / Raythink left on DHCP | `dhcp-mac` | the word DHCP | there is no address to print, and the MAC is how it gets found again |
 
 DHCP is detected from `device.ip_mode == "dhcp"`, falling back to an empty
-`device.ip`. Only Raythink records `ip_mode` today, so the empty address is the
-portable signal — on these three tools the bench writes the address it
-assigned, so nothing written means nothing was assigned. The explicit check is
-first so this stays correct as TEC-848 reaches the switch and the speaker.
+`device.ip`. All three of these tools record `ip_mode` since TEC-848, so the
+explicit mode is checked first; the empty address stays as the fallback for
+records written before that field existed. The record spells the mode `"dhcp"`
+or `"static"` — TEC-848's four modes (fixed / cycle / manual / dhcp) collapse to
+those two before reaching a record, so the check compares against `"dhcp"`
+rather than negating `"static"`.
+
+The address printed is always `device.ip`, never `device.reached_at`. Under
+DHCP the latter records where the unit happened to answer when the run
+finished; it belongs to the site's DHCP server, which may hand out a different
+lease tomorrow. Printing it would put an address on the sticker that nobody
+promised to keep.
 
 ### The radar channel: two fields, and only one of them prints
 

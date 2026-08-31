@@ -67,9 +67,14 @@ bench/rutm-config-ui/firmware/
 bench/tsw-config-ui/config/tsw.config.json
 bench/tsw-config-ui/firmware/
 
-# Raythink camera tool — real config (copy from the example) + IP counter.
+# Raythink camera tool — real config (copy from the example).
 # The config/profiles/ exports ship committed (no secrets; needed at runtime).
 bench/raythink-config-ui/config/raythink.config.json
+
+# The address mode each tool is set to (TEC-848) — station state an operator
+# flips during a shift, not checked-in intent. `ip_state.json` is the older
+# name the camera tool used before the modes were shared.
+bench/*/ip-state.json
 bench/raythink-config-ui/ip_state.json
 
 # Provision-ISR speaker tool — real config (copy from the example) + the media

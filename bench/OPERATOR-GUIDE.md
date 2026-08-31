@@ -67,6 +67,30 @@ the factory address — that's expected, it means the move worked. The tools als
 finished units on those addresses, which is what makes **Verify** (section 9) work; on the radar
 and the APU that means the bench adapter needs to reach `192.168.88.x` for a QA sweep.
 
+
+### Choosing the address  *(camera, speaker, switch)*
+
+Those three pages have an **Address assignment** box at the top. Pick a mode **once** and it stays
+on for every device after it, including after a restart — set it at the start of a batch and then
+just plug units in.
+
+| Mode | What each device gets |
+|---|---|
+| **Same IP every time** | The one address you set. Every unit in the batch is identical — right when each one goes to a site that takes only one of them. |
+| **Cycle** | The next address in the range, wrapping round at the top — for a site taking several. It only moves on when a device finishes cleanly, so a failed one keeps its number for the retry. |
+| **Manual** | The address you type for that one unit. Type either the last number (`70`) or the whole thing (`192.168.88.70`). |
+| **DHCP** | Nothing. The device is left asking the site's own network for an address. |
+
+Not every tool offers all four — the switch has no **Cycle**, because a site takes one switch.
+
+> **DHCP:** the bench doesn't know where the device will end up, so it finds it again by its MAC
+> address to check it. **Your laptop has to be on the same network the device gets its address
+> from**, or the tool will report that it couldn't find it again. If that happens, the device is
+> almost certainly fine — but tell an engineer rather than shipping it unchecked.
+
+> Whichever you pick is written into the device's record, so **Verify** later checks it against
+> what that unit was actually given — not against the bench default.
+
 ---
 
 
@@ -153,6 +177,14 @@ re-setting up.
 > it's already on the shared password. Don't scan the label; the factory password no longer applies.
 > The RUTM08 page can also pick it up again on its new `192.168.88.1` address.
 
+**The label password is kept, so get it right.** On the OTD500, RUTM08 and TSW202 the bench sends
+each unit's factory password to bench-central, filed under its serial. If that device is ever
+factory-reset out in the field it goes back to that password, and this is the only place anyone
+can look it up. Scanning is the reliable way to get it right — a mistyped password is stored as
+typed, and only shows up as wrong months later when someone tries it on a reset unit. (If two
+different passwords ever get recorded for one serial, the dashboard flags the row with an amber
+`?` so an engineer can check the actual sticker.)
+
 > ⚠️ **Firmware:** if the page warns the firmware image is missing, tell an engineer — the device
 > can't be fully configured without it.
 
@@ -165,14 +197,12 @@ re-setting up.
 A fresh camera answers on `192.168.1.123`. Plug it in, then choose:
 
 - **Profile** — `LAN` or `Cellular` (ask which the job needs).
-- **IP** — either **Manual** (type the last number, 30–50) or **Cycle** (the tool picks the next
-free number automatically: 30, 31, 32 …).
+- **Address** — see *[Choosing the address](#choosing-the-address)* below. Cameras offer all four
+modes; **Cycle** is the usual one for a site taking several cameras, **Same IP every time** for a
+batch of single-camera sites.
 
 Click **Configure**. The tool sets the password, imports the profile, sets the time, the ONVIF
 login, and **moves the camera to** `192.168.88.<number>` **as the last step**, then verifies it.
-
-> **Cycle mode** remembers its place even after a restart, and only moves to the next number when a
-> camera finishes cleanly — a failed camera keeps its number for the retry.
 
 ---
 
@@ -187,8 +217,12 @@ other tools). When the page shows *Speaker detected* with its address, just clic
 The tool sets the password, the time server, uploads the announcement audio file, and **moves the
 speaker to** `192.168.88.70` **as the last step**, then verifies it.
 
-> ⚠️ **One speaker at a time.** Every speaker ends up on the **same** final address
-> (`192.168.88.70`), so finish and unplug one before connecting the next.
+Where it ends up is your choice — see *[Choosing the address](#choosing-the-address)* below.
+Speakers offer all four modes; `.70` is the default, and **Cycle** alternates `.70`/`.71` for a
+site taking two.
+
+> ⚠️ **One speaker at a time.** Unless you're cycling, every speaker ends up on the **same** final
+> address, so finish and unplug one before connecting the next.
 
 > **"Media file missing" on the page?** The announcement audio file isn't in place — tell an
 > engineer. The speaker can't be fully configured without it.
@@ -206,8 +240,11 @@ name — a switch isn't named after one.
 The tool sets the password, checks the firmware, sets the time server and timezone, and **moves
 the switch to** `192.168.88.2` **as the last step**, then verifies it.
 
-> ⚠️ **One switch at a time.** Every switch ends up on the **same** final address
-> (`192.168.88.2`), so finish and unplug one before connecting the next.
+Where it ends up is your choice — see *[Choosing the address](#choosing-the-address)* below.
+Switches offer three of the four modes (no **Cycle**: a site takes one switch).
+
+> ⚠️ **One switch at a time.** Every switch ends up on the **same** final address, so finish and
+> unplug one before connecting the next.
 
 > **Re-running a switch that was already configured?** Leave the label-password field **empty** —
 > it's already on the shared password. The page also picks it up again on its new `192.168.88.2`

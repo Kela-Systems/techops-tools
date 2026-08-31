@@ -54,6 +54,7 @@ class OtdConfigurator(BenchConfigurator):
     tailscale_label = "otd"
     history_limit = 20  # full step logs per entry — the JSON files are the archive
     label_scan_enabled = True  # read the factory password off the QR label (TEC-349)
+    retain_label_password = True  # and keep it on bench-central (TEC-845)
     verify_supported = True    # mutation-free re-check of a finished device (TEC-348)
     record_tool = "otd"
 
@@ -205,11 +206,10 @@ class OtdConfigurator(BenchConfigurator):
                 return {"error": "The site name needs at least one letter or digit."}
             if not self.state["detected"]:
                 return {"error": "No device is currently detected."}
-            password, source = self.resolve_label_password(body.label_password)
             inputs = {"site_name": site,
-                      "label_password": password,
-                      "password_source": source,
-                      "mac": self.state.get("active_mac")}
+                      "mac": self.state.get("active_mac"),
+                      **self.label_password_inputs(body.label_password,
+                                                   key="label_password")}
             label = f"{self.hostname_for(inputs)} ({self.cfg.get('host', DEFAULT_HOST)})"
             if not await self.execute_run(inputs, label):
                 return {"error": "A configuration is already in progress."}

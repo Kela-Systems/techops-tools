@@ -102,23 +102,53 @@ window (Windows) or press Ctrl+C in the terminal (macOS/Linux).
 | `magos-config-ui/`    | Magos **APU**                | 8002 | factory IP `192.168.40.60`                             |
 | `otd-config-ui/`      | Teltonika **OTD500**         | 8003 | one device at a time, factory `192.168.1.1`; label scan |
 | `rutm-config-ui/`     | Teltonika **RUTM08**         | 8004 | one device at a time, factory `192.168.1.1`; label scan |
-| `raythink-config-ui/` | Raythink **thermal camera**  | 8005 | factory `192.168.1.123`, RPC2 API; static IP or DHCP    |
+| `raythink-config-ui/` | Raythink **thermal camera**  | 8005 | factory `192.168.1.123`, RPC2 API                      |
 | `speaker-config-ui/`  | Provision-ISR **IP speaker** | 8006 | arrives on **DHCP** — auto-scans `192.168.1/2/88.0/24` |
-| `tsw-config-ui/`      | Teltonika **TSW202** switch  | 8007 | factory `192.168.1.**2**`; label scan; ends on `192.168.88.2` |
+| `tsw-config-ui/`      | Teltonika **TSW202** switch  | 8007 | factory `192.168.1.**2**`; label scan                  |
 
 
 The ports are fixed and don't collide, so all the tools run side by side under
 the one launcher. The Teltonika subnet is shared without conflict: the OTD500 and
 RUTM08 arrive on `192.168.1.1`, the TSW202 on `192.168.1.2`.
 
-> **Devices that end up on `192.168.88.x`.** The RUTM08 (`.1`), TSW202 (`.2`) and
-> speaker (`.70`) all move to that subnet as their last step, and the tool
-> confirms the move by reaching the device on its new address. The RUTM08 case
-> works anywhere because the router *serves* DHCP there and the tool renews the
-> station's lease. **A switch and a speaker do not**, so the bench adapter has to
-> carry an address on `192.168.88.x` itself (a second static IP, or a /16 over
-> both `192.168.1.x` and `192.168.88.x`). Without it the device still moves
-> correctly, but the run reports its final-address check as failed.
+> **Devices that end up on `192.168.88.x`.** The RUTM08 (`.1`), TSW202 (`.2`),
+> camera and speaker (`.70`) all move to that subnet as their last step, and the
+> tool confirms the move by reaching the device on its new address. The RUTM08
+> case works anywhere because the router *serves* DHCP there and the tool renews
+> the station's lease. **A switch, a camera and a speaker do not**, so the bench
+> adapter has to carry an address on `192.168.88.x` itself (a second static IP,
+> or a /16 over both `192.168.1.x` and `192.168.88.x`). Without it the device
+> still moves correctly, but the run reports its final-address check as failed.
+
+### Where a device ends up: the four address modes
+
+The camera, speaker and switch pages each carry an **Address assignment** box
+(TEC-848). Before it, each of them hardcoded one answer — the camera cycled an
+octet, the speaker always landed on `.70`, the switch always on `.2` — and an
+operator who needed something else re-addressed the device by hand afterwards,
+which left no record anywhere.
+
+| Mode | What each device gets |
+|---|---|
+| `fixed` | The same address every time. For a batch destined for sites that take a single device of that kind, which all want the same default configuration; two of them never meet on a live network. |
+| `cycle` | The next address in a range, wrapping at the top — for kinds that land several to a site. The counter is burned only by a run that succeeds. |
+| `manual` | The address the operator types for that one unit, as a last octet or a full address. |
+| `dhcp` | Nothing. The device is left asking the site's DHCP server, and is found again by MAC to be checked. |
+
+A tool declares which subset it offers, so the switch has no `cycle` (a site
+takes one switch) and no mode appears that means nothing for the device in front
+of the operator. The machinery is `bench_core.ip_mode` plus the shared
+`mountIpModes()` widget — a tool opts in with `ip_modes_enabled = True` and an
+`ip_mode_policy()`, and gets the picker, the `/api/ip-mode` route and the
+persisted selection without writing any of them. The selection lives in
+`ip-state.json` beside each tool, not in its config, because it is a switch an
+operator flips during a shift and `config_hash` should not move when they do.
+
+Every run records `device.ip` (what the bench assigned — empty under `dhcp`),
+`device.ip_mode` and `device.reached_at` (where the device actually answered),
+so a verify pass checks a unit against the address *it* was given rather than
+the station default, and a QA label can print the real address instead of an
+assumed one (TEC-352).
 
 ### Verify: checking a finished device without changing it
 
@@ -283,6 +313,16 @@ records upload when connectivity returns, with backoff, and a run never
 blocks or fails because the network is down. Raw Magos device payloads stay
 in the local per-run JSON only; they are never shipped. When the variable is
 unset (the default), nothing is spooled and no uploader runs.
+- **Factory passwords are kept (Teltonika only):** the OTD500, RUTM08 and
+TSW202 tools ship each unit's factory-label password to bench-central, keyed
+to its serial, so a device factory-reset in the field is still reachable
+(it reverts to that password, and nobody used to have it). It rides its own
+queue (`<tool>/logs/outbox-labels/`) into its own store, **not** the run
+record — a device has one factory password however many times it is run, and
+run records feed the read-only dashboard. Nothing is kept when the operator
+leaves the password field empty, or types the station's shared password. Read
+them back in the dashboard's **Factory passwords** panel; the whole design is
+in `bench_core/src/bench_core/label_record.py`.
 - **Tests** live per tool under `<tool>/tests/` (plus `tests/` at this root
 for `scripts/updater.py`) and run with no hardware. From the `bench/` root:
 `.venv/bin/python -m pytest` runs every suite.

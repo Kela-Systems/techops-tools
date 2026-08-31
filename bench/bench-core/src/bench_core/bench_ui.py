@@ -35,7 +35,7 @@ import time
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -43,12 +43,22 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from bench_core import LOG_LINE_FORMAT, mac_from_arp_output
-from bench_core.central import spool_run_record, start_central_uploader
+from bench_core import DEFAULT_NEW_PASSWORD, DEFAULT_USERNAME, LOG_LINE_FORMAT, mac_from_arp_output
+from bench_core.central import (
+    spool_label_record,
+    spool_run_record,
+    start_central_uploader,
+)
 from bench_core.config_check import check_config, config_fingerprint
 from bench_core.device_label import DeviceLabel, parse_device_label
 from bench_core.history import resolve_expected
+from bench_core.ip_mode import IpModeError, IpModePolicy, IpModeStore
 from bench_core.label_printer import make_label_printer
+from bench_core.label_record import (
+    SOURCE_SCAN,
+    SOURCES,
+    build_label_record,
+)
 from bench_core.run_record import KIND_CONFIGURE, KIND_VERIFY
 
 try:
@@ -75,6 +85,17 @@ SHARED_STATIC_DIR = Path(__file__).resolve().parent / "static"
 # Secret-bearing config paths redacted before the state is sent to the browser.
 _REDACT_PATHS = (("new_password",), ("tailscale", "auth_key"), ("tailscale", "api_key"),
                  ("rms", "auth_code"), ("rms", "api_token"))
+
+# Where `label_password_inputs` puts the factory password for retention
+# (TEC-845), separate from the per-tool key the pipeline logs in with — that is
+# `label_password` on the OTD500 and `initial_password` on the other two, and
+# the base has no business knowing which. Empty unless there IS a factory
+# password this run (a re-run on the shared password leaves nothing to keep).
+FACTORY_PASSWORD_INPUT = "factory_password"
+# The scanned label the factory password came off, redacted (identity fields
+# only). Captured at resolve time because the armed scan is dropped when the
+# run ends, before the record is built.
+FACTORY_LABEL_INPUT = "factory_label"
 
 # Keys of a pipeline's return value that `_do_configure` interprets itself.
 # Everything else a pipeline returns is passed through to `build_entry`
@@ -123,6 +144,18 @@ class StepCollector(logging.Handler):
 
 def slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "-", text or "unknown")
+
+
+def _known(value: Optional[str]) -> str:
+    """`value` if it actually says something, else "".
+
+    Run records spell an unreadable field "unknown" rather than leaving it out,
+    which is right for a record of what happened and wrong for a lookup row —
+    a device stored with the model "unknown" reads as a device whose model is
+    literally that. This is the one-line translation between the two.
+    """
+    text = (value or "").strip()
+    return "" if text.lower() == "unknown" else text
 
 
 def prune_json_logs(log_dir: Path, keep: int = JSON_LOG_RETENTION) -> None:
@@ -284,6 +317,18 @@ class VerifyBody(BaseModel):
     values are ignored rather than treated as a claim.
     """
     expected: dict = {}
+
+
+class IpModeBody(BaseModel):
+    """Request body of the shared POST /api/ip-mode route (TEC-848).
+
+    `octet` only means anything for the `fixed` mode, where it sets the one
+    address every device from then on will get. It takes a string as well as an
+    int so the operator can paste a whole `192.168.88.70` — `parse_octet`
+    accepts either form and is the only thing that decides what is valid.
+    """
+    mode: str = ""
+    octet: Union[int, str] = ""
 
 
 # ── Device-label scanning ────────────────────────────────────────────────────
@@ -465,11 +510,25 @@ class BenchConfigurator:
     # label — the Teltonika families — have anything to gain, and a tool that
     # doesn't opt in gets no route and no UI for it.
     label_scan_enabled: bool = False
+    # Opt in to keeping the factory-label password on bench-central (TEC-845),
+    # so a unit factory-reset in the field can still be logged into. Off by
+    # default, and a SEPARATE switch from `label_scan_enabled` on purpose:
+    # being able to read a password off a sticker is not a decision to retain
+    # it, and the device scope here was settled per family (OTD500, RUTM08,
+    # TSW202). A tool that opts in must set `record_tool`.
+    retain_label_password: bool = False
     # Opt in to the mutation-free Verify pass (TEC-348). Off by default so a
     # tool that hasn't implemented `verify_pipeline` gets no route and no
     # button, rather than a button that errors — and so the tool it IS wired up
     # on is a deliberate choice per family.
     verify_supported: bool = False
+    # Opt in to operator-selectable address assignment — fixed / cycle / manual
+    # / DHCP (TEC-848). Off by default: a tool that has exactly one sensible
+    # answer for where its device ends up should not grow a picker offering
+    # three wrong ones. A tool that opts in also implements `ip_mode_policy`.
+    ip_modes_enabled: bool = False
+    # Where the selected mode is persisted, relative to the tool folder.
+    ip_mode_filename: str = IpModeStore.FILENAME
     # The tool name used to look a device's configure record up (must match the
     # `tool` its build_entry passes to build_run_entry). Set per subclass.
     record_tool: str = ""
@@ -496,6 +555,12 @@ class BenchConfigurator:
         self.config_hash: str = ""
         self.config_warnings: list[str] = []
         self._check_config()
+        # Built before `initial_state`, because a tool's opening message says
+        # what the current mode will do to the first device.
+        self.ip_modes: Optional[IpModeStore] = None
+        if self.ip_modes_enabled:
+            self.ip_modes = IpModeStore(base_dir / self.ip_mode_filename,
+                                        self.ip_mode_policy(), self.logger)
         self.state: dict = self.initial_state()
         self.state["config_loaded"] = bool(self.cfg)
         self._live_collector: Optional[StepCollector] = None
@@ -566,12 +631,44 @@ class BenchConfigurator:
     def extra_public_state(self) -> dict:  # override to add manifest / name_prefix / etc.
         return {}
 
+    # ── address assignment (TEC-848; only for `ip_modes_enabled` tools) ──────
+
+    def ip_mode_policy(self) -> IpModePolicy:  # override
+        """Which address modes this tool offers, on which subnet, in which
+        range — read from `self.cfg` so a station can widen a range by editing
+        its config. Called at startup and again on every reload."""
+        raise NotImplementedError
+
+    def ip_mode_message(self) -> str:
+        """What the page says after the operator changes mode. Override to add
+        anything device-specific (a re-scan hint, say)."""
+        return self.ip_modes.describe() if self.ip_modes else ""
+
+    def resolve_ip_mode(self, mode: str = "", octet=None):
+        """This run's addressing, remembering a mode the request named.
+
+        The page's picker has already posted to `/api/ip-mode` by the time it
+        submits, so the remembering is for everything else: a script or a CLI
+        driving `/api/configure` directly should not have its choice forgotten
+        by the next unit, which is how this tool has always behaved.
+
+        Raises `IpModeError` — the caller returns its message to the operator.
+        """
+        assign = self.ip_modes.resolve(mode, octet)
+        if mode and assign.mode != self.ip_modes.mode:
+            self.ip_modes.set_mode(assign.mode)
+        return assign
+
     def reload(self) -> str:
         """Re-read config from disk. Override to also reload a manifest. Returns
         the status message to show in the UI."""
         self.cfg = self.load_config()
         self._check_config()
         self.state["config_loaded"] = bool(self.cfg)
+        if self.ip_modes is not None:
+            # The selection is the operator's and survives; only the ranges it
+            # is clamped into come from the file that just changed.
+            self.ip_modes.retarget(self.ip_mode_policy())
         return ("Config reloaded." if self.cfg
                 else f"No {self.config_filename} found — copy the example.")
 
@@ -594,6 +691,7 @@ class BenchConfigurator:
                 # can label a verify pass as one instead of saying "Configured".
                 "verify_supported": self.verify_supported,
                 "run_kind": self._run_kind,
+                **(self.ip_modes.public_state() if self.ip_modes else {}),
                 **self.extra_public_state()}
 
     # ── device-label scanning (TEC-349) ──────────────────────────────────────
@@ -712,6 +810,25 @@ class BenchConfigurator:
             return label.password, "scan"
         return "", "shared-fallback"
 
+    def label_password_inputs(self, typed: str, *, key: str) -> dict:
+        """The password half of one run's `inputs`, for an `/api/configure`
+        route to spread into the dict it builds.
+
+        Shared rather than three copies of the same four lines, because since
+        TEC-845 there are two consumers of one decision: the pipeline needs the
+        password to log in with, and the retention step needs to know whether
+        what it got was a FACTORY password (worth keeping) or the station's
+        shared one (already known, and not what a reset device reverts to).
+        Getting that distinction right in one place is the point.
+        """
+        password, source = self.resolve_label_password(typed)
+        # Only a scan has a label behind it; a typed password is just a string.
+        label = self.armed_label() if source == SOURCE_SCAN else None
+        return {key: password,
+                "password_source": source,
+                FACTORY_PASSWORD_INPUT: password if source in SOURCES else "",
+                FACTORY_LABEL_INPUT: label.redacted() if label else {}}
+
     def password_source(self, inputs: dict, password_key: str) -> str:
         """Where a run's login password came from, for the run record:
         `"scan"`, `"typed"` or `"shared-fallback"`.
@@ -723,6 +840,73 @@ class BenchConfigurator:
         """
         return inputs.get("password_source") or (
             "typed" if inputs.get(password_key) else "shared-fallback")
+
+    # ── factory-password retention (TEC-845) ─────────────────────────────────
+
+    def _retain_label_password(self, entry: dict, inputs: dict) -> None:
+        """Queue this device's factory-label password for bench-central.
+
+        Runs after the record is built because the serial it is keyed on comes
+        off the device, and only the finished record knows it. A scan is the
+        exception — its label carries a serial of its own — which is what makes
+        a unit that never logged in still recoverable.
+
+        Skipped, quietly, whenever there is nothing worth keeping: the tool
+        hasn't opted in, no factory password was supplied (a re-run on the
+        shared password), what was typed IS the shared password, or nothing
+        identified the device. Best-effort like every other shipping step —
+        a device is not left half-configured because a lookup row didn't get
+        written.
+        """
+        if not self.retain_label_password:
+            return
+        password = inputs.get(FACTORY_PASSWORD_INPUT) or ""
+        source = inputs.get("password_source") or ""
+        if not password or source not in SOURCES:
+            return
+        # An operator re-running a finished unit may type the shared password
+        # to get back in. That is not the factory value, and storing it as one
+        # would overwrite the real answer with a password we already have.
+        if password == self.cfg.get("new_password", DEFAULT_NEW_PASSWORD):
+            self.logger.info("Not retaining the entered password — it is the "
+                             "station's shared password, not a factory one.")
+            return
+
+        label = inputs.get(FACTORY_LABEL_INPUT) or {}
+        serial = _known(entry.get("serial")) or _known(label.get("serial"))
+        if not serial:
+            self.logger.warning(
+                "Could not retain the factory password: this run never read a "
+                "serial to key it on. Scan the label (its QR carries one) or "
+                "re-run the device.")
+            return
+
+        device = entry.get("device") or {}
+        try:
+            record = build_label_record(
+                serial=serial,
+                password=password,
+                source=source,
+                tool=self.record_tool,
+                mac=_known(entry.get("mac")) or _known(label.get("mac")),
+                model=_known(entry.get("model")),
+                username=(label.get("username")
+                          or self.cfg.get("username", DEFAULT_USERNAME)),
+                imei=_known(label.get("imei")) or _known(device.get("imei")),
+                batch=label.get("batch", ""),
+                run_id=entry.get("run_id"),
+                captured_at=entry.get("timestamp"),
+            )
+            record["station_id"] = entry.get("station_id", "")
+            record["operator"] = entry.get("operator", "")
+            spool_label_record(self.log_dir, record)
+        except Exception:  # noqa: BLE001 — never fail a run over a lookup row
+            self.logger.exception("Could not queue the factory password for "
+                                  "bench-central.")
+            return
+        self.logger.info("Factory password retained for SN %s (%s).", serial,
+                         "scanned off the label" if source == SOURCE_SCAN
+                         else "typed by the operator")
 
     # ── the pipeline run (shared machinery; override the small hooks) ─────────
 
@@ -941,9 +1125,19 @@ class BenchConfigurator:
             # feed, for the connect timeout. It mutates `entry` in place.
             await loop.run_in_executor(None, self.label_printer.print_run, entry)
             entry["log_file"] = self._save_log(entry)
+            # What the run did, then what the device IS: the factory password
+            # outlives every run record of the unit (TEC-845).
+            self._retain_label_password(entry, inputs)
             self.state["history"].insert(0, entry)
             del self.state["history"][self.history_limit:]
             self.state["last_result"] = entry
+            # Burn a cycle number only on a run that actually used one and came
+            # out clean, so a failed device keeps its slot for the retry. Only
+            # a configure run sets `advance_cycle`; a verify pass assigns
+            # nothing and so can never consume an address.
+            if (self.ip_modes is not None and result["ok"]
+                    and inputs.get("advance_cycle")):
+                self.ip_modes.advance_cycle()
             self.on_run_recorded(result, inputs, entry)
             if result["ok"]:
                 self.state["phase"] = "verified" if verifying else "configured"
@@ -1061,6 +1255,23 @@ class BenchConfigurator:
             name = self.operator_store.set(body.operator)
             self.logger.info("Operator set to '%s'.", name or "(cleared)")
             return self.public_state()
+
+        if self.ip_modes is not None:
+            @app.post("/api/ip-mode")
+            async def set_ip_mode(body: IpModeBody):
+                """Select where devices from now on should end up (TEC-848).
+
+                Deliberately not gated on a device being detected: the mode is
+                a batch-level decision the operator makes before plugging the
+                first unit in, and it persists across units and restarts.
+                """
+                try:
+                    self.ip_modes.set_mode(body.mode, body.octet)
+                except IpModeError as e:
+                    return {"error": str(e)}
+                self.state["message"] = self.ip_mode_message()
+                self.logger.info("%s", self.ip_modes.describe())
+                return self.public_state()
 
         if self.label_scan_enabled:
             @app.post("/api/label-scan")

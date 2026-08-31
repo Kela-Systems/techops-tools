@@ -15,6 +15,7 @@ import json
 import pytest
 
 from bench_core.bench_ui import VerifyBody      # /api/verify is shared, TEC-348
+from bench_core.central import LABEL_OUTBOX_DIRNAME, OUTBOX_DIRNAME
 from bench_core.run_record import RUN_RECORD_SCHEMA
 
 import tsw_app as mod
@@ -26,9 +27,11 @@ FINAL_IP = "192.168.88.2"
 
 
 def fake_result(ok=True, serial="6010212527", mac="20:97:27:2b:00:f7",
-                firmware="TSW2_R_00.01.07.1", firmware_note="at the floor"):
-    """A bench_ui `_do_configure` result (post-pipeline shape). `ip` and
-    `firmware_note` are pipeline findings the base passes through."""
+                firmware="TSW2_R_00.01.07.1", firmware_note="at the floor",
+                ip=FINAL_IP, ip_mode=mod.MODE_FIXED, reached_at=FINAL_IP):
+    """A bench_ui `_do_configure` result (post-pipeline shape). `ip`,
+    `ip_mode`, `reached_at` and `firmware_note` are pipeline findings the base
+    passes through."""
     return {
         "ok": ok,
         "hostname": "tsw-00f7",
@@ -39,7 +42,9 @@ def fake_result(ok=True, serial="6010212527", mac="20:97:27:2b:00:f7",
         "steps": [],
         "verification": [],
         "log": "",
-        "ip": FINAL_IP,
+        "ip": ip,
+        "ip_mode": ip_mode,
+        "reached_at": reached_at,
         "firmware_note": firmware_note,
     }
 
@@ -49,6 +54,12 @@ def clean_state(monkeypatch):
     cfg.state.update(cfg.initial_state())
     cfg.state["config_loaded"] = True
     monkeypatch.setattr(cfg, "_save_log", lambda entry: None)
+    # The address mode is station state that survives restarts, so every test
+    # starts from the shipped default rather than from whatever the last one
+    # (or the last real run on this machine) left behind.
+    monkeypatch.setattr(cfg.ip_modes, "save", lambda: None)
+    cfg.ip_modes.mode = mod.MODE_FIXED
+    cfg.ip_modes.fixed_octet = 2
 
 
 def set_detection(monkeypatch, host, mac="20:97:27:2b:00:f7"):
@@ -214,9 +225,11 @@ def test_configure_refuses_when_nothing_is_detected():
 
 
 def test_configure_needs_no_site_name(monkeypatch):
-    # The body has exactly one field. A tool that asked for a site name would
+    # The only thing asked about the DEVICE is its label password — the rest is
+    # where it should end up (TEC-848). A tool that asked for a site name would
     # be asking the operator to fill in something nothing consumes.
-    assert set(mod.ConfigureBody.model_fields) == {"initial_password"}
+    assert set(mod.ConfigureBody.model_fields) == {"initial_password", "ip_mode",
+                                                   "octet"}
     monkeypatch.setattr(cfg, "_do_configure", lambda inputs: fake_result())
     set_detection(monkeypatch, FACTORY_IP)
     poll()
@@ -297,9 +310,13 @@ def test_run_record_stamps_where_the_password_came_from(detected, monkeypatch):
     assert cfg.state["history"][0]["device"]["password_source"] == "scan"
 
 
-def test_the_scanned_password_never_reaches_a_written_record(monkeypatch, tmp_path):
-    # The load-bearing one: records are shipped off the station to
-    # bench-central, so a password in one has left the bench for good.
+def test_the_scanned_password_never_reaches_a_run_record(monkeypatch, tmp_path):
+    # The load-bearing one: run records are shipped off the station and feed
+    # the read-only dashboard, so a password in one has left the bench for
+    # good. Since TEC-845 the factory password IS kept centrally — but through
+    # its own queue and its own store, which is what keeps it to one row per
+    # device instead of a copy in every record of every run that unit ever had.
+    # So the rule is "nowhere but the label queue", not "nowhere".
     monkeypatch.setenv("BENCH_CENTRAL_URL", "http://central.invalid:8100")
     monkeypatch.setattr(cfg, "log_dir", tmp_path)
     monkeypatch.setattr(cfg, "_save_log", type(cfg)._save_log.__get__(cfg))
@@ -313,9 +330,11 @@ def test_the_scanned_password_never_reaches_a_written_record(monkeypatch, tmp_pa
     assert entry["device"]["password_source"] == "scan"
     assert LABEL_PW not in json.dumps(entry)
     files = [p for p in tmp_path.rglob("*") if p.is_file()]
-    assert any(p.parent.name == "outbox" for p in files), \
+    assert any(p.parent.name == OUTBOX_DIRNAME for p in files), \
         "no outbox payload was written, so this test proved nothing"
     for path in files:
+        if path.parent.name == LABEL_OUTBOX_DIRNAME:
+            continue
         assert LABEL_PW not in path.read_text(encoding="utf-8"), path
 
 
@@ -479,6 +498,133 @@ def test_detection_leaves_a_finished_verify_result_on_screen(monkeypatch):
 
 def test_the_page_is_told_the_tool_supports_verifying():
     assert cfg.public_state()["verify_supported"] is True
+
+
+# ── address modes (TEC-848) ──────────────────────────────────────────────────
+#
+# Until this, every switch landed on 192.168.88.2 and the operator's only
+# escape was to re-address it by hand afterwards, which left no record anywhere.
+
+def detect_and_configure(monkeypatch, **body):
+    """Detect a factory switch, then POST /api/configure — returning the inputs
+    the pipeline was handed, which is where the address decision shows up."""
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_configure",
+                        lambda inputs: seen.update(inputs) or fake_result(
+                            ip=inputs.get("target_ip", ""),
+                            ip_mode=inputs.get("ip_mode", ""),
+                            reached_at=inputs.get("target_ip") or "192.168.88.57"))
+    set_detection(monkeypatch, FACTORY_IP)
+    poll()
+    return seen, post_configure(**body)
+
+
+def test_three_modes_are_offered_and_cycle_is_not():
+    # A site takes one switch, so a counter would have no second address to
+    # move to — offering the mode would mean nothing for the device in front of
+    # the operator.
+    assert cfg.public_state()["ip_modes"] == ["fixed", "manual", "dhcp"]
+
+
+def test_the_default_is_still_the_config_address():
+    # The long-standing behaviour has to survive an operator who never touches
+    # the picker: a station that upgrades must keep producing .2 switches.
+    assert cfg.public_state()["next_ip"] == FINAL_IP
+
+
+def test_fixed_mode_gives_every_switch_the_same_address(monkeypatch):
+    cfg.ip_modes.set_mode(mod.MODE_FIXED, "9")
+    first, _ = detect_and_configure(monkeypatch)
+    second, _ = detect_and_configure(monkeypatch)
+    assert first["target_ip"] == second["target_ip"] == "192.168.88.9"
+
+
+def test_manual_takes_an_octet_or_a_whole_address(monkeypatch):
+    for typed in ("57", "192.168.88.57"):
+        seen, state = detect_and_configure(monkeypatch, ip_mode="manual",
+                                           octet=typed)
+        assert "error" not in state
+        assert seen["target_ip"] == "192.168.88.57"
+
+
+def test_a_manual_address_on_another_subnet_is_refused(monkeypatch):
+    # The tool writes its own gateway and netmask alongside, so honouring only
+    # the last octet of what was typed would strand the switch.
+    _, state = detect_and_configure(monkeypatch, ip_mode="manual",
+                                    octet="10.0.0.57")
+    assert "not on this tool's subnet" in state["error"]
+    assert not cfg.state["history"]
+
+
+def test_manual_with_nothing_typed_is_refused(monkeypatch):
+    _, state = detect_and_configure(monkeypatch, ip_mode="manual", octet="")
+    assert "Enter an address" in state["error"]
+    assert not cfg.state["history"]
+
+
+def test_dhcp_assigns_nothing(monkeypatch):
+    seen, state = detect_and_configure(monkeypatch, ip_mode="dhcp")
+    assert "error" not in state
+    assert seen["target_ip"] == ""
+    assert seen["ip_mode"] == "dhcp"
+
+
+def test_dhcp_is_refused_without_a_mac(monkeypatch):
+    # The MAC is the only way to find a switch again once it has gone somewhere
+    # the bench did not choose. Without one the run would provision it and then
+    # lose it, so it is refused before the device is touched.
+    set_detection(monkeypatch, FACTORY_IP, mac=None)
+    poll()
+    monkeypatch.setattr(cfg, "_do_configure", lambda inputs: fake_result())
+    state = post_configure(ip_mode="dhcp")
+    assert "MAC could not be read" in state["error"]
+    assert not cfg.state["history"]
+
+
+def test_a_dhcp_run_records_no_assigned_address(monkeypatch):
+    # The lease belongs to the site's DHCP server. Recording it as ours would
+    # be a claim the next reader — a QA label (TEC-352), bench-central — acts
+    # on, so `ip` stays empty and where it was found rides along separately.
+    detect_and_configure(monkeypatch, ip_mode="dhcp")
+    device = cfg.state["history"][0]["device"]
+    assert device["ip"] == ""
+    assert device["ip_mode"] == "dhcp"
+    assert device["reached_at"] == "192.168.88.57"
+
+
+def test_a_static_run_records_the_mode_too(monkeypatch):
+    # Not just the DHCP case: a label or a bench-central reader has to be able
+    # to tell "this is where we put it" from "this is where it happened to be".
+    detect_and_configure(monkeypatch, ip_mode="manual", octet="57")
+    device = cfg.state["history"][0]["device"]
+    assert device["ip"] == "192.168.88.57"
+    assert device["ip_mode"] == "manual"
+
+
+def test_the_chosen_mode_sticks_across_switches(monkeypatch):
+    # It is a mode the operator switches on once and then works a batch under,
+    # so a scripted call that names one changes the selection rather than
+    # applying to that unit alone.
+    detect_and_configure(monkeypatch, ip_mode="dhcp")
+    assert cfg.ip_modes.mode == "dhcp"
+
+
+def test_a_dhcp_success_message_says_where_the_switch_went(monkeypatch):
+    detect_and_configure(monkeypatch, ip_mode="dhcp")
+    assert "on DHCP, currently at 192.168.88.57" in cfg.state["message"]
+
+
+def test_the_pickers_fixed_address_is_probed_by_detection(monkeypatch):
+    # An operator who moved the fixed address is telling us where their
+    # finished switches now live, so that is where a re-plugged one is looked
+    # for — not only at the config's lan_ip.
+    cfg.ip_modes.set_mode(mod.MODE_FIXED, "9")
+    probed = []
+    monkeypatch.setattr(mod.socket, "create_connection",
+                        lambda addr, *a, **k: probed.append(addr) or
+                        (_ for _ in ()).throw(OSError("nothing there")))
+    assert cfg._detect_host() is None
+    assert probed == [(FACTORY_IP, 443), ("192.168.88.9", 443), (FINAL_IP, 443)]
 
 
 # ── config surface the page reads ────────────────────────────────────────────

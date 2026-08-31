@@ -315,11 +315,18 @@ def _apu_index(dev: dict) -> str:
 def _on_dhcp(entry: dict) -> bool:
     """Whether this unit was left for someone else's DHCP server to address.
 
-    Two signals because only Raythink records `ip_mode` today (TEC-848 landed
-    there first). An empty `device.ip` is the portable one: on these three
-    tools the bench writes the address it assigned, so nothing written means
-    nothing was assigned. The explicit mode is checked first so this stays
-    correct when the switch and speaker gain it.
+    Two signals. All three of these tools record `ip_mode` since TEC-848, and
+    it is checked first as the one the tool states outright. The record spells
+    it `"dhcp"` or `"static"` — the four internal mode names (fixed / cycle /
+    manual / dhcp) collapse to those two before they reach a record, which is
+    why this compares against `"dhcp"` rather than negating `"static"`.
+
+    An empty `device.ip` is the fallback, and covers a record written before
+    the mode field existed: on these three tools the bench writes the address
+    it assigned, so nothing written means nothing was assigned. Note it is
+    `device.ip` and never `device.reached_at` — under DHCP the latter holds
+    where the unit happened to answer, which is the site's lease to change and
+    not ours to print.
     """
     if entry.get("tool") not in _DHCP_CAPABLE:
         return False

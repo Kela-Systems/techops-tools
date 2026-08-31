@@ -8,6 +8,8 @@ baseline is named after a site, so asking would be a field filled in for nothing
 ## What it does per device
 
 1. Login with the label password (falls back to the shared password for re-runs).
+   The label password is also kept on bench-central, keyed to the serial — see
+   "Factory passwords" below.
 2. Set the admin/root password to the shared default (`Kelasys123!`).
 3. Firmware **floor** — see below.
 4. NTP server → `192.168.88.10`, as the switch's *only* time source.
@@ -15,6 +17,45 @@ baseline is named after a site, so asking would be a field filled in for nothing
 6. Verify every setting by reading it back off the switch.
 7. **Last step:** move the management IP to `192.168.88.2`. The connection drops
   by design; success is confirmed by reaching the switch on the new address.
+
+## Where the switch ends up (TEC-848)
+
+`192.168.88.2` is the default, not the only answer. The page's **Address
+assignment** box offers three of the four shared modes:
+
+| Mode | Behaviour |
+|---|---|
+| `fixed` | Every switch to the same address — the operator sets it once and it survives units and restarts. Starts on the config's `lan_ip`. |
+| `manual` | The address typed for that one switch, as a last octet or a full `192.168.88.x`. One on another subnet is refused: the tool writes its own gateway and netmask alongside, so honouring half of what was typed would strand the switch. |
+| `dhcp` | `proto=dhcp` on the management section and the static options *deleted*, so it can't quietly fall back to the bench address when no lease arrives. |
+
+There is no `cycle`: a site takes one switch, so a counter would have no second
+address to move to. The selection lives in `ip-state.json` beside the tool, not
+in the config — it is a switch an operator flips during a shift, and putting it
+in the config would change `config_hash` every time they did.
+
+**DHCP costs a rediscovery.** The switch serves no DHCP itself, so the station
+can't follow it by renewing its own lease the way the RUTM08 tool does. It is
+found again by MAC over `dhcp_subnets` instead — and ARP is link-local, so the
+station must hold an address on whichever subnet the switch leased from.
+`/api/configure` refuses a DHCP run when the MAC couldn't be read, rather than
+provisioning a switch and then losing it.
+
+That rediscovery only covers the run that moved the switch, where the MAC is
+already in hand. **A DHCP switch plugged back in later is not auto-detected**:
+the detection loop probes the factory address and the fixed management one, and
+a lease is neither. Reach it with the CLI instead —
+`tsw_configure.py --verify --dhcp --ip <where it is>` — or note the address off
+the run record. A per-subnet TSW sweep would find it, but the bench subnets also
+carry the OTD500 and RUTM08, so that is a scanner to design rather than to bolt
+on here.
+
+Each run records `device.ip` (what the bench assigned — empty under DHCP, since
+the lease is the site's to change), `device.ip_mode`, and `device.reached_at`
+(where the switch actually answered). A verify pass reads the mode back out of
+that unit's own configure record, so it checks where *this* switch was sent
+rather than the station default. That triplet is also what a QA label needs in
+order to print the real address instead of an assumed one (TEC-352).
 
 
 
@@ -29,19 +70,35 @@ arriving *newer* than our pin is routine rather than an edge case — and
 it backwards. `bench_core.fw_version_at_least` is the ordered compare that makes
 the floor correct.
 
-**The station needs an address on** `192.168.88.x`**.** The RUTM08 renews the
+**The station needs an address on the target subnet.** The RUTM08 renews the
 laptop's DHCP lease after its LAN move, because the router *serves* DHCP on the
 new subnet. A switch does not, so this tool passes `renew_dhcp=False` — on macOS
 the renew is `ipconfig set <iface> DHCP`, which would throw away a statically
 configured bench adapter. Give the adapter a second static IP on
 `192.168.88.x`, or a `/16` covering both. Without it the switch still moves
-correctly, but the run reports its final-address check as failed.
+correctly, but the run reports its final-address check as failed. The same
+applies under `dhcp` mode, where the subnet in question is whichever one the
+switch leased from.
 
 The switch's factory address is `192.168.1.**2**` — the `.2`, not the `.1` the
 OTD500 and RUTM08 share — so this tool runs alongside them on the same bench
 subnet without colliding. The detection loop watches both the factory and the
 final address, so an already-provisioned switch can be plugged back in and
 re-run: leave the label password empty (it's on the shared password).
+
+## Factory passwords (TEC-845)
+
+The label password this unit shipped with is sent to bench-central as the run
+finishes, keyed to its serial, and kept there forever. That value is what the
+switch reverts to on a factory reset, so keeping it is the difference between
+recovering a unit reset in the field and losing access to it.
+
+It never enters the run record — it rides its own queue
+(`logs/outbox-labels/`) into its own store, because a device has one factory
+password however many times it is run. Nothing is kept when the password field
+is left empty (a re-run on the shared password), or when what was typed *is*
+the shared password. Read them back in the **Factory passwords** panel on the
+bench-central dashboard.
 
 ## Setup
 
@@ -64,6 +121,8 @@ There is also a single-device CLI:
 
 ```
 python3 tsw_configure.py --label-password 'Xy7Kp2Lm9Qa'
+python3 tsw_configure.py --label-password '…' --ip 192.168.88.9   # somewhere else
+python3 tsw_configure.py --label-password '…' --dhcp              # assign nothing
 ```
 
 

@@ -127,9 +127,10 @@ def test_dhcp_prints_the_word_and_the_mac_not_an_address():
 
 
 def test_an_absent_ip_is_read_as_dhcp_without_the_mode_field():
-    """Only Raythink records `ip_mode` today. On the switch and the speaker an
-    empty `device.ip` is the signal, because those tools write the address
-    they assigned — so nothing written means nothing was assigned."""
+    """All three tools record `ip_mode` since TEC-848, so this is the fallback
+    for a record written before that field existed. An empty `device.ip` is the
+    signal: these tools write the address they assigned, so nothing written
+    means nothing was assigned."""
     entry = record("tsw-static")
     entry["device"]["ip"] = ""
     assert pick_face(entry) == "dhcp-mac"
@@ -186,6 +187,23 @@ def test_a_dhcp_lease_is_never_printed_as_the_address():
     entry["device"]["ip_mode"] = "dhcp"
     entry["device"]["ip"] = "192.168.1.57"
     assert label_content(entry).hero == "DHCP"
+    assert "192.168.1.57" not in render_zpl(entry)
+
+
+@pytest.mark.parametrize("name", ["speaker", "tsw-static", "raythink-lan"])
+def test_where_the_unit_answered_is_not_where_it_lives(name):
+    """The shape TEC-848 actually writes: on a DHCP run the tools leave
+    `device.ip` empty and put the address the unit answered on in its own
+    `device.reached_at`, precisely so it is not mistaken for an assignment.
+    Nothing on the label may read that field — it is the site's lease, and the
+    sticker outlives it."""
+    entry = record(name)
+    entry["device"]["ip_mode"] = "dhcp"
+    entry["device"]["ip"] = ""
+    entry["device"]["reached_at"] = "192.168.1.57"
+    content = label_content(entry)
+    assert content.face == "dhcp-mac"
+    assert content.hero == "DHCP"
     assert "192.168.1.57" not in render_zpl(entry)
 
 

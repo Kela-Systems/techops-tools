@@ -2105,20 +2105,38 @@ class TeltonikaClient:
             f"uci get network.{self.mgmt_section()}.ipaddr 2>/dev/null",
             check=False).strip()
 
-    def network_addresses(self) -> dict:
-        """Every `network.<section>.ipaddr` the device has, as {section: ip}.
+    def _network_option(self, option: str) -> dict:
+        """Every `network.<section>.<option>` the device has, as {section: value}.
 
         Section names come back exactly as UCI addresses them, so an anonymous
         `config interface` block appears as `@interface[0]` — which is a valid
         UCI path and an invalid bare shell word, hence `_uci_arg` everywhere
         these are used."""
         out = self.ssh_exec("uci show network 2>/dev/null", check=False)
+        pattern = re.compile(rf"network\.(@?[\w.\[\]-]+?)\.{option}=(.*)$")
         found = {}
         for line in out.splitlines():
-            m = re.match(r"network\.(@?[\w.\[\]-]+?)\.ipaddr=(.*)$", line.strip())
+            m = pattern.match(line.strip())
             if m:
                 found[m.group(1)] = m.group(2).strip().strip("'\"")
         return found
+
+    def network_addresses(self) -> dict:
+        """Every statically-addressed section, as {section: ip}."""
+        return self._network_option("ipaddr")
+
+    def network_protos(self) -> dict:
+        """Every section's addressing protocol, as {section: proto}.
+
+        The companion to `network_addresses` for the DHCP case (TEC-848): an
+        interface taking its address over DHCP has no `ipaddr` in UCI at all, so
+        it is invisible to that one and has to be recognised by its protocol.
+        """
+        return self._network_option("proto")
+
+    def dhcp_sections(self) -> list[str]:
+        """The sections set to take their address over DHCP."""
+        return [s for s, proto in self.network_protos().items() if proto == "dhcp"]
 
     def mgmt_section(self, addresses: Optional[dict] = None) -> str:
         """The `network` section that carries the address we are talking to.
@@ -2227,6 +2245,104 @@ class TeltonikaClient:
                     "%s", new_ip, wait, hint)
         return {"item": "LAN IP", "expected": new_ip,
                 "actual": f"no answer on {new_ip} after {wait}s ({hint})", "ok": False}
+
+    def move_lan_dhcp(self, *, mac: str, subnets: list[str],
+                      wait: int = 300) -> dict:
+        """Leave the management interface taking its address over DHCP — the
+        alternative last step to `move_lan`, for a site whose own DHCP server
+        owns the address (TEC-848).
+
+        The static options are DELETED, not just overridden by `proto`. A
+        leftover `ipaddr` is what a device falls back to when no lease arrives,
+        so leaving one behind would make "on DHCP" quietly mean "on DHCP, or
+        else back on the bench address" — two different devices to ship.
+
+        Nothing here picks an address, so the device is found again by MAC.
+        That is also why `renew_dhcp` has no counterpart here: the station's own
+        lease is irrelevant when we no longer know which subnet to expect the
+        device on, and the sweep covers `subnets` instead.
+
+        Returns a verification-style check dict; never raises after the commit
+        (past that point the device is moving whether we can see it or not).
+        """
+        self._refuse_mutation("leave the management interface on DHCP")
+        row = {"item": "LAN IP", "expected": "a lease from the site's DHCP server"}
+        section = self.mgmt_section()
+        if not section:
+            # No section carries an address. Either the device is already on
+            # DHCP — in which case there is nothing to do and saying so beats
+            # failing — or its addressing lives somewhere this cannot see.
+            on_dhcp = self.dhcp_sections()
+            if len(on_dhcp) == 1:
+                log.info("network.%s is already on DHCP; skipping the move.",
+                         on_dhcp[0])
+                return {**row, "actual": "already configured for DHCP", "ok": True}
+            raise SystemExit(
+                f"Cannot tell which network section carries {self.host}, so "
+                "switching it to DHCP would risk re-addressing the wrong "
+                "interface.")
+
+        log.info("Leaving network.%s on DHCP — the address may change from %s, "
+                 "so the device will be found again by its MAC.",
+                 section, self.host)
+        base = f"network.{section}"
+        # `|| exit 1` rather than chaining with `&&`: the deletes are `-q` and
+        # report failure for an option that was never there, so `&&` would stop
+        # on the first one a given device happens not to have. The guard still
+        # has to be there, because committing the deletes without the `proto`
+        # would leave the device with no addressing at all.
+        drops = "; ".join(f"uci -q delete {shlex.quote(f'{base}.{opt}')}"
+                          for opt in ("ipaddr", "netmask", "gateway"))
+        self.ssh_exec(f"uci set {self._uci_arg(f'{base}.proto', 'dhcp')} || exit 1; "
+                      f"{drops}; uci commit network")
+        self._fire_and_forget("sleep 1; /etc/init.d/network restart")
+        self.close()
+
+        if not mac:
+            return {**row, "actual": "the device's MAC is unknown, so it could "
+                                     "not be found again after the change",
+                    "ok": False}
+
+        port = 443 if self.scheme == "https" else 80
+        deadline = time.time() + wait
+        time.sleep(5)
+        while time.time() < deadline:
+            found = find_ip_by_mac(mac, subnets, port=port)
+            if found:
+                log.info("Device is answering on %s.", found)
+                self.host = found
+                self.base = f"{self.scheme}://{found}/api"
+                return {**row, "actual": f"answering on {found}", "ok": True}
+            time.sleep(5)
+        log.warning("Device was not found by MAC %s on %s within %ds — it may "
+                    "still be fine; is this station on the subnet it leased "
+                    "from?", mac, ", ".join(subnets), wait)
+        return {**row,
+                "actual": f"not found by MAC on {', '.join(subnets)} after "
+                          f"{wait}s (is this station on that subnet?)",
+                "ok": False}
+
+    def lan_dhcp_check(self) -> dict:
+        """The `move_lan_dhcp` verification row, asked without changing anything
+        (TEC-348) — the DHCP twin of `lan_ip_check`.
+
+        There is no address to hold the device to, so the answerable question is
+        whether it is configured to ask for one. The lease it currently holds is
+        reported alongside, because that is where a reader will actually find
+        the device — but it is a finding, not the expectation.
+        """
+        row = {"item": "LAN IP", "expected": "configured for DHCP"}
+        leftover = self.current_lan_ip()
+        if not self.dhcp_sections():
+            found = (f"static {leftover} — this unit was not left on DHCP"
+                     if leftover else "no interface is set to take a lease")
+            return {**row, "actual": found, "ok": False}
+        if leftover:
+            return {**row, "actual": f"on DHCP, but a static {leftover} is "
+                                     "still configured — it will fall back to "
+                                     "that if no lease arrives", "ok": False}
+        return {**row, "actual": f"on DHCP, currently reached at {self.host}",
+                "ok": True}
 
     # --- SIM / mobile -------------------------------------------------------
     def set_sims_4g_only(self) -> None:

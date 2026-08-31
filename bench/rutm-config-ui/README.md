@@ -8,6 +8,8 @@ CSV** — when a router is detected, the UI asks for the **site name** and the
 ## What it does per device
 
 1. Login with the label password (falls back to the shared password for re-runs).
+   The label password is also kept on bench-central, keyed to the serial — see
+   "Factory passwords" below.
 2. Set the admin/root password to the shared default (`Kelasys123!`).
 3. Hostname / device name → `rut-<site_name>`.
 4. Timezone → `Asia/Jerusalem`.
@@ -25,6 +27,20 @@ The LAN move runs last because the device leaves `192.168.1.1` the moment it
 applies. The detection loop watches both addresses, so an already-moved router
 can be plugged back in and re-run — leave the password field empty (it's
 already on the shared password).
+
+## Factory passwords (TEC-845)
+
+The label password this unit shipped with is sent to bench-central as the run
+finishes, keyed to its serial, and kept there forever. That value is what the
+router reverts to on a factory reset, so keeping it is the difference between
+recovering a unit reset in the field and losing access to it.
+
+It never enters the run record — it rides its own queue
+(`logs/outbox-labels/`) into its own store, because a device has one factory
+password however many times it is run. Nothing is kept when the password field
+is left empty (a re-run on the shared password), or when what was typed *is*
+the shared password. Read them back in the **Factory passwords** panel on the
+bench-central dashboard.
 
 ## Setup
 

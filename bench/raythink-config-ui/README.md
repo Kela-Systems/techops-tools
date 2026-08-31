@@ -37,18 +37,24 @@ moment it applies.
 
 ### Choosing how the camera is addressed
 
-Three modes in the UI, chosen any time (even before a camera is plugged in) and
-persisted to `ip_state.json` so the choice survives a restart:
+Four modes in the UI, chosen any time (even before a camera is plugged in) and
+persisted to `ip_state.json` so the choice survives a restart. The picker and
+the modes themselves are `bench_core.ip_mode`, shared with the speaker and
+switch tools since TEC-848 — this tool is where they started.
 
-- **Manual** — type the last octet of the static IP. `XX` is in the range
-`30-50` (configurable).
+- **Same IP every time** (`fixed`) — every camera in the batch gets the one
+address the operator sets, starting from `fixed_octet`. For projects whose sites
+each take a **single** camera: they all want the same default configuration, and
+two of them never meet on a live network.
+- **Manual** — type the address for that one camera, as a last octet or a full
+`192.168.88.x`. The octet range is `30-50` (configurable).
 - **Cycle** — the tool auto-assigns `30`, then `31`, … `50`, then wraps back to
 `30`. The counter only advances on a successful run (a failed camera keeps its
 slot for a retry).
 - **DHCP** — the camera keeps whatever address its own DHCP server gives it, for
 a site that addresses its cameras that way. No octet to choose.
 
-Both static modes are confirmed the obvious way: the tool reconnects on the
+The three static modes are confirmed the obvious way: the tool reconnects on the
 address it chose (renewing the laptop's DHCP lease so it can follow). **DHCP has
 nothing to reconnect to** — nothing on the bench picked the address — so the
 tool finds the camera again by the one thing that didn't change, its **MAC**.

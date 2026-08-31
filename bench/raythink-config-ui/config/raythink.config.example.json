@@ -13,12 +13,13 @@
   "ntp_server": "192.168.88.10",
 
   "static": {
-    "_comment": "The camera moves to subnet_prefix.<octet> as the LAST step (the connection drops; the tool reconnects on the new address and renews the laptop's DHCP lease). octet is chosen in the UI: 'manual' = type it, 'cycle' = auto 30 -> 31 -> ... -> 50 -> 30. default_mode sets which mode the UI opens on ('manual', 'cycle' or 'dhcp').",
+    "_comment": "The camera moves to subnet_prefix.<octet> as the LAST step (the connection drops; the tool reconnects on the new address and renews the laptop's DHCP lease). The octet comes from the address mode chosen in the UI: 'fixed' = every camera gets fixed_octet (for projects where each site takes ONE camera, so every unit ships with the same default configuration), 'cycle' = auto 30 -> 31 -> ... -> 50 -> 30 (for sites taking several), 'manual' = type it per camera. 'dhcp' is the fourth mode and assigns nothing. default_mode sets which the UI opens on; the operator's choice is then remembered in ip_state.json across cameras and restarts.",
     "subnet_prefix": "192.168.88",
     "gateway": "192.168.88.1",
     "netmask": "255.255.255.0",
     "octet_min": 30,
     "octet_max": 50,
+    "fixed_octet": 30,
     "default_mode": "manual"
   },
 

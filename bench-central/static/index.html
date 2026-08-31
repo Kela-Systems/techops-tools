@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <!-- Bench Central — dashboard over the run-record audit trail (TEC-575)
-     plus the fleet panel (pinned release + station check-ins; the runs side
-     stays read-only). One self-contained file, no build step: vanilla JS
-     against the collector's own /api/v1 endpoints. Served at / by
-     collector.py. -->
+     plus the fleet panel (pinned release + station check-ins) and the
+     factory-password lookup (TEC-845); the runs side stays read-only. One
+     self-contained file, no build step: vanilla JS against the collector's
+     own /api/v1 endpoints. Served at / by collector.py. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -77,6 +77,13 @@
   .fleet table { border-radius: 6px; }
   .fleet .empty { padding: 14px; }
 
+  /* factory passwords (TEC-845) — same card shell as the fleet panel */
+  .pw { font: 13px ui-monospace, Menlo, Consolas, monospace; cursor: pointer;
+        border-bottom: 1px dashed var(--muted); }
+  .pw:hover { color: var(--accent); border-bottom-color: var(--accent); }
+  .pw.copied { color: var(--ok-fg); border-bottom-color: var(--ok-fg); }
+  .pw.copied::after { content: " copied"; font-size: 11px; }
+
   /* detail modal */
   #overlay { position: fixed; inset: 0; background: rgba(20,26,38,.45);
              display: none; align-items: flex-start; justify-content: center;
@@ -128,6 +135,26 @@
     </table>
   </section>
 
+  <section class="fleet">
+    <div class="head">
+      <h2>Factory passwords</h2>
+      <span class="sub" id="labels-info">…</span>
+      <form id="labels-form" onsubmit="return false">
+        <input id="label-q" type="search" placeholder="serial, MAC or model">
+        <button id="label-search">Look up</button>
+      </form>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Serial</th><th>MAC</th><th>Device</th><th>Factory password</th>
+        <th>Read</th><th>First seen (UTC)</th><th>Last seen (UTC)</th>
+        <th>Station</th>
+      </tr></thead>
+      <tbody id="label-rows"></tbody>
+    </table>
+    <button class="more" id="labels-more" hidden>Load more</button>
+  </section>
+
   <form class="filters" id="filters" onsubmit="return false">
     <label>Search (serial / MAC / hostname / site / operator)
       <input type="search" id="q" placeholder="e.g. 6008952944"></label>
@@ -161,11 +188,12 @@
 
 <script>
 "use strict";
-const TOOL_NAMES = {otd: "OTD500", rutm: "RUTM08", raythink: "Raythink",
-                    speaker: "Speaker", "magos-radar": "Magos Radar",
-                    "magos-apu": "Magos APU"};
+const TOOL_NAMES = {otd: "OTD500", rutm: "RUTM08", tsw: "TSW202",
+                    raythink: "Raythink", speaker: "Speaker",
+                    "magos-radar": "Magos Radar", "magos-apu": "Magos APU"};
 const PAGE = 100;
 let offset = 0, total = 0;
+let labelOffset = 0, labelTotal = 0;
 // ONE version reference on this page: the pinned release (full sha, set by
 // loadFleet before anything renders). Station rows AND run rows are compared
 // against it — amber means "not on the pinned release". Versions come in
@@ -254,6 +282,74 @@ async function pinRelease() {
   }
 }
 
+// ── factory passwords (TEC-845) ───────────────────────────────────────────
+//
+// The factory-label password a Teltonika shipped with, kept so a unit
+// factory-reset in the field is still reachable. Shown in the clear: it is a
+// value printed on the outside of the device, and the whole point of keeping
+// it is that somebody can read it back off this page.
+
+function copyPassword(el) {
+  const done = () => {
+    el.classList.add("copied");
+    setTimeout(() => el.classList.remove("copied"), 1200);
+  };
+  // The async clipboard API needs a secure context, and the dashboard is
+  // plain http over the tailnet — so the deprecated path is the working one
+  // here, with the modern one tried first for whoever fronts this with TLS.
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(el.dataset.pw).then(done, () => {});
+    return;
+  }
+  const scratch = document.createElement("textarea");
+  scratch.value = el.dataset.pw;
+  scratch.style.cssText = "position:fixed;opacity:0";
+  document.body.appendChild(scratch);
+  scratch.select();
+  try { if (document.execCommand("copy")) done(); } catch { /* select it by hand */ }
+  scratch.remove();
+}
+
+function labelRow(l) {
+  // A device's factory password is printed on it and cannot change, so two
+  // different readings mean a mis-scan or a typo somewhere — worth flagging,
+  // since the stored value is then only probably right.
+  const conflict = l.conflicts
+    ? ` <span class="pill warn" title="${l.conflicts} reading(s) disagreed with this one — check the sticker">?</span>`
+    : "";
+  return `
+    <tr>
+      <td>${esc(l.serial)}</td>
+      <td class="ver">${esc(l.mac || "")}</td>
+      <td>${esc(l.model || TOOL_NAMES[l.tool] || l.tool || "")}</td>
+      <td><span class="pw" data-pw="${esc(l.password)}"
+                title="Click to copy">${esc(l.password)}</span>${conflict}</td>
+      <td>${pill("na", l.source === "scan" ? "scanned" : "typed")}</td>
+      <td>${esc(when(l.first_seen))}</td>
+      <td>${esc(when(l.last_seen))}</td>
+      <td>${esc(l.station_id || "")}</td>
+    </tr>`;
+}
+
+async function loadLabels(append) {
+  if (!append) labelOffset = 0;
+  const p = new URLSearchParams({limit: PAGE, offset: labelOffset});
+  const needle = $("label-q").value.trim();
+  if (needle) p.set("q", needle);
+  const data = await (await fetch("api/v1/device-labels?" + p)).json();
+  labelTotal = data.total;
+  const html = data.labels.map(labelRow).join("");
+  if (append) $("label-rows").insertAdjacentHTML("beforeend", html);
+  else $("label-rows").innerHTML = html || `<tr><td colspan="8" class="empty">${
+    needle ? "No device matches." : "No factory passwords on record yet."
+  }</td></tr>`;
+  labelOffset += data.labels.length;
+  $("labels-info").textContent = needle
+    ? `${labelTotal} device(s) match "${needle}"`
+    : `${labelTotal} device(s) on record`;
+  $("labels-more").hidden = labelOffset >= labelTotal;
+}
+
 function query() {
   const p = new URLSearchParams();
   for (const id of ["q", "station_id", "tool", "site", "status"]) {
@@ -295,9 +391,19 @@ async function load(append) {
   $("more").hidden = offset >= total;
 }
 
+async function factoryPassword(serial) {
+  // Looked up by serial rather than carried in the record: it belongs to the
+  // device, not to this run, so a unit read once shows its password on every
+  // run it ever had — including the ones from before it was being kept.
+  if (!serial || serial === "unknown") return null;
+  const resp = await fetch("api/v1/device-labels/" + encodeURIComponent(serial));
+  return resp.ok ? await resp.json() : null;
+}
+
 async function openDetail(runId) {
   const r = await (await fetch("api/v1/runs/" + encodeURIComponent(runId))).json();
   const d = r.device || {};
+  const label = await factoryPassword(r.serial);
   const core = {
     Serial: r.serial, MAC: r.mac, Model: r.model, Firmware: r.firmware,
     Hostname: d.hostname, Site: d.site_name, Channel: d.channel, IP: d.ip,
@@ -305,7 +411,10 @@ async function openDetail(runId) {
     "Bench version": r.bench_version, Took: took(r.duration_s),
   };
   const grid = Object.entries(core).filter(([, v]) => v != null && v !== "")
-    .map(([k, v]) => `<div><b>${esc(k)}</b>${esc(v)}</div>`).join("");
+    .map(([k, v]) => `<div><b>${esc(k)}</b>${esc(v)}</div>`).join("")
+    + (label ? `<div><b>Factory password</b><span class="pw"
+         data-pw="${esc(label.password)}" title="Click to copy"
+         >${esc(label.password)}</span></div>` : "");
   const checks = (r.verification || []).map(c => `
     <tr><td>${c.ok === true ? '<span class="checkmark">✓</span>'
              : c.ok === false ? '<span class="cross">✗</span>' : "–"}</td>
@@ -355,11 +464,19 @@ async function boot() {
   fill("site", filters.sites);
   // Fleet first: the run rows are compared against the pin it sets.
   await loadFleet();
-  await load(false);
+  await Promise.all([load(false), loadLabels(false)]);
 }
 
 $("pin-apply").addEventListener("click", pinRelease);
 $("pin-ref").addEventListener("keydown", e => { if (e.key === "Enter") pinRelease(); });
+$("label-search").addEventListener("click", () => loadLabels(false));
+$("label-q").addEventListener("keydown", e => { if (e.key === "Enter") loadLabels(false); });
+$("labels-more").addEventListener("click", () => loadLabels(true));
+// One delegated handler for every password cell, in the table and the modal.
+document.addEventListener("click", e => {
+  const cell = e.target.closest(".pw");
+  if (cell) copyPassword(cell);
+});
 $("apply").addEventListener("click", () => load(false));
 $("reset").addEventListener("click", () => {
   $("filters").reset();

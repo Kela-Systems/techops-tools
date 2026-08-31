@@ -70,9 +70,9 @@ SIM row out.
 ## Teltonika TSW202
 
 `TswClient.verify_configuration` in
-[`tsw-config-ui/tsw_configure.py`](../tsw-config-ui/tsw_configure.py). Nothing
-about a TSW202's intended state is per-unit, so every expectation comes from the
-station config.
+[`tsw-config-ui/tsw_configure.py`](../tsw-config-ui/tsw_configure.py). Everything
+but the address comes from the station config; the address is per-unit since
+TEC-848 and is recovered from that switch's own configure record.
 
 | Row | Evidence | Class |
 | --- | --- | --- |
@@ -80,7 +80,9 @@ station config.
 | `timezone` | The shared `timezone_check` — the row this whole document is about. | effect-based |
 | `NTP server` | Three facts: every server in the `system` package (not just the option we wrote, so a leftover pool entry is found), the enable flag, and the servers the **running** ntpd was started with, off its command line. | effect-based |
 | `firmware` | `/etc/version` against the firmware floor. | effect-based |
-| `LAN IP` (verify only) | `lan_ip_check`, as above. | effect-based |
+| `LAN IP` (verify only, static) | `lan_ip_check`, as above. | effect-based |
+| `LAN IP` (verify only, DHCP) | `lan_dhcp_check`: there is no address to hold the switch to, so the answerable question is whether it is configured to ask for one. A leftover static `ipaddr` alongside `proto=dhcp` **fails** — that switch falls back to the bench address when no lease arrives, which is a second device shipped under one record. | effect-based |
+| `LAN IP` (configure only, DHCP) | `move_lan_dhcp` finds the switch again by MAC on the configured subnets and waits for it to answer. | effect-based |
 
 ## Provision-ISR IP speaker
 
@@ -97,6 +99,8 @@ plus the rows `verify_speaker` adds.
 | `static IP` | The network table (`netip`, `dhcp=0`), corroborated by `reached at` / the configure run's move. | read-back |
 | `netmask`, `gateway` | The network table. | read-back |
 | `static IP` (configure only) | `set_static_ip` follows the speaker to its new address and waits for the port to open. | effect-based |
+| `DHCP` (verify only, DHCP mode) | The speaker is set to take a lease, and the address it currently holds is reported alongside as a finding. There is no `reached at` row under this mode: no address was ever promised, so there is nothing to hold it to. | read-back |
+| `DHCP` (configure only, DHCP mode) | `set_dhcp` finds the speaker again by MAC on the scan subnets and waits for it to answer. | effect-based |
 
 ## Raythink thermal camera
 

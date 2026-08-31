@@ -13,10 +13,17 @@
   "_comment_ntp": "Set as the switch's ONLY time source (the factory pool entries are cleared, not appended to). Unreachable from the factory subnet by design — the switch can only talk to it once the management move below has happened, so verification checks the configuration, not that the clock has synced.",
   "ntp_server": "192.168.88.10",
 
-  "_comment_lan": "Applied as the LAST step: the management interface moves to lan_ip and the switch drops off the factory address. A switch serves no DHCP, so the station's own adapter needs an address on this subnet for the move to be confirmable — otherwise the run reports the LAN IP check as failed even though the switch moved fine. The detection loop also watches lan_ip, so an already-moved switch can be re-run (leave the label password empty — it is on the shared password).",
+  "_comment_lan": "Applied as the LAST step: the management interface moves off the factory address. A switch serves no DHCP, so the station's own adapter needs an address on this subnet for the move to be confirmable — otherwise the run reports the LAN IP check as failed even though the switch moved fine. The detection loop also watches this address, so an already-moved switch can be re-run (leave the label password empty — it is on the shared password).",
   "lan_ip": "192.168.88.2",
   "netmask": "255.255.255.0",
   "gateway": "192.168.88.1",
+
+  "_comment_ip_mode": "lan_ip above is the station default and the address the UI's 'fixed' mode starts on. The operator picks the mode per batch and it is remembered in ip-state.json across switches and restarts: 'fixed' = every switch to the same address, 'manual' = type it per switch, 'dhcp' = assign nothing and leave the switch asking the site's DHCP server. There is no 'cycle' — a site takes one switch. default_ip_mode sets which the UI opens on.",
+  "default_ip_mode": "fixed",
+
+  "_comment_dhcp": "Only used by 'dhcp' mode: a switch left on DHCP goes somewhere this tool did not choose, so it is found again by its MAC on these subnets. ARP is link-local, so the station must hold an address on whichever one the switch leases from. lease_timeout is how long to wait for it to restart its network, take a lease and answer there.",
+  "dhcp_subnets": ["192.168.88.0/24", "192.168.1.0/24"],
+  "lease_timeout": 300,
 
   "firmware": {
     "_comment": "minimum_version is a FLOOR, not a pin. A switch below it is flashed from bin_path; one at or above it is left alone (Teltonika ships a newer 'Latest' than its 'Stable' for this family, so arriving-newer is routine). Download the image from https://wiki.teltonika-networks.com/view/TSW202_Firmware_Downloads into firmware/ (gitignored) — it is only needed for a switch that arrives below the floor. keep_settings must stay true: a wipe would reset a moved switch back to the factory address mid-run.",
