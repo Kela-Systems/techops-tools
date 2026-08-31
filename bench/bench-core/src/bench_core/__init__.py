@@ -170,6 +170,30 @@ UCI_TIMEZONE = "system.system.timezone"          # POSIX TZ string — libc read
 # by setting the zone in the UI and diffing `uci show system`.
 UCI_ZONENAME = "system.system.zoneName"          # what the WebUI renders
 UCI_ZONENAME_NTP = "system.ntp.zoneName"         # the timeserver section's copy
+# RutOS carries TWO independent time subsystems and a device can run with them
+# disagreeing: `system.ntp` (the OpenWrt timeserver section — enable flags and a
+# zoneName of its own) and the `ntpclient` package (the client a RUTM08/OTD500
+# actually polls with, with a THIRD zoneName). The demo pair in TEC-846 had
+# system.ntp disabled on UTC while ntpclient said Asia/Jerusalem, which is how
+# log timestamps end up disagreeing across one device's own subsystems.
+NTP_CLIENT_PACKAGE = "ntpclient"
+# The section types the servers are kept under. RutOS uses `ntpserver` (seen on
+# an OTD500 running OTD5_R_00.07.22.3); upstream OpenWrt's package uses `server`.
+NTP_SERVER_TYPES = ("ntpserver", "server")
+# Read once at daemon startup, which is why `ntp_daemon_check` compares its
+# mtime against the process: RutOS runs `ntpclient -s -l` with no server on the
+# command line, so this file is the only place the running client's servers are.
+NTP_CLIENT_CONFIG = "/etc/config/ntpclient"
+UCI_NTP_SECTION = "system.ntp"
+UCI_NTP_SERVER = "system.ntp.server"
+UCI_NTP_ENABLED = "system.ntp.enabled"
+# Stock RutOS ships `interval 86400` — one probe per day is not sync, it is a
+# daily chance to notice the clock is wrong.
+NTP_CLIENT_INTERVAL = 3600
+# The firewall redirect that carries an upstream OTD500's NTP through the RUTM08
+# (TEC-857). Named, so a re-run updates the rule instead of stacking duplicates.
+NTP_FORWARD_NAME = "kela-ntp"
+NTP_PORT = 123
 # RMS lives in the `rms_mqtt` package; the connect daemon's enable flag is
 # `1` by default, so "connect to RMS" is really: ensure enabled + force connect.
 UCI_RMS_ENABLED = "rms_mqtt.rms_connect_mqtt.enable"
@@ -1420,6 +1444,35 @@ class TeltonikaClient:
         addressed as `@sim[0]`, and an unquoted `[0]` is a shell glob."""
         return shlex.quote(f"{path}={value}")
 
+    def _uci_package(self, package: str) -> tuple[dict, dict]:
+        """`uci show <package>` parsed into ({section: type}, {(section, option): value}).
+
+        For the packages whose section shape is not fixed across builds. RutOS
+        names the `ntpclient` server sections `1`..`4` on the OTD500 but leaves
+        firewall redirects anonymous (`@redirect[0]`), so callers discover what
+        is there rather than addressing a section by a name that may not exist.
+        A missing package reads as two empty dicts, not an error.
+        """
+        out = self.ssh_exec(f"uci show {package} 2>/dev/null", check=False)
+        types: dict[str, str] = {}
+        options: dict[tuple[str, str], str] = {}
+        for line in out.splitlines():
+            m = re.match(rf"{re.escape(package)}\.(@?[\w.\[\]-]+?)"
+                         rf"(?:\.([\w-]+))?=(.*)$", line.strip())
+            if not m:
+                continue
+            section, option = m.group(1), m.group(2)
+            value = m.group(3).strip().strip("'\"")
+            if option is None:
+                types[section] = value
+            else:
+                options[(section, option)] = value
+        return types, options
+
+    def _uci_sections(self, types: dict, section_type: str) -> list[str]:
+        """The sections of one type, in the order `uci show` listed them."""
+        return [s for s, t in types.items() if t == section_type]
+
     def _uci_add(self, package: str, section_type: str) -> str:
         """`uci add` an anonymous section, returning the id UCI assigned it (e.g.
         'cfg0492bd'). The add is staged, so the caller's `uci commit` persists it."""
@@ -1999,7 +2052,7 @@ class TeltonikaClient:
 
     def configured_ntp_servers(self) -> list[str]:
         """Every NTP server the device has configured, in whatever section shape
-        it keeps them.
+        it keeps them, across BOTH time subsystems.
 
         Deliberately NOT `uci get system.ntp.server`: that reads back exactly
         what `set_ntp_server` writes, which passed verification on a TSW202
@@ -2007,23 +2060,34 @@ class TeltonikaClient:
         `server` / `hostname` option in the package finds the ones the device
         really uses, whether they are a `list server` on one section or a
         `hostname` on one section per server.
+
+        The `ntpclient` package is scanned for the same reason one step on
+        (TEC-857): stock RutOS ships `time2/3/4.google.com` there, a `uci show
+        system` scan cannot see them, and on an offline site each one costs a
+        failover timeout before the server that would have worked is tried.
+        Devices without that package (the TSW202) simply contribute nothing.
         """
-        out = self.ssh_exec("uci show system 2>/dev/null", check=False)
         servers: list[str] = []
-        for line in out.splitlines():
-            m = re.match(r"system\.(@?[\w.\[\]-]+?)\.(server|hostname)=(.*)$",
-                         line.strip())
-            if not m:
-                continue
-            section, option = m.group(1), m.group(2)
-            # system.system.hostname is the DEVICE name, not a time server.
-            if option == "hostname" and section == "system":
-                continue
-            # uci renders a list as `opt='a' 'b' 'c'`.
-            for token in m.group(3).split():
-                value = token.strip().strip("'\"")
-                if value and value not in servers:
-                    servers.append(value)
+
+        def collect(package: str, skip_device_hostname: bool) -> None:
+            out = self.ssh_exec(f"uci show {package} 2>/dev/null", check=False)
+            for line in out.splitlines():
+                m = re.match(rf"{re.escape(package)}\.(@?[\w.\[\]-]+?)"
+                             rf"\.(server|hostname)=(.*)$", line.strip())
+                if not m:
+                    continue
+                section, option = m.group(1), m.group(2)
+                # system.system.hostname is the DEVICE name, not a time server.
+                if skip_device_hostname and option == "hostname" and section == "system":
+                    continue
+                # uci renders a list as `opt='a' 'b' 'c'`.
+                for token in m.group(3).split():
+                    value = token.strip().strip("'\"")
+                    if value and value not in servers:
+                        servers.append(value)
+
+        collect("system", skip_device_hostname=True)
+        collect(NTP_CLIENT_PACKAGE, skip_device_hostname=False)
         return servers
 
     def running_ntp_servers(self) -> list[str]:
@@ -2036,6 +2100,238 @@ class TeltonikaClient:
         """
         out = self.ssh_exec("ps w 2>/dev/null | grep '[n]tpd'", check=False)
         return re.findall(r"-p\s+(\S+)", out)
+
+    def _ntp_client_sections(self, types: dict,
+                             options: dict) -> tuple[list[str], list[str]]:
+        """The `ntpclient` package's (server sections, settings sections).
+
+        Both discovered rather than named, and the settings side is NOT "every
+        section that is not a server". A real OTD500 carries a third section,
+        `ntpdrift`, which owns only `freq` and sorts BEFORE the settings one — so
+        that rule reads the poll interval off the wrong section (reporting a
+        correctly configured device as blank) and writes enabled/interval/
+        zoneName onto a section that owns none of them.
+
+        Typing it `ntpclient` is not a guess: RutOS's own `/etc/init.d/ntpclient`
+        does `config_foreach start_client ntpclient` and then reads `enabled` off
+        each section it finds, defaulting to 0. So that section is also what
+        decides whether the daemon starts at all — writing the flag anywhere
+        else leaves a device with nothing polling.
+        """
+        server_sections = [s for t in NTP_SERVER_TYPES
+                           for s in self._uci_sections(types, t)]
+        if not server_sections:
+            server_sections = [s for s in types if (s, "hostname") in options]
+
+        # The settings section is the one typed after the package itself.
+        settings = [s for s in self._uci_sections(types, NTP_CLIENT_PACKAGE)
+                    if s not in server_sections]
+        if not settings:
+            # A build that types it differently: fall back to whatever already
+            # carries the options we are about to read or write, which is still
+            # narrower than "not a server".
+            settings = [s for s in types
+                        if s not in server_sections
+                        and ((s, "interval") in options or (s, "enabled") in options)]
+        return server_sections, settings
+
+    def ntp_client_settings(self) -> dict:
+        """The `ntpclient` package's own state: {servers, enabled, interval, zonename}.
+
+        Empty when the device has no such package (the TSW202 keeps its client
+        in `system.ntp` instead), which callers read as "not applicable" rather
+        than "misconfigured".
+        """
+        types, options = self._uci_package(NTP_CLIENT_PACKAGE)
+        if not types:
+            return {}
+        server_sections, settings = self._ntp_client_sections(types, options)
+        first = settings[0] if settings else ""
+        return {
+            "servers": [options[(s, "hostname")] for s in server_sections
+                        if options.get((s, "hostname"))],
+            "enabled": options.get((first, "enabled"), "") if first else "",
+            "interval": options.get((first, "interval"), "") if first else "",
+            "zonename": options.get((first, "zoneName"), "") if first else "",
+        }
+
+    def set_ntp_client(self, server: str, *, interval: int = NTP_CLIENT_INTERVAL,
+                       zonename: str = "") -> None:
+        """Point the RutOS `ntpclient` at `server` as the device's ONLY time source.
+
+        Not the same subsystem as `system.ntp` (see NTP_CLIENT_PACKAGE above),
+        and on a RUTM08/OTD500 this is the one that actually polls. Both are
+        written here: leaving `system.ntp` disabled on UTC while the client runs
+        on local time is the state TEC-846 found in the field, and it makes the
+        device's own log timestamps disagree with each other.
+
+        The stock servers 2-4 are DELETED rather than left below ours. They are
+        `time2/3/4.google.com`, which on an offline site resolve to nothing and
+        cost a failover timeout each before the server that would have worked is
+        reached. Section names are discovered, not assumed: TEC-857 quotes
+        `ntpclient.1.hostname`, but that numbering is a build detail.
+        """
+        self._refuse_mutation(f"point the NTP client at {server}")
+        log.info("Pointing the NTP client at %s (interval %ss) ...", server, interval)
+        types, options = self._uci_package(NTP_CLIENT_PACKAGE)
+        if not types:
+            raise SystemExit(
+                f"This device has no '{NTP_CLIENT_PACKAGE}' package "
+                f"(`uci show {NTP_CLIENT_PACKAGE}` returned nothing), so there is "
+                f"no client to point at {server}.")
+
+        server_sections, settings_sections = self._ntp_client_sections(types, options)
+        if server_sections:
+            keep, drop = server_sections[0], server_sections[1:]
+        else:
+            keep, drop = self._uci_add(NTP_CLIENT_PACKAGE, NTP_SERVER_TYPES[0]), []
+
+        def opt(section: str, option: str, value) -> str:
+            return f"uci set {self._uci_arg(f'{NTP_CLIENT_PACKAGE}.{section}.{option}', value)}"
+
+        cmds = [opt(keep, "hostname", server),
+                # An inherited non-123 port would quietly miss the RUTM08's
+                # forward, which only carries 123.
+                opt(keep, "port", NTP_PORT)]
+        # Reverse order: anonymous sections are addressed by index, so deleting
+        # from the front renumbers the ones still to go.
+        for section in reversed(drop):
+            cmds.append(f"uci delete {shlex.quote(f'{NTP_CLIENT_PACKAGE}.{section}')}")
+
+        if settings_sections:
+            for section in settings_sections:
+                cmds.append(opt(section, "enabled", 1))
+                cmds.append(opt(section, "interval", interval))
+                if zonename:
+                    cmds.append(opt(section, "zoneName", zonename))
+        else:
+            log.warning("No %s settings section found — the poll interval is "
+                        "whatever the device shipped with.", NTP_CLIENT_PACKAGE)
+        cmds.append(f"uci commit {NTP_CLIENT_PACKAGE}")
+        self.ssh_exec(" && ".join(cmds))
+
+        # The other subsystem, so the two cannot disagree.
+        self.ssh_exec(
+            f"uci -q delete {UCI_NTP_SERVER}; "
+            f"uci add_list {self._uci_arg(UCI_NTP_SERVER, server)} && "
+            f"uci set {self._uci_arg(UCI_NTP_ENABLED, 1)} && "
+            f"uci commit system")
+
+        self.ssh_exec(f"/etc/init.d/{NTP_CLIENT_PACKAGE} restart", check=False)
+        self.ssh_exec("/etc/init.d/sysntpd restart", check=False)
+        log.info("NTP client set.")
+
+    def ntp_client_check(self, server: str, *,
+                         interval: int = NTP_CLIENT_INTERVAL) -> dict:
+        """One `{item, expected, actual, ok}` row for the RutOS NTP client.
+
+        Read-back, and deliberately so. The server sits on the assembly network,
+        the bench provisions one device at a time, and an OTD500 is never cabled
+        behind the RUTM08 that would carry it there — so there is no reachable
+        server to sync against and nothing an `ntpclient -d` probe here could
+        report but "no reply". `docs/verification-rows.md` records why this bench
+        has no sync row and what would close the gap.
+
+        Four facts, because each fails on its own: every server in EITHER time
+        subsystem (a surviving `time2.google.com` is a device that will drift to
+        internet time on a site that has no internet), BOTH enable flags, and
+        the poll interval, since stock RutOS ships 86400 and one probe per day
+        is not sync. Both flags because the demo pair ran with `system.ntp`
+        disabled on UTC while the client was on local time.
+        """
+        servers = self.configured_ntp_servers()
+        settings = self.ntp_client_settings()
+        if not settings:
+            return {"item": "NTP client", "expected": server,
+                    "actual": f"no {NTP_CLIENT_PACKAGE} package on this device",
+                    "ok": None}
+        enabled = settings["enabled"]
+        sys_enabled = self.ssh_exec(f"uci -q get {UCI_NTP_ENABLED}",
+                                    check=False).strip()
+        try:
+            got_interval = int(settings["interval"])
+        except (TypeError, ValueError):
+            got_interval = 0
+        interval_ok = bool(got_interval) and got_interval <= interval
+        return {
+            "item": "NTP client",
+            "expected": f"{server} (only, both subsystems enabled, "
+                        f"polled every {interval}s or sooner)",
+            "actual": (f"configured {', '.join(servers) or '(none)'} "
+                       f"({NTP_CLIENT_PACKAGE} enabled={enabled or '?'}, "
+                       f"system.ntp enabled={sys_enabled or '?'}); "
+                       f"interval {settings['interval'] or '(unset)'}"),
+            "ok": (servers == [server] and enabled == "1"
+                   and sys_enabled == "1" and interval_ok),
+        }
+
+    def ntp_daemon_state(self) -> dict:
+        """`{pid, started, written}` for the running `ntpclient`, epochs as ints.
+
+        `started` is the mtime of `/proc/<pid>`, which the kernel sets to when
+        the process started; `written` is the mtime of the config file. Either
+        can come back 0 on a build whose `date` has no `-r`, which callers read
+        as "could not tell" rather than as a fault.
+        """
+        out = self.ssh_exec(
+            "pid=$(ps w 2>/dev/null | grep '[n]tpclient' | awk '{print $1}' "
+            "| head -n1); "
+            'echo "pid=${pid:-}"; '
+            'echo "started=$(date -r /proc/${pid:-0} +%s 2>/dev/null)"; '
+            'echo "written=$(date -r ' + NTP_CLIENT_CONFIG + ' +%s 2>/dev/null)"',
+            check=False)
+        fields = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+        def epoch(key: str) -> int:
+            try:
+                return int(fields.get(key, "").strip())
+            except (TypeError, ValueError):
+                return 0
+
+        return {"pid": fields.get("pid", "").strip(),
+                "started": epoch("started"), "written": epoch("written")}
+
+    def ntp_daemon_check(self) -> dict:
+        """One row: the RUNNING client has actually read the config we committed.
+
+        `ntp_client_check` proves what is in the config FILE. It cannot prove
+        the daemon ever read it — RutOS's ntpclient loads that file once at
+        startup, and `set_ntp_client` restarts it best-effort (`check=False`),
+        so a restart that quietly failed leaves a device with a correct config,
+        a green config row, and a daemon still polling whatever it read at boot.
+        The same shape as the timezone bug: a committed option the running
+        daemon never picked up, passing verification.
+
+        `running_ntp_servers()` settles this for `ntpd` by reading the servers
+        off its command line, but there is nothing to read here: RutOS starts
+        this one as `ntpclient -s -l` and leaves the servers in the file. So the
+        question becomes whether the process is OLDER than the file it reads,
+        which answers it without needing the servers at all.
+        """
+        expected = "running, started after the last config write"
+        state = self.ntp_daemon_state()
+        pid = state["pid"]
+        if not pid:
+            return {"item": "NTP daemon", "expected": expected,
+                    "actual": f"no {NTP_CLIENT_PACKAGE} process — nothing is "
+                              f"polling, whatever the config says",
+                    "ok": False}
+        if not state["started"] or not state["written"]:
+            return {"item": "NTP daemon", "expected": expected,
+                    "actual": f"running (pid {pid}); device would not report "
+                              f"the start/config timestamps",
+                    "ok": None}
+        stale = state["written"] - state["started"]
+        if stale > 0:
+            return {"item": "NTP daemon", "expected": expected,
+                    "actual": f"running (pid {pid}) but started {stale}s BEFORE "
+                              f"{NTP_CLIENT_CONFIG} was last written — it is "
+                              f"still polling what it read at startup",
+                    "ok": False}
+        return {"item": "NTP daemon", "expected": expected,
+                "actual": f"running (pid {pid}), started {-stale}s after the "
+                          f"last write to {NTP_CLIENT_CONFIG}",
+                "ok": True}
 
     def set_timezone(self, zonename: str) -> None:
         posix = POSIX_TZ.get(zonename)
@@ -2050,6 +2346,16 @@ class TeltonikaClient:
                   f"{UCI_ZONENAME}='{zonename}'",
                   f"{UCI_ZONENAME_NTP}='{zonename}'",
                   package="system")
+        # A fourth consumer on RutOS: the ntpclient package keeps its OWN
+        # zoneName, and the demo pair in TEC-846 ran with it saying
+        # Asia/Jerusalem while system.ntp said UTC. Skipped silently on builds
+        # without the package (the TSW202), which have nothing to disagree with.
+        types, opts = self._uci_package(NTP_CLIENT_PACKAGE)
+        _, settings_sections = self._ntp_client_sections(types, opts)
+        if settings_sections:
+            self._uci(*[self._uci_arg(f"{NTP_CLIENT_PACKAGE}.{s}.zoneName", zonename)
+                        for s in settings_sections],
+                      package=NTP_CLIENT_PACKAGE)
         # A committed UCI option is not yet a timezone. libc reads /etc/TZ, and
         # nothing writes it until the system config is reloaded: the first
         # TSW202 off the bench held both options exactly right and ran on a
@@ -2137,6 +2443,222 @@ class TeltonikaClient:
     def dhcp_sections(self) -> list[str]:
         """The sections set to take their address over DHCP."""
         return [s for s, proto in self.network_protos().items() if proto == "dhcp"]
+
+    # --- WAN address, DHCP pool and the NTP forward (TEC-857) ----------------
+    @staticmethod
+    def _uci_list(value: str) -> list[str]:
+        """The members of a UCI list option, which `uci show` renders `'a' 'b'`."""
+        return [token.strip().strip("'\"") for token in value.split() if token.strip()]
+
+    def set_wan_static(self, ipaddr: str, *, netmask: str = "255.255.255.0",
+                       gateway: str = "", dns: str = "", section: str = "wan") -> None:
+        """Give the WAN interface a fixed address instead of a DHCP lease.
+
+        The point is fleet-constancy, not this one router: with every RUTM08 on
+        the same WAN address, the OTD500 upstream of it gets one identical NTP
+        line fleet-wide instead of a per-site lookup, and a replacement unit
+        needs no site knowledge (TEC-857).
+
+        Applied with `reload` rather than `restart` so only the interface that
+        changed is reconfigured and the LAN session this runs over survives.
+        Note that on the bench this is the step that ENDS internet access — the
+        WAN port stops taking a lease from the uplink — so it belongs after
+        anything that needs to be online.
+        """
+        self._refuse_mutation(f"give {section} the static address {ipaddr}")
+        if section not in self.network_protos():
+            raise SystemExit(
+                f"No 'network.{section}' interface on this device — "
+                f"cannot give it the static address {ipaddr}.")
+        log.info("Setting %s to static %s (gw %s) ...", section, ipaddr, gateway or "none")
+        options = {"proto": "static", "ipaddr": ipaddr, "netmask": netmask}
+        if gateway:
+            options["gateway"] = gateway
+        if dns:
+            options["dns"] = dns
+        self._uci(*[self._uci_arg(f"network.{section}.{option}", value)
+                    for option, value in options.items()],
+                  package="network")
+        self.ssh_exec("/etc/init.d/network reload", check=False)
+        log.info("WAN address set.")
+
+    def wan_static_check(self, ipaddr: str, *, netmask: str = "255.255.255.0",
+                         gateway: str = "", section: str = "wan") -> dict:
+        """One row for the fixed WAN address.
+
+        Read-back: the interface faces the site's OTD500, which is not on the
+        bench, so there is nothing upstream to reach and confirm it against. The
+        proto is checked alongside the address because an interface left on
+        `dhcp` with a stale `ipaddr` still reads back the right number while
+        taking whatever the site hands it.
+        """
+        _, options = self._uci_package("network")
+        got = {option: options.get((section, option), "")
+               for option in ("proto", "ipaddr", "netmask", "gateway")}
+        want = {"proto": "static", "ipaddr": ipaddr, "netmask": netmask}
+        if gateway:
+            want["gateway"] = gateway
+        wrong = {k: v for k, v in want.items() if got[k] != v}
+        return {
+            "item": "WAN address",
+            "expected": f"{ipaddr}/{netmask} via {gateway or 'no gateway'} (static)",
+            "actual": (f"{got['proto'] or '(unset)'} {got['ipaddr'] or '(unset)'}/"
+                       f"{got['netmask'] or '(unset)'} via "
+                       f"{got['gateway'] or '(none)'}"),
+            "ok": not wrong,
+        }
+
+    def set_dhcp_pool(self, start: int, limit: int, *, section: str = "lan") -> None:
+        """Narrow the LAN DHCP pool so the low addresses are never leased out.
+
+        The RUTM08 downstream holds its WAN address statically and will not
+        defend it, so anything this server might hand to another client has to
+        stay clear of it (TEC-857).
+        """
+        self._refuse_mutation(f"narrow the {section} DHCP pool")
+        log.info("Setting the %s DHCP pool to start=%s limit=%s ...", section, start, limit)
+        self._uci(self._uci_arg(f"dhcp.{section}.start", start),
+                  self._uci_arg(f"dhcp.{section}.limit", limit),
+                  package="dhcp")
+        self.ssh_exec("/etc/init.d/dnsmasq reload", check=False)
+        log.info("DHCP pool set.")
+
+    def dhcp_pool_check(self, start: int, limit: int, *, reserved: str = "",
+                        section: str = "lan") -> dict:
+        """One row for the DHCP pool, asked as "is the reserved address safe?".
+
+        Checking the two numbers read back would be a tautology dressed up as a
+        range. The question worth failing on is whether the pool can still hand
+        out the address the downstream router is holding statically, so that is
+        what the row computes — a pool starting at .1 fails even though both
+        options committed exactly as written.
+        """
+        _, options = self._uci_package("dhcp")
+        got_start = options.get((section, "start"), "")
+        got_limit = options.get((section, "limit"), "")
+        try:
+            low = int(got_start)
+            high = low + int(got_limit) - 1
+        except (TypeError, ValueError):
+            return {"item": "DHCP pool",
+                    "expected": f"start {start}, {limit} addresses",
+                    "actual": f"unreadable (start={got_start or '(unset)'}, "
+                              f"limit={got_limit or '(unset)'})",
+                    "ok": False}
+        actual = f"leases .{low}-.{high}"
+        ok = low >= start and high <= start + limit - 1
+        if reserved:
+            host = int(reserved.rsplit(".", 1)[-1])
+            clear = host < low or host > high
+            actual += f", {reserved} {'excluded' if clear else 'INSIDE the pool'}"
+            ok = ok and clear
+        return {"item": "DHCP pool",
+                "expected": (f"start {start}, {limit} addresses"
+                             + (f", {reserved} excluded" if reserved else "")),
+                "actual": actual, "ok": ok}
+
+    def firewall_zone_networks(self, zone: str) -> list[str]:
+        """The interfaces a named firewall zone covers.
+
+        A forward is matched by zone, so an interface that is not a member of
+        the one the rule names never sees it — the trap TEC-857 lists as a
+        prerequisite, after finding a `wan` zone holding only the mobile
+        interfaces on the demo unit.
+        """
+        types, options = self._uci_package("firewall")
+        for section in self._uci_sections(types, "zone"):
+            if options.get((section, "name"), "") == zone:
+                return self._uci_list(options.get((section, "network"), ""))
+        return []
+
+    def set_ntp_port_forward(self, *, dest_ip: str, src_ip: str = "",
+                             zone: str = "wan", name: str = NTP_FORWARD_NAME) -> None:
+        """Forward NTP arriving on the WAN to the site's time server.
+
+        This is what lets an OTD500 sitting upstream of the router reach a
+        server on the router's LAN, which it cannot address directly (TEC-846
+        confirmed the DNAT end to end). `src_ip` restricts the rule to the one
+        device that should be using it.
+
+        Found by name and updated in place, so re-running the tool on a device
+        that already has the rule does not stack a second copy.
+        """
+        self._refuse_mutation(f"forward NTP to {dest_ip}")
+        types, options = self._uci_package("firewall")
+        existing = [s for s in self._uci_sections(types, "redirect")
+                    if options.get((s, "name"), "") == name]
+        section = existing[0] if existing else self._uci_add("firewall", "redirect")
+        log.info("Forwarding UDP %s on %s to %s:%s (%s) ...",
+                 NTP_PORT, zone, dest_ip, NTP_PORT,
+                 "updating existing rule" if existing else "new rule")
+        rule = {"name": name, "target": "DNAT", "src": zone, "proto": "udp",
+                "src_dport": NTP_PORT, "dest_ip": dest_ip, "dest_port": NTP_PORT,
+                "enabled": 1}
+        if src_ip:
+            rule["src_ip"] = src_ip
+        self._uci(*[self._uci_arg(f"firewall.{section}.{option}", value)
+                    for option, value in rule.items()],
+                  package="firewall")
+        self.ssh_exec("/etc/init.d/firewall reload", check=False)
+        members = self.firewall_zone_networks(zone)
+        log.info("NTP forward set. The '%s' zone covers: %s",
+                 zone, ", ".join(members) or "(nothing readable)")
+
+    def ntp_forward_check(self, *, dest_ip: str, src_ip: str = "",
+                          zone: str = "wan", wan_section: str = "wan",
+                          name: str = NTP_FORWARD_NAME) -> dict:
+        """One row for the NTP port forward.
+
+        Read-back of the rule, plus the one fact that makes the rule mean
+        anything: that the wired WAN interface is actually in the zone the rule
+        matches on. TEC-857 lists that as a prerequisite because the demo unit's
+        `wan` zone held only the mobile interfaces, and a rule on a zone the
+        traffic never enters is a green row over a dead path.
+
+        Zone membership is only allowed to FAIL the row when it could be read.
+        An unreadable firewall package says nothing either way, and rounding
+        that up to a failure would be as dishonest as rounding it up to a pass.
+        """
+        types, options = self._uci_package("firewall")
+        found = [s for s in self._uci_sections(types, "redirect")
+                 if options.get((s, "name"), "") == name]
+        if not found:
+            return {"item": "NTP forward",
+                    "expected": f"UDP {NTP_PORT} on {zone} to {dest_ip}",
+                    "actual": f"no '{name}' rule on this device", "ok": False}
+        section = found[0]
+        want = {"target": "DNAT", "src": zone, "proto": "udp",
+                "src_dport": str(NTP_PORT), "dest_ip": dest_ip,
+                "dest_port": str(NTP_PORT)}
+        if src_ip:
+            want["src_ip"] = src_ip
+        wrong = {k: v for k, v in want.items()
+                 if options.get((section, k), "") != v}
+        # RutOS omits `enabled` on a rule that is on; only an explicit 0 is off.
+        off = options.get((section, "enabled"), "1") == "0"
+
+        members = self.firewall_zone_networks(zone)
+        zone_ok = wan_section in members if members else None
+        if zone_ok is None:
+            zone_note = f"'{zone}' zone membership unreadable"
+        elif zone_ok:
+            zone_note = f"'{zone}' zone covers {wan_section}"
+        else:
+            zone_note = (f"'{zone}' zone does NOT cover {wan_section} "
+                         f"(covers {', '.join(members)}) — nothing arriving "
+                         f"there matches this rule")
+        detail = (f"UDP {options.get((section, 'src_dport'), '?')} on "
+                  f"{options.get((section, 'src'), '?')} to "
+                  f"{options.get((section, 'dest_ip'), '?')}:"
+                  f"{options.get((section, 'dest_port'), '?')}"
+                  + (f" from {options.get((section, 'src_ip'), 'anywhere')}"
+                     if src_ip else "")
+                  + (" [DISABLED]" if off else ""))
+        return {"item": "NTP forward",
+                "expected": (f"UDP {NTP_PORT} on {zone} to {dest_ip}:{NTP_PORT}"
+                             + (f" from {src_ip}" if src_ip else "")),
+                "actual": f"{detail}; {zone_note}",
+                "ok": not wrong and not off and zone_ok is not False}
 
     def mgmt_section(self, addresses: Optional[dict] = None) -> str:
         """The `network` section that carries the address we are talking to.

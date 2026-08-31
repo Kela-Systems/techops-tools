@@ -13,6 +13,34 @@
   "_comment_lan": "Applied as the LAST step: the LAN interface moves to lan_ip and the device drops off 192.168.1.1. The tool renews the laptop's DHCP lease and confirms the device answers on the new address. The detection loop also watches lan_ip, so an already-moved router can be re-run (leave the label password empty — it is on the shared password).",
   "lan_ip": "192.168.88.1",
 
+  "ntp": {
+    "_comment": "TEC-857 — the router's own time source. It is the gateway of the LAN the server sits on, so it addresses the server directly; the ntp_forward block below is a separate thing, for the OTD500 upstream that cannot. Written to BOTH RutOS time subsystems (the ntpclient package and system.ntp): the demo pair had ntpclient on Asia/Jerusalem while system.ntp sat disabled on UTC, which makes one device's own log timestamps disagree.",
+    "_comment_verify": "The server is on the assembly network and unreachable from this bench, so verification checks the configuration, not a synced clock — see docs/verification-rows.md.",
+    "enabled": true,
+    "server": "192.168.88.10",
+    "_comment_interval": "Poll seconds. Stock RutOS ships 86400, and the stock servers 2-4 (time2/3/4.google.com) are deleted rather than left below ours — on an offline site each costs a failover timeout before the server that would have worked is tried.",
+    "interval": 3600
+  },
+
+  "wan": {
+    "_comment": "TEC-857 — a fleet-constant WAN address, so the OTD500 upstream of this router has ONE identical NTP line everywhere instead of a per-site lookup, and a replacement unit needs no site knowledge. The gateway is the OTD's LAN address, fixed by definition. Off by default: switch it on once the bench procedure below is part of the station's routine.",
+    "_comment_bench": "APPLIED LAST, after FOTA/RMS/Tailscale, because it is the step that ENDS internet on the bench — the WAN port stops taking a lease and starts waiting for a gateway that only exists at the site. Two consequences for the operator: nothing internet-dependent can follow it, and a TSW202 must not be on the same bench segment during the run, because 192.168.1.2 is also the switch's factory address.",
+    "enabled": false,
+    "ipaddr": "192.168.1.2",
+    "netmask": "255.255.255.0",
+    "gateway": "192.168.1.1",
+    "_comment_dns": "State DNS explicitly — a static WAN inherits no resolver from the lease it is replacing. Empty leaves whatever is configured.",
+    "dns": ""
+  },
+
+  "ntp_forward": {
+    "_comment": "TEC-857 — carries the upstream OTD500's NTP through this router to the real server, which it cannot address directly (the server is on this router's LAN, behind its NAT). UDP 123 arriving on the wan zone is DNAT'd to dest_ip, restricted to src_ip so nothing else uses it. The rule is named and updated in place, so re-running the tool never stacks a second copy.",
+    "_comment_zone": "Verification also reports whether the WIRED wan interface is actually in the 'wan' firewall zone. It is matched by zone, so if the wired port is not a member the rule is a green row over a dead path — the demo unit's zone listed only the mobile interfaces.",
+    "enabled": false,
+    "dest_ip": "192.168.88.10",
+    "src_ip": "192.168.1.1"
+  },
+
   "_comment_internet": "FOTA, RMS registration and Tailscale need internet, which a RUTM08 gets over its WAN port — plug WAN into a live uplink on the bench. wait_for_internet makes the tool poll until the link is up (up to internet_timeout seconds) before those steps.",
   "wait_for_internet": true,
   "internet_timeout": 180,

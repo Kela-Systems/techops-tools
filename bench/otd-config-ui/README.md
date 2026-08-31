@@ -12,7 +12,8 @@ password**, and it provisions. Nothing is saved beyond the session history.
    "Factory passwords" below.
 2. Set the admin/root password to the shared default.
 3. Hostname / device name → `otd-<site_name>`.
-4. Timezone, SIM failover rules (if enabled), then SIM 4G-only (if enabled).
+4. Timezone, NTP client and DHCP pool, SIM failover rules (if enabled), then
+  SIM 4G-only (if enabled). See "Time source" below.
 5. Firmware upgrade (local `.bin`, FOTA, defer-to-RMS, or none).
 6. Per-operator data limits: deploy the on-device quota-sync script (after the
   firmware step — a flash in progress would wipe it).
@@ -24,6 +25,35 @@ password**, and it provisions. Nothing is saved beyond the session history.
 9. Verify every setting by reading it back off the device.
 
 Per-device logs land in `logs/` (one JSON per device + a rolling `otd-config.log`).
+
+## Time source (TEC-857)
+
+The OTD500 sits **upstream** of the site's RUTM08, so the time server on that
+router's LAN (`192.168.88.10`) is behind its NAT and unreachable from here.
+Pointing `ntpclient` straight at it configures a server the device can never
+talk to — and RutOS fails that silently, falling back to the cellular modem
+clock, so the unit looks fine and drifts.
+
+What the tool does instead: aim at the router's **WAN** address, `192.168.1.2`,
+which the router forwards on. That address is the same at every site by design,
+so this is a fleet constant rather than a per-site lookup — one identical line
+everywhere, and a replacement unit needs no site knowledge. The router half of
+the arrangement lives in [`../rutm-config-ui`](../rutm-config-ui/README.md).
+
+Two smaller things travel with it:
+
+- The stock servers 2-4 (`time2/3/4.google.com`) are **deleted**, not left below
+  ours. On an offline site each costs a failover timeout before the server that
+  would have worked is tried. The poll `interval` drops from the stock 86400 —
+  one probe a day is not sync.
+- The LAN **DHCP pool** is kept clear of `192.168.1.2`. The router holds that
+  address statically and will not defend it, so a lease handed to something else
+  is a collision that only shows up when the second device boots.
+
+Verification is a read-back, and there is deliberately no "did it sync" row:
+the path to the server does not exist on a bench that provisions one device at
+a time. The reasoning, and what closes the gap, is in
+[`../docs/verification-rows.md`](../docs/verification-rows.md).
 
 ## SIM failover and per-operator data limits
 

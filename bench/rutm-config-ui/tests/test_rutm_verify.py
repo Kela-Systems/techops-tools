@@ -48,7 +48,11 @@ class FakeRouter:
                  offset=CORRECT_OFFSET, zone_shown=ZONE,
                  lan_ip=LAN_IP, ntp="192.168.88.10", polling=None,
                  version="RUTM_R_00.07.20", ts_ip="100.64.0.5", rms_enable="1",
-                 rms_status='{"connection_state":"connected"}'):
+                 rms_status='{"connection_state":"connected"}',
+                 ntp_servers=None, ntp_enabled="1", ntp_interval="3600",
+                 ntp_package=True, wan=None, redirect=None,
+                 wan_zone_networks=("wan", "wan6"),
+                 ntp_pid="15296", ntp_started=2000, ntp_written=1000):
         self.commands: list[str] = []
         self.hostname = hostname
         # The RUNNING kernel hostname, independent of the UCI option for the
@@ -64,6 +68,57 @@ class FakeRouter:
         self.ts_ip = ts_ip
         self.rms_enable = rms_enable
         self.rms_status = rms_status
+        # The `ntpclient` package, the client a RutOS router actually polls
+        # with — a separate subsystem from the system.ntp lines below, and the
+        # pair disagreeing is the TEC-846 finding.
+        self.ntp_servers = [ntp] if ntp_servers is None else list(ntp_servers)
+        self.ntp_enabled = ntp_enabled
+        self.ntp_interval = ntp_interval
+        self.ntp_package = ntp_package
+        # A WAN pinned to the fleet-constant address, and the NTP forward that
+        # carries the upstream OTD500 through it (TEC-857).
+        self.wan = {"proto": "static", "ipaddr": "192.168.1.2",
+                    "netmask": "255.255.255.0",
+                    "gateway": "192.168.1.1"} if wan is None else wan
+        self.redirect = {"name": "kela-ntp", "target": "DNAT", "src": "wan",
+                         "proto": "udp", "src_dport": "123",
+                         "dest_ip": "192.168.88.10", "dest_port": "123",
+                         "src_ip": "192.168.1.1"} if redirect is None else redirect
+        self.wan_zone_networks = list(wan_zone_networks)
+        # The daemon that reads the ntpclient config above, once, at startup.
+        self.ntp_pid = ntp_pid
+        self.ntp_started = ntp_started
+        self.ntp_written = ntp_written
+
+    def _network_show(self) -> str:
+        lines = [f"network.lan=interface", f"network.lan.ipaddr='{self.lan_ip}'"]
+        if self.wan:
+            lines.append("network.wan=interface")
+            lines += [f"network.wan.{k}='{v}'" for k, v in self.wan.items()]
+        return "\n".join(lines)
+
+    def _firewall_show(self) -> str:
+        members = " ".join(f"'{n}'" for n in self.wan_zone_networks)
+        lines = ["firewall.@zone[0]=zone", "firewall.@zone[0].name='wan'",
+                 f"firewall.@zone[0].network={members}"]
+        if self.redirect:
+            lines.append("firewall.@redirect[0]=redirect")
+            lines += [f"firewall.@redirect[0].{k}='{v}'"
+                      for k, v in self.redirect.items()]
+        return "\n".join(lines)
+
+    def _ntpclient_show(self) -> str:
+        if not self.ntp_package:
+            return ""
+        lines = ["ntpclient.@ntpclient[0]=ntpclient",
+                 f"ntpclient.@ntpclient[0].enabled='{self.ntp_enabled}'",
+                 f"ntpclient.@ntpclient[0].interval='{self.ntp_interval}'",
+                 f"ntpclient.@ntpclient[0].zoneName='{self.zone_shown}'"]
+        for i, server in enumerate(self.ntp_servers, start=1):
+            lines += [f"ntpclient.{i}=server",
+                      f"ntpclient.{i}.hostname='{server}'",
+                      f"ntpclient.{i}.port='123'"]
+        return "\n".join(lines)
 
     def __call__(self, command, check=True, exec_timeout=None):
         self.commands.append(command)
@@ -75,8 +130,18 @@ class FakeRouter:
             return self.hostname
         if command.startswith("hostname 2>/dev/null"):
             return self.running_hostname
+        if "uci show ntpclient" in command:
+            return self._ntpclient_show()
+        if "[n]tpclient" in command:
+            # The daemon row: a healthy device has the process running and
+            # started after the last write to the config it reads at startup.
+            return (f"pid={self.ntp_pid}\n"
+                    f"started={self.ntp_started}\n"
+                    f"written={self.ntp_written}\n")
+        if "uci show firewall" in command:
+            return self._firewall_show()
         if "uci show network" in command:
-            return f"network.lan=interface\nnetwork.lan.ipaddr='{self.lan_ip}'"
+            return self._network_show()
         if "network.lan.ipaddr" in command:
             return self.lan_ip
         if "grep '[n]tpd'" in command:
@@ -302,7 +367,23 @@ def test_the_row_set_matches_what_a_configure_run_verifies(monkeypatch):
                              resolve=recorded())
     assert [check["item"] for check in result["verification"]] == [
         "admin/root password", "hostname", "timezone", "RMS", "Tailscale",
-        "firmware", "LAN IP"]
+        "firmware", "NTP client", "NTP daemon", "LAN IP"]
+
+
+def test_the_wan_rows_appear_only_when_the_station_applies_them(monkeypatch):
+    # The WAN block is opt-in (it ends internet on the bench), so a station that
+    # has not switched it on must not collect two skipped rows on every router.
+    c = client(monkeypatch)
+    plain = [r["item"] for r in
+             mod.verify_rutm(c, settings=settings(), resolve=recorded())["verification"]]
+    assert "WAN address" not in plain and "NTP forward" not in plain
+
+    c = client(monkeypatch)
+    opted_in = [r["item"] for r in mod.verify_rutm(
+        c, settings=settings(wan={"enabled": True},
+                             ntp_forward={"enabled": True}),
+        resolve=recorded())["verification"]]
+    assert "WAN address" in opted_in and "NTP forward" in opted_in
 
 
 def test_there_is_no_sim_row_on_a_modemless_router(monkeypatch):

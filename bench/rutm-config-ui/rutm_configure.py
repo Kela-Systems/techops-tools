@@ -8,9 +8,12 @@ device (devices are done one at a time, no manifest — the site name and label
 password are typed in per device):
 
   login(label_pw) -> set password "Kelasys123!" -> hostname rut-<site>
-    -> timezone Asia/Jerusalem -> firmware (latest-stable) -> enable+register RMS
-    -> join Tailscale -> verify -> move LAN to 192.168.88.1 (LAST — drops the
-       connection; confirmed by reaching the device on the new address)
+    -> timezone Asia/Jerusalem -> NTP client -> firmware (latest-stable)
+    -> enable+register RMS -> join Tailscale
+    -> [optional] NTP forward + static WAN (ENDS internet — everything above
+       this line needs the uplink, so nothing that does may follow it)
+    -> verify -> move LAN to 192.168.88.1 (LAST — drops the connection;
+       confirmed by reaching the device on the new address)
 
 The RUTM08 is an Ethernet-only router (no modem/SIM), so the OTD's 4G-only and
 eSIM steps don't apply, and "internet" means the WAN port is plugged into an
@@ -41,6 +44,7 @@ from bench_core import (
     DEFAULT_TIMEZONE,
     DEFAULT_USERNAME,
     LOG_LINE_FORMAT,
+    NTP_CLIENT_INTERVAL,
     TeltonikaClient,
     assert_device_model,
     device_name,
@@ -56,6 +60,15 @@ from bench_core import (
 # --- RUTM08 defaults ----------------------------------------------------------
 DEFAULT_RUTM_PREFIX = "rut-"
 DEFAULT_RUTM_LAN_IP = "192.168.88.1"
+# Unlike the OTD500, the router IS the gateway of the LAN the time server sits
+# on, so it reaches it directly and needs no forward of its own (TEC-857).
+DEFAULT_RUTM_NTP_SERVER = "192.168.88.10"
+# The WAN address every router leaves the bench on, so the OTD500 upstream of it
+# has one identical NTP line fleet-wide. The gateway is the OTD's LAN address,
+# which is fixed by definition.
+DEFAULT_RUTM_WAN_IP = "192.168.1.2"
+DEFAULT_RUTM_WAN_NETMASK = "255.255.255.0"
+DEFAULT_RUTM_WAN_GATEWAY = "192.168.1.1"
 
 
 class RutmClient(TeltonikaClient):
@@ -100,6 +113,38 @@ class RutmClient(TeltonikaClient):
 
 # --- pipeline (shared by CLI + web UI) ----------------------------------------
 
+def time_rows(client: RutmClient, settings: dict) -> list[dict]:
+    """The NTP-client, WAN-address and NTP-forward rows, identical on the
+    configure and verify paths so a QA sweep asks what the run asked.
+
+    All three are read-backs. The time server is on the assembly network and
+    the WAN faces the site's OTD500, so neither is reachable from this bench —
+    docs/verification-rows.md records why that means no sync row.
+    """
+    ntp = settings.get("ntp", {}) or {}
+    wan = settings.get("wan", {}) or {}
+    forward = settings.get("ntp_forward", {}) or {}
+    rows: list[dict] = []
+    if ntp.get("enabled", True):
+        rows.append(client.ntp_client_check(
+            ntp.get("server", DEFAULT_RUTM_NTP_SERVER),
+            interval=int(ntp.get("interval", NTP_CLIENT_INTERVAL))))
+        # The config row above reads the FILE. This one asks whether the running
+        # daemon ever read it — the restart that makes a commit live is
+        # best-effort, and a device that skipped it looks perfect on paper.
+        rows.append(client.ntp_daemon_check())
+    if wan.get("enabled"):
+        rows.append(client.wan_static_check(
+            wan.get("ipaddr", DEFAULT_RUTM_WAN_IP),
+            netmask=wan.get("netmask", DEFAULT_RUTM_WAN_NETMASK),
+            gateway=wan.get("gateway", DEFAULT_RUTM_WAN_GATEWAY)))
+    if forward.get("enabled"):
+        rows.append(client.ntp_forward_check(
+            dest_ip=forward.get("dest_ip", DEFAULT_RUTM_NTP_SERVER),
+            src_ip=forward.get("src_ip", DEFAULT_RUTM_WAN_GATEWAY)))
+    return rows
+
+
 def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
                    settings: dict) -> dict:
     """Run the full provisioning pipeline for ONE RUTM08. Logs every step through
@@ -141,6 +186,18 @@ def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
 
     _step("hostname", lambda: client.set_hostname(name))
     _step("timezone", lambda: client.set_timezone(settings.get("timezone", DEFAULT_TIMEZONE)))
+    # Time source (TEC-857), beside the timezone it shares a zoneName with. The
+    # router is the gateway of the LAN the server sits on, so this is a direct
+    # address — no forward involved, unlike the OTD500 upstream of it. Pure UCI
+    # and nothing online is needed, so it belongs before the firmware step: a
+    # keep-settings sysupgrade preserves it, and a run that reboots into an
+    # unconfigured clock is one failure away from shipping.
+    ntp = settings.get("ntp", {}) or {}
+    if ntp.get("enabled", True):
+        _step("ntp", lambda: client.set_ntp_client(
+            ntp.get("server", DEFAULT_RUTM_NTP_SERVER),
+            interval=int(ntp.get("interval", NTP_CLIENT_INTERVAL)),
+            zonename=settings.get("timezone", DEFAULT_TIMEZONE)))
 
     net_timeout = int(settings.get("internet_timeout", 180))
     wait_net = settings.get("wait_for_internet", True)
@@ -196,6 +253,28 @@ def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
                 ts.get("_resolved_auth_key") or ts.get("auth_key", ""),
                 name, ts.get("login_server", "")))
 
+    # The WAN block runs LAST of the mutating steps, and after everything that
+    # needs to be online (TEC-857). Pinning the WAN to a static address is what
+    # ENDS internet on the bench: the port stops taking a lease from the uplink
+    # and starts waiting for a gateway that only exists at the site. FOTA, RMS
+    # registration and Tailscale all sit above this line for that reason.
+    #
+    # It also means the bench must not have a TSW202 on the same segment during
+    # this window — the switch's factory address is this same 192.168.1.2 (see
+    # the bench README).
+    forward = settings.get("ntp_forward", {}) or {}
+    if forward.get("enabled"):
+        _step("ntp-forward", lambda: client.set_ntp_port_forward(
+            dest_ip=forward.get("dest_ip", DEFAULT_RUTM_NTP_SERVER),
+            src_ip=forward.get("src_ip", DEFAULT_RUTM_WAN_GATEWAY)))
+    wan = settings.get("wan", {}) or {}
+    if wan.get("enabled"):
+        _step("wan-static", lambda: client.set_wan_static(
+            wan.get("ipaddr", DEFAULT_RUTM_WAN_IP),
+            netmask=wan.get("netmask", DEFAULT_RUTM_WAN_NETMASK),
+            gateway=wan.get("gateway", DEFAULT_RUTM_WAN_GATEWAY),
+            dns=wan.get("dns", "")))
+
     # Verify while the device is still reachable on its current address.
     verification: list[dict] = []
     try:
@@ -212,6 +291,7 @@ def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
             serial=identity.get("serial", ""),
         )
         verification = [c for c in verification if c["item"] != "SIM 4G-only"]
+        verification += time_rows(client, settings)
         for line in format_verification(verification).splitlines():
             log.info("%s", line)
     except SystemExit as e:
@@ -302,6 +382,8 @@ def verify_rutm(client: RutmClient, *, settings: dict, resolve=None,
         serial=identity.get("serial", ""),
     ) if c["item"] != "SIM 4G-only"           # no modem on a RUTM08
         and not (c["item"] == "hostname" and not name)]  # already reported above
+
+    verification += time_rows(client, settings)
 
     lan_ip = (settings.get("lan_ip") or "").strip()
     if lan_ip:

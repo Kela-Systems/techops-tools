@@ -111,6 +111,14 @@ The ports are fixed and don't collide, so all the tools run side by side under
 the one launcher. The Teltonika subnet is shared without conflict: the OTD500 and
 RUTM08 arrive on `192.168.1.1`, the TSW202 on `192.168.1.2`.
 
+> **One exception, if the RUTM08's `wan` block is switched on** (TEC-857): that
+> step pins the router's WAN port to a static `192.168.1.2` — the same address a
+> TSW202 arrives on. The two must not be on one bench segment during that step.
+> The step also **ends the router's internet**, since the WAN port stops taking
+> a lease and starts waiting for a gateway that only exists at the site, so it
+> runs last, after FOTA, RMS registration and Tailscale. It ships disabled in
+> the committed template; read the comments there before turning it on.
+
 > **Devices that end up on `192.168.88.x`.** The RUTM08 (`.1`), TSW202 (`.2`),
 > camera and speaker (`.70`) all move to that subnet as their last step, and the
 > tool confirms the move by reaching the device on its new address. The RUTM08
