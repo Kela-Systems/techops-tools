@@ -66,14 +66,17 @@
   </p>
 
 <script>
+  // Grouped by vendor, not by port: an operator looks for a device next to the
+  // others from the same maker, and the TSW202 sat away from its two siblings
+  // because it was simply appended when it was added (TEC-848).
   const TOOLS = [
     { name: "Magos Radar",      device: "AR-300 radar",        port: 8001, subnet: "192.168.40.x" },
     { name: "Magos APU",        device: "AR processing unit",  port: 8002, subnet: "192.168.40.x" },
     { name: "Teltonika OTD500", device: "OTD500 router",       port: 8003, subnet: "192.168.1.x"  },
     { name: "Teltonika RUTM08", device: "RUTM08 router",       port: 8004, subnet: "192.168.1.x"  },
+    { name: "Teltonika TSW202", device: "TSW202 switch",       port: 8007, subnet: "192.168.1.x + .88.x" },
     { name: "Raythink Camera",  device: "thermal camera",      port: 8005, subnet: "192.168.1.x"  },
     { name: "ISR Speaker",      device: "Provision-ISR speaker", port: 8006, subnet: "DHCP (auto-scan)" },
-    { name: "Teltonika TSW202", device: "TSW202 switch",       port: 8007, subnet: "192.168.1.x + .88.x" },
   ];
 
   const grid = document.getElementById("grid");
