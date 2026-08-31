@@ -37,10 +37,18 @@ Every tool works the same way:
 1. Plug **one** device into the bench cable. The page detects it and shows its details.
 2. Fill in what it asks (site name, channel, or IP — see the per-device sections).
 3. Click **Configure** and watch the progress log. Green tick = done.
-4. When it says so, **unplug it** and plug in the next one.
+4. **A label prints.** Stick it on the device.
+5. When it says so, **unplug it** and plug in the next one.
 
 > ⚠️ **Always unplug the finished device before plugging in the next.** Two devices on the
 > cable at once will confuse detection.
+
+> ⚠️ **No label, it doesn't ship.** A label only prints when the device passed
+> its checks, so an unlabelled unit is not a unit that hasn't been labelled yet
+> — it's a unit that hasn't passed. There is no "failed" label to look for; the
+> missing label *is* the fail. If the page shows an amber **Label printer**
+> warning, the printer is the problem, not the device: write the serial and the
+> address on a blank label by hand before that unit goes in the shipping pile.
 
 ---
 
@@ -51,6 +59,7 @@ Every tool works the same way:
 - Leave the black `Start Bench Tools.bat` window open the whole time.
 - One device on the cable at a time.
 - Wait for the green tick before unplugging.
+- **Nothing leaves the bench without a label on it.**
 - If a device is never detected, it's almost always plugged into the **wrong port / network**
 for that device — Magos uses a different network from the Teltonika and camera tools.
 - Each device ends up on a final `192.168.88.x` address. After that it will no longer answer on
@@ -307,6 +316,22 @@ answering on the address they shipped with. The green tick means it worked — u
 **I closed the black window by accident**
 All tools stopped. Just double-click `Start Bench Tools.bat` again. (Closing a browser *tab* is fine — the
 tools keep running; reopen the tab from the dashboard.)
+
+**Amber "Label printer" warning, and no label came out**
+The device is fine — it passed, and it's configured. Only the printing failed. Check the
+label printer is powered on, has a roll in it, and its cable is seated; the warning clears
+by itself the next time a label prints. Until then, **label the units by hand** — serial and
+address (or `DHCP` and the MAC) on a blank label. If the warning names a serial, that's the
+one already done and waiting for a label. Tell an engineer if it doesn't come back.
+
+The warning often says exactly what's wrong in brackets — *offline* (usually the USB cable
+or the printer being switched off), *out of labels*, *paused*, *jammed*, *open*. Those five
+you can fix yourself and carry on. Anything else, tell an engineer.
+
+**Labels come out as pages of code instead of labels**
+The printer is installed with the wrong driver — it's printing the instructions rather than
+following them. Stop and tell an engineer; it's a one-time setup fix, not something that
+changes per device.
 
 **The scanner beeps but nothing appears on the page**
 The scanner read the code but couldn't send it. Put it back in its cradle for a few seconds — that

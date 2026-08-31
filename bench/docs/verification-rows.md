@@ -3,7 +3,8 @@
 Every bench tool ends a run by re-reading the device and emitting rows shaped
 `{item, expected, actual, ok}`. Those rows are the whole basis for "this unit is
 ready to ship" — and since TEC-348 they are also what a mutation-free **Verify**
-pass produces on a finished unit, and what TEC-352 will print a label off.
+pass produces on a finished unit, and since TEC-352 what decides whether a QA
+label prints at all ([qa-labels.md](qa-labels.md)).
 
 So the interesting question about a row is not whether it is green. It is
 **what fact makes it green**.

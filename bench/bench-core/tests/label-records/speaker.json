@@ -1,0 +1,32 @@
+{
+  "schema": "bench-run-record/1",
+  "run_id": "8f14e45f-ceea-467a-9c1b-9b7bd4b1c005",
+  "tool": "speaker",
+  "kind": "configure",
+  "timestamp": "2026-08-29T11:07:23.554000+00:00",
+  "time": "11:07:23",
+  "status": "ok",
+  "error": null,
+  "serial": "TM-CS20-000001-XX",
+  "mac": "00:12:13:aa:00:01",
+  "model": "Provision-ISR speaker",
+  "firmware": "1.4.22",
+  "duration_s": 71,
+  "verified": true,
+  "verify_detail": null,
+  "verification": [
+    {"item": "static IP", "expected": "192.168.88.71", "actual": "192.168.88.71", "ok": true}
+  ],
+  "warnings": [],
+  "steps": [],
+  "log": "",
+  "device": {
+    "hostname": "spk-kela-fob-12",
+    "ip": "192.168.88.71",
+    "from_host": "192.168.88.70"
+  },
+  "operator": "Avi",
+  "station_id": "bench-01",
+  "bench_version": "985cb5e",
+  "config_hash": "31108800ab71"
+}

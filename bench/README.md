@@ -186,7 +186,8 @@ one — proof the base is protocol-agnostic.
 `_lib.sh`, `updater.py`, the `setup-station.*` installers — lives in
 `scripts/`. The tools and `bench-core/` are siblings at the root. Reference
 material that isn't a runbook lives in `docs/` (currently the scanner setup and
-its committed self-test barcodes).
+its committed self-test barcodes, verification-row notes, and
+[`qa-labels.md`](docs/qa-labels.md)).
 - **Scanner diagnostics** (not wired into the launcher, no hardware needed to
 run the second one):
   - `scripts/scan-probe.html` — open it in a browser on any host and scan into

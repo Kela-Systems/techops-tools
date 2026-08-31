@@ -134,6 +134,52 @@ function mountConfigWarn() {
   };
 }
 
+// QA-label printer banner (TEC-352). Same shape as mountConfigWarn: injected
+// under the page header by connectBenchWS, so all seven tools surface it
+// without seven copies of the markup.
+//
+// Deliberately a banner and not an alert. A label that did not print does not
+// invalidate the run — the device passed and is still configured — so nothing
+// here should interrupt an operator mid-batch. But it must not be silent
+// either: an unlabelled unit in the done pile is precisely what "no label, it
+// doesn't ship" exists to prevent, so the warning stays on screen until a
+// later label prints, and it names the serial the operator has to go and
+// label by hand.
+function mountPrinterWarn() {
+  let box = null;
+
+  function ensure() {
+    if (box) return box;
+    box = document.createElement('div');
+    box.id = 'printerWarnBox';
+    box.className = 'configwarn hidden';
+    const anchor = document.getElementById('configWarnBox');
+    if (anchor) anchor.insertAdjacentElement('afterend', box);
+    else {
+      const header = document.querySelector('.container > header') ||
+        document.querySelector('header');
+      if (header && header.parentNode) header.insertAdjacentElement('afterend', box);
+      else document.body.prepend(box);
+    }
+    return box;
+  }
+
+  return {
+    update(s) {
+      const warning = (s.printer || {}).warning;
+      if (!warning) {
+        if (box) box.classList.add('hidden');
+        return;
+      }
+      const el = ensure();
+      const html = '<b>&#9888; Label printer</b><ul><li>' + esc(warning) +
+        '</li></ul>';
+      if (el.innerHTML !== html) el.innerHTML = html; // 1 Hz feed: avoid churn
+      el.classList.remove('hidden');
+    },
+  };
+}
+
 // ── Device-label scan detection (TEC-349) ───────────────────────────────────
 //
 // Deciding whether some text is a scanned device label. Kept at the top level,
@@ -446,10 +492,12 @@ function connectBenchWS(onState, opts) {
   const connEl = $('conn');
   const operatorBox = mountOperatorBox();
   const configWarn = mountConfigWarn();
+  const printerWarn = mountPrinterWarn();
   let labelScan = null;
   const handleState = (s) => {
     operatorBox.update(s);
     configWarn.update(s);
+    printerWarn.update(s);
     if (labelScan) labelScan.update(s);
     onState(s);
   };

@@ -48,6 +48,7 @@ from bench_core.central import spool_run_record, start_central_uploader
 from bench_core.config_check import check_config, config_fingerprint
 from bench_core.device_label import DeviceLabel, parse_device_label
 from bench_core.history import resolve_expected
+from bench_core.label_printer import make_label_printer
 from bench_core.run_record import KIND_CONFIGURE, KIND_VERIFY
 
 try:
@@ -486,6 +487,9 @@ class BenchConfigurator:
         self.bench_version = bench_version(base_dir)
         self.station_id = station_id()
         self.operator_store = OperatorStore(base_dir.parent / OPERATOR_FILENAME)
+        # Prints the QA label on a verified-OK run (TEC-352). Station-level,
+        # like the operator name: one printer serves all seven tools.
+        self.label_printer = make_label_printer(base_dir.parent, self.logger)
         self.logger.info("%s starting — bench version %s, station %s",
                          self.title, self.bench_version, self.station_id)
         self.cfg: dict = self.load_config()
@@ -585,6 +589,7 @@ class BenchConfigurator:
                 "run_seconds": int(time.monotonic() - self._run_t0)
                                if busy and self._run_t0 else None,
                 "label_scan": self.label_scan_state(),
+                "printer": self.label_printer.status(),
                 # Which kind of run is in flight / was last shown, so the page
                 # can label a verify pass as one instead of saying "Configured".
                 "verify_supported": self.verify_supported,
@@ -925,6 +930,16 @@ class BenchConfigurator:
             entry = self.build_entry(result, inputs, duration)
             entry["kind"] = mode
             entry.update(self.run_stamp())  # who / where / which code (TEC-345)
+            # Print the QA label BEFORE the record is written: _save_log both
+            # writes the per-run JSON and spools it to central, so a `label`
+            # block attached afterwards would be missing from the audit trail
+            # on both. Kept here rather than behind `on_run_recorded` so a
+            # subclass cannot opt out of the gate by overriding a hook — same
+            # reasoning as `_save_log`'s own filename prefix (TEC-352).
+            # In the executor because both transports block: a dead printer
+            # would otherwise hold the event loop, and with it the 1 Hz state
+            # feed, for the connect timeout. It mutates `entry` in place.
+            await loop.run_in_executor(None, self.label_printer.print_run, entry)
             entry["log_file"] = self._save_log(entry)
             self.state["history"].insert(0, entry)
             del self.state["history"][self.history_limit:]

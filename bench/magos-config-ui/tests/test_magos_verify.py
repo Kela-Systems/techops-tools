@@ -395,6 +395,66 @@ def test_a_manual_ip_run_has_no_channel_to_check():
     assert "no channel was assigned" in check["expected"]
 
 
+# ── the channel a verify run is allowed to record (TEC-352) ──────────────────
+#
+# A verify pass assigns nothing, so the only channel its record may carry is one
+# the radar stated. These cover the four ways that can go, because the QA label
+# prints whatever lands in the record.
+
+def test_a_confirmed_channel_is_recorded_for_the_label():
+    c = client(variant="chan1")
+    result = mod.verify_radar(c, settings=settings(), resolve=recorded(channel="1"),
+                              reached=ASSIGNED)
+    assert mod.confirmed_channel(result["verification"]) == "1"
+
+
+def test_an_unread_channel_is_not_recorded():
+    # Amber, not green: the radar never said, so there is nothing to print. The
+    # label falls back to the address rather than reprinting the configure run's
+    # intent as though it had been re-read.
+    c = client(variant=None)
+    result = mod.verify_radar(c, settings=settings(), resolve=recorded(channel="1"),
+                              reached=ASSIGNED)
+    assert mod.confirmed_channel(result["verification"]) is None
+
+
+def test_a_channel_that_came_back_wrong_is_not_recorded():
+    # The one case where printing the expected channel would be actively
+    # dangerous — the radar is on chan3 and the sticker would claim chan1.
+    c = client(variant="chan3")
+    result = mod.verify_radar(c, settings=settings(), resolve=recorded(channel="1"),
+                              reached=ASSIGNED)
+    assert mod.confirmed_channel(result["verification"]) is None
+
+
+def test_a_manual_ip_run_records_no_channel():
+    c = client()
+    result = mod.verify_radar(c, settings=settings(),
+                              resolve=recorded(channel="other"), reached=ASSIGNED)
+    assert mod.confirmed_channel(result["verification"]) is None
+
+
+@pytest.mark.parametrize("actual,expected", [
+    ("chan0", "0"),          # channel 0 is real, and falsy-looking
+    ("chan3", "3"),
+    ("CHAN2", "2"),
+    ("2", "2"),              # already bare
+    ("north-face", None),    # a renamed channel key has no digit to print
+    ("chan", None),
+    ("", None),
+    (None, None),
+])
+def test_only_a_variant_with_a_digit_yields_a_channel(actual, expected):
+    rows = [{"item": "RF channel", "expected": "x", "actual": actual, "ok": True}]
+    assert mod.confirmed_channel(rows) == expected
+
+
+def test_rows_without_an_rf_channel_row_are_fine():
+    # The APU has no such row at all.
+    assert mod.confirmed_channel([{"item": "static IP", "actual": "x", "ok": True}]) is None
+    assert mod.confirmed_channel([]) is None
+
+
 # ── the prior run, and what is never in a row ────────────────────────────────
 
 def test_a_missing_configure_record_fails_the_pass():

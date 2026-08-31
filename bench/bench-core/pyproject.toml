@@ -13,6 +13,12 @@ dependencies = [
     # on there. expected_utc_offset() needs it to say what "Asia/Jerusalem"
     # means right now, and the bench stations are Windows.
     "tzdata; sys_platform == 'win32'",
+    # The QA label printer (TEC-352) reaches a USB ZD421 through the Windows
+    # print spooler, which needs win32print. Windows-only: a network printer
+    # is a plain socket, and that is the only transport a developer's Mac can
+    # use anyway. bench_core.label_printer treats an absent win32print as "no
+    # spooler here", so this being unavailable degrades rather than breaks.
+    "pywin32; sys_platform == 'win32'",
 ]
 
 # The bench-UI base (bench_core.bench_ui) needs a web stack. CLI/library

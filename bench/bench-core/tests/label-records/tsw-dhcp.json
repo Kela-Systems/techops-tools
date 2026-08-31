@@ -1,0 +1,32 @@
+{
+  "schema": "bench-run-record/1",
+  "run_id": "8f14e45f-ceea-467a-9c1b-9b7bd4b1c004",
+  "tool": "tsw",
+  "kind": "configure",
+  "timestamp": "2026-08-29T10:19:47.311000+00:00",
+  "time": "10:19:47",
+  "status": "ok",
+  "error": null,
+  "serial": "6010620710",
+  "mac": "20:97:2b:2b:00:f7",
+  "model": "TSW202",
+  "firmware": "TSW2_R_00.07.14.1",
+  "duration_s": 88,
+  "verified": true,
+  "verify_detail": null,
+  "verification": [
+    {"item": "found by MAC", "expected": "a DHCP lease", "actual": "192.168.1.144", "ok": true}
+  ],
+  "warnings": [],
+  "steps": [],
+  "log": "",
+  "device": {
+    "ip": "",
+    "password_source": "scan",
+    "firmware_note": ""
+  },
+  "operator": "Avi",
+  "station_id": "bench-01",
+  "bench_version": "985cb5e",
+  "config_hash": "31108800ab71"
+}

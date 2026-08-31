@@ -1,0 +1,34 @@
+{
+  "schema": "bench-run-record/1",
+  "run_id": "8f14e45f-ceea-467a-9c1b-9b7bd4b1c006",
+  "tool": "raythink",
+  "kind": "configure",
+  "timestamp": "2026-08-29T11:33:08.740000+00:00",
+  "time": "11:33:08",
+  "status": "ok",
+  "error": null,
+  "serial": "RC5A012035",
+  "mac": "a0:bd:1d:12:35:01",
+  "model": "Raythink",
+  "firmware": "2.8.1",
+  "duration_s": 112,
+  "verified": true,
+  "verify_detail": null,
+  "verification": [
+    {"item": "static IP", "expected": "192.168.88.35", "actual": "192.168.88.35", "ok": true},
+    {"item": "config profile", "expected": "lan", "actual": "lan", "ok": true}
+  ],
+  "warnings": [],
+  "steps": [],
+  "log": "",
+  "device": {
+    "hostname": "raythink-35",
+    "profile": "lan",
+    "ip": "192.168.88.35",
+    "ip_mode": "static"
+  },
+  "operator": "Avi",
+  "station_id": "bench-01",
+  "bench_version": "985cb5e",
+  "config_hash": "31108800ab71"
+}
