@@ -12,7 +12,8 @@ last month, on which station, with what result".
 - `collector.py` — the whole service: FastAPI + SQLite (WAL,
   `synchronous=FULL`). Ingest is idempotent on `run_id` (duplicate → 409, the
   uploader treats it as delivered), so uploader retries after a mid-flight
-  network cut are free. The API contract is documented in the module
+  network cut are free. It also holds the **factory-password store**
+  (TEC-845) — see below. The API contract is documented in the module
   docstring; the uploader's half lives in
   `bench/bench-core/src/bench_core/central.py`.
 - `fleet.py` — pinned releases + station check-ins. Code bundles are built
@@ -60,6 +61,44 @@ curl http://techops-automations-host:8100/api/v1/fleet/stations     # who runs w
 curl -O http://techops-automations-host:8100/api/v1/fleet/bundle/<sha>.zip
 ```
 
+## Factory passwords (TEC-845)
+
+Every Teltonika ships with a unique admin password printed on its sticker. The
+bench logs in with it once and replaces it with the station's shared password
+— and that factory value is what the unit **reverts to on a factory reset**.
+Until we kept it, a device reset in the field or returned for rework was
+locked out and had to be recovered by hand.
+
+So the OTD500, RUTM08 and TSW202 tools ship it here as they read it (scanned
+off the label QR, or typed by the operator) and it is kept **forever**, one
+row per device keyed on the serial. It is deliberately *not* part of the run
+record: a device has one factory password however many times it is run, and
+run records are the read-only dashboard's data. That is also why it is a
+separate table and a separate endpoint — see
+`bench/bench-core/src/bench_core/label_record.py`.
+
+It is stored in the clear and shown in the clear. It is printed on the outside
+of the device, so encrypting it would protect nothing while making the one
+thing it exists for — looking it up — harder. Access control is what it is for
+everything else here: reachability over the tailnet.
+
+Read them back in the **Factory passwords** panel on the dashboard (search by
+serial, MAC or model; click a password to copy it). Each run's detail popup
+also shows the password for that device. Or over the API:
+
+```bash
+curl 'http://techops-automations-host:8100/api/v1/device-labels?q=6008219573'
+curl 'http://techops-automations-host:8100/api/v1/device-labels/6008219573'
+curl 'http://techops-automations-host:8100/api/v1/device-labels/2097272B00F7'  # by MAC
+```
+
+A device's factory password cannot change, so two different readings of one
+serial mean somebody mis-scanned or mistyped. The store resolves that
+explicitly rather than letting the last upload win: a scan beats a typed
+reading, otherwise the newer one wins, and either way the row's `conflicts`
+count goes up and the dashboard flags it with an amber `?` — check the actual
+sticker on a row that carries one.
+
 ## Deploy (EC2 tailnet host, e.g. `techops-automations-host`)
 
 Host decisions (from TEC-574): t3.micro (or t4g.micro — everything here runs
@@ -106,6 +145,9 @@ run; the collector host runs its checkout as-is.)
 - Each row keeps the full record JSON verbatim plus queryable columns
   (station, tool, status, serial, operator, timestamps). Nothing is ever
   deleted by the service; there are no delete endpoints.
+- The `device_labels` table (factory passwords) lives in the same file and is
+  covered by the same backup. Retention there is forever by decision, not just
+  by omission — a unit can come back from the field years later.
 - Back up with SQLite's online backup (safe while the service runs):
 
 ```bash
@@ -116,10 +158,11 @@ sudo sqlite3 /var/lib/bench-central/runs.db ".backup /var/lib/bench-central/runs
 
 **Dashboard (TEC-575):** open `http://techops-automations-host:8100/` in a
 browser (any tailnet device). The **Fleet** panel on top shows the pinned
-release and every station's version/last-seen (and is where you pin); the
-runs view below is read-only: search by serial/MAC/hostname/site/operator,
-filter by station, device type, site, outcome and date range, and click any
-run for its full detail — verification checks, warnings, and the step log.
+release and every station's version/last-seen (and is where you pin);
+**Factory passwords** below it is the lookup described above; the runs view at
+the bottom is read-only: search by serial/MAC/hostname/site/operator, filter
+by station, device type, site, outcome and date range, and click any run for
+its full detail — verification checks, warnings, and the step log.
 No auth: reachability over the tailnet IS the access control.
 
 The same data over the API:

@@ -15,6 +15,7 @@ import json
 import pytest
 
 from bench_core.bench_ui import VerifyBody      # /api/verify is shared, TEC-348
+from bench_core.central import LABEL_OUTBOX_DIRNAME, OUTBOX_DIRNAME
 from bench_core.run_record import RUN_RECORD_SCHEMA
 
 import tsw_app as mod
@@ -309,9 +310,13 @@ def test_run_record_stamps_where_the_password_came_from(detected, monkeypatch):
     assert cfg.state["history"][0]["device"]["password_source"] == "scan"
 
 
-def test_the_scanned_password_never_reaches_a_written_record(monkeypatch, tmp_path):
-    # The load-bearing one: records are shipped off the station to
-    # bench-central, so a password in one has left the bench for good.
+def test_the_scanned_password_never_reaches_a_run_record(monkeypatch, tmp_path):
+    # The load-bearing one: run records are shipped off the station and feed
+    # the read-only dashboard, so a password in one has left the bench for
+    # good. Since TEC-845 the factory password IS kept centrally — but through
+    # its own queue and its own store, which is what keeps it to one row per
+    # device instead of a copy in every record of every run that unit ever had.
+    # So the rule is "nowhere but the label queue", not "nowhere".
     monkeypatch.setenv("BENCH_CENTRAL_URL", "http://central.invalid:8100")
     monkeypatch.setattr(cfg, "log_dir", tmp_path)
     monkeypatch.setattr(cfg, "_save_log", type(cfg)._save_log.__get__(cfg))
@@ -325,9 +330,11 @@ def test_the_scanned_password_never_reaches_a_written_record(monkeypatch, tmp_pa
     assert entry["device"]["password_source"] == "scan"
     assert LABEL_PW not in json.dumps(entry)
     files = [p for p in tmp_path.rglob("*") if p.is_file()]
-    assert any(p.parent.name == "outbox" for p in files), \
+    assert any(p.parent.name == OUTBOX_DIRNAME for p in files), \
         "no outbox payload was written, so this test proved nothing"
     for path in files:
+        if path.parent.name == LABEL_OUTBOX_DIRNAME:
+            continue
         assert LABEL_PW not in path.read_text(encoding="utf-8"), path
 
 

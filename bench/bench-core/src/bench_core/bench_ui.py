@@ -43,12 +43,21 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from bench_core import LOG_LINE_FORMAT, mac_from_arp_output
-from bench_core.central import spool_run_record, start_central_uploader
+from bench_core import DEFAULT_NEW_PASSWORD, DEFAULT_USERNAME, LOG_LINE_FORMAT, mac_from_arp_output
+from bench_core.central import (
+    spool_label_record,
+    spool_run_record,
+    start_central_uploader,
+)
 from bench_core.config_check import check_config, config_fingerprint
 from bench_core.device_label import DeviceLabel, parse_device_label
 from bench_core.history import resolve_expected
 from bench_core.ip_mode import IpModeError, IpModePolicy, IpModeStore
+from bench_core.label_record import (
+    SOURCE_SCAN,
+    SOURCES,
+    build_label_record,
+)
 from bench_core.run_record import KIND_CONFIGURE, KIND_VERIFY
 
 try:
@@ -75,6 +84,17 @@ SHARED_STATIC_DIR = Path(__file__).resolve().parent / "static"
 # Secret-bearing config paths redacted before the state is sent to the browser.
 _REDACT_PATHS = (("new_password",), ("tailscale", "auth_key"), ("tailscale", "api_key"),
                  ("rms", "auth_code"), ("rms", "api_token"))
+
+# Where `label_password_inputs` puts the factory password for retention
+# (TEC-845), separate from the per-tool key the pipeline logs in with — that is
+# `label_password` on the OTD500 and `initial_password` on the other two, and
+# the base has no business knowing which. Empty unless there IS a factory
+# password this run (a re-run on the shared password leaves nothing to keep).
+FACTORY_PASSWORD_INPUT = "factory_password"
+# The scanned label the factory password came off, redacted (identity fields
+# only). Captured at resolve time because the armed scan is dropped when the
+# run ends, before the record is built.
+FACTORY_LABEL_INPUT = "factory_label"
 
 # Keys of a pipeline's return value that `_do_configure` interprets itself.
 # Everything else a pipeline returns is passed through to `build_entry`
@@ -123,6 +143,18 @@ class StepCollector(logging.Handler):
 
 def slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "-", text or "unknown")
+
+
+def _known(value: Optional[str]) -> str:
+    """`value` if it actually says something, else "".
+
+    Run records spell an unreadable field "unknown" rather than leaving it out,
+    which is right for a record of what happened and wrong for a lookup row —
+    a device stored with the model "unknown" reads as a device whose model is
+    literally that. This is the one-line translation between the two.
+    """
+    text = (value or "").strip()
+    return "" if text.lower() == "unknown" else text
 
 
 def prune_json_logs(log_dir: Path, keep: int = JSON_LOG_RETENTION) -> None:
@@ -477,6 +509,13 @@ class BenchConfigurator:
     # label — the Teltonika families — have anything to gain, and a tool that
     # doesn't opt in gets no route and no UI for it.
     label_scan_enabled: bool = False
+    # Opt in to keeping the factory-label password on bench-central (TEC-845),
+    # so a unit factory-reset in the field can still be logged into. Off by
+    # default, and a SEPARATE switch from `label_scan_enabled` on purpose:
+    # being able to read a password off a sticker is not a decision to retain
+    # it, and the device scope here was settled per family (OTD500, RUTM08,
+    # TSW202). A tool that opts in must set `record_tool`.
+    retain_label_password: bool = False
     # Opt in to the mutation-free Verify pass (TEC-348). Off by default so a
     # tool that hasn't implemented `verify_pipeline` gets no route and no
     # button, rather than a button that errors — and so the tool it IS wired up
@@ -766,6 +805,25 @@ class BenchConfigurator:
             return label.password, "scan"
         return "", "shared-fallback"
 
+    def label_password_inputs(self, typed: str, *, key: str) -> dict:
+        """The password half of one run's `inputs`, for an `/api/configure`
+        route to spread into the dict it builds.
+
+        Shared rather than three copies of the same four lines, because since
+        TEC-845 there are two consumers of one decision: the pipeline needs the
+        password to log in with, and the retention step needs to know whether
+        what it got was a FACTORY password (worth keeping) or the station's
+        shared one (already known, and not what a reset device reverts to).
+        Getting that distinction right in one place is the point.
+        """
+        password, source = self.resolve_label_password(typed)
+        # Only a scan has a label behind it; a typed password is just a string.
+        label = self.armed_label() if source == SOURCE_SCAN else None
+        return {key: password,
+                "password_source": source,
+                FACTORY_PASSWORD_INPUT: password if source in SOURCES else "",
+                FACTORY_LABEL_INPUT: label.redacted() if label else {}}
+
     def password_source(self, inputs: dict, password_key: str) -> str:
         """Where a run's login password came from, for the run record:
         `"scan"`, `"typed"` or `"shared-fallback"`.
@@ -777,6 +835,73 @@ class BenchConfigurator:
         """
         return inputs.get("password_source") or (
             "typed" if inputs.get(password_key) else "shared-fallback")
+
+    # ── factory-password retention (TEC-845) ─────────────────────────────────
+
+    def _retain_label_password(self, entry: dict, inputs: dict) -> None:
+        """Queue this device's factory-label password for bench-central.
+
+        Runs after the record is built because the serial it is keyed on comes
+        off the device, and only the finished record knows it. A scan is the
+        exception — its label carries a serial of its own — which is what makes
+        a unit that never logged in still recoverable.
+
+        Skipped, quietly, whenever there is nothing worth keeping: the tool
+        hasn't opted in, no factory password was supplied (a re-run on the
+        shared password), what was typed IS the shared password, or nothing
+        identified the device. Best-effort like every other shipping step —
+        a device is not left half-configured because a lookup row didn't get
+        written.
+        """
+        if not self.retain_label_password:
+            return
+        password = inputs.get(FACTORY_PASSWORD_INPUT) or ""
+        source = inputs.get("password_source") or ""
+        if not password or source not in SOURCES:
+            return
+        # An operator re-running a finished unit may type the shared password
+        # to get back in. That is not the factory value, and storing it as one
+        # would overwrite the real answer with a password we already have.
+        if password == self.cfg.get("new_password", DEFAULT_NEW_PASSWORD):
+            self.logger.info("Not retaining the entered password — it is the "
+                             "station's shared password, not a factory one.")
+            return
+
+        label = inputs.get(FACTORY_LABEL_INPUT) or {}
+        serial = _known(entry.get("serial")) or _known(label.get("serial"))
+        if not serial:
+            self.logger.warning(
+                "Could not retain the factory password: this run never read a "
+                "serial to key it on. Scan the label (its QR carries one) or "
+                "re-run the device.")
+            return
+
+        device = entry.get("device") or {}
+        try:
+            record = build_label_record(
+                serial=serial,
+                password=password,
+                source=source,
+                tool=self.record_tool,
+                mac=_known(entry.get("mac")) or _known(label.get("mac")),
+                model=_known(entry.get("model")),
+                username=(label.get("username")
+                          or self.cfg.get("username", DEFAULT_USERNAME)),
+                imei=_known(label.get("imei")) or _known(device.get("imei")),
+                batch=label.get("batch", ""),
+                run_id=entry.get("run_id"),
+                captured_at=entry.get("timestamp"),
+            )
+            record["station_id"] = entry.get("station_id", "")
+            record["operator"] = entry.get("operator", "")
+            spool_label_record(self.log_dir, record)
+        except Exception:  # noqa: BLE001 — never fail a run over a lookup row
+            self.logger.exception("Could not queue the factory password for "
+                                  "bench-central.")
+            return
+        self.logger.info("Factory password retained for SN %s (%s).", serial,
+                         "scanned off the label" if source == SOURCE_SCAN
+                         else "typed by the operator")
 
     # ── the pipeline run (shared machinery; override the small hooks) ─────────
 
@@ -985,6 +1110,9 @@ class BenchConfigurator:
             entry["kind"] = mode
             entry.update(self.run_stamp())  # who / where / which code (TEC-345)
             entry["log_file"] = self._save_log(entry)
+            # What the run did, then what the device IS: the factory password
+            # outlives every run record of the unit (TEC-845).
+            self._retain_label_password(entry, inputs)
             self.state["history"].insert(0, entry)
             del self.state["history"][self.history_limit:]
             self.state["last_result"] = entry

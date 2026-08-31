@@ -168,6 +168,14 @@ re-setting up.
 > it's already on the shared password. Don't scan the label; the factory password no longer applies.
 > The RUTM08 page can also pick it up again on its new `192.168.88.1` address.
 
+**The label password is kept, so get it right.** On the OTD500, RUTM08 and TSW202 the bench sends
+each unit's factory password to bench-central, filed under its serial. If that device is ever
+factory-reset out in the field it goes back to that password, and this is the only place anyone
+can look it up. Scanning is the reliable way to get it right — a mistyped password is stored as
+typed, and only shows up as wrong months later when someone tries it on a reset unit. (If two
+different passwords ever get recorded for one serial, the dashboard flags the row with an amber
+`?` so an engineer can check the actual sticker.)
+
 > ⚠️ **Firmware:** if the page warns the firmware image is missing, tell an engineer — the device
 > can't be fully configured without it.
 

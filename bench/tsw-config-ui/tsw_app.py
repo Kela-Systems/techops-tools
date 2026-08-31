@@ -84,6 +84,7 @@ class TswConfigurator(BenchConfigurator):
     tailscale_label = "tsw"   # unused — the switch baseline has no Tailscale step
     history_limit = 30  # full step logs per entry — the JSON files are the archive
     label_scan_enabled = True  # read the factory password off the QR label (TEC-349)
+    retain_label_password = True  # and keep it on bench-central (TEC-845)
     verify_supported = True    # mutation-free re-check of a finished switch (TEC-348)
     record_tool = "tsw"
     ip_modes_enabled = True    # fixed / manual / DHCP address picker (TEC-848)
@@ -351,12 +352,11 @@ class TswConfigurator(BenchConfigurator):
                 return {"error": "This switch's MAC could not be read, and it is "
                                  "the only way to find one again after it moves "
                                  "to DHCP. Re-plug it, or pick an address."}
-            password, source = self.resolve_label_password(body.initial_password)
-            inputs = {"initial_password": password,
-                      "password_source": source,
-                      "host": host, "mac": mac,
+            inputs = {"host": host, "mac": mac,
                       "target_ip": assign.ip, "ip_mode": assign.mode,
-                      "advance_cycle": assign.advance_cycle}
+                      "advance_cycle": assign.advance_cycle,
+                      **self.label_password_inputs(body.initial_password,
+                                                   key="initial_password")}
             label = f"{self.hostname_for(inputs)} ({host})"
             if not await self.execute_run(inputs, label):
                 return {"error": "A configuration is already in progress."}
