@@ -26,15 +26,12 @@
     <button id="dismissBtn" class="btn-outline hidden" onclick="dismiss()">Dismiss</button>
   </div>
 
-  <!-- IP ASSIGNMENT (always visible — choose any time, even before a camera) -->
+  <!-- ADDRESS ASSIGNMENT (always visible — choose any time, even before a
+       camera). The control itself is built by the shared mountIpModes()
+       (TEC-848), so all four modes look and behave the same on every tool. -->
   <div class="card">
-    <h3>IP assignment</h3>
-    <div class="seg" id="ipModeSeg">
-      <button type="button" data-mode="manual" onclick="setMode('manual')">Manual</button>
-      <button type="button" data-mode="cycle" onclick="setMode('cycle')">Cycle 30&rarr;50&rarr;30</button>
-      <button type="button" data-mode="dhcp" onclick="setMode('dhcp')">DHCP</button>
-    </div>
-    <div class="preview" id="ipModeHint">&nbsp;</div>
+    <h3>Address assignment</h3>
+    <div id="ipModes"></div>
   </div>
 
   <!-- DEVICE FORM (visible while a camera is detected and idle) -->
@@ -46,18 +43,12 @@
         <select id="profile" onchange="updatePreview()"></select>
         <span class="hint">Imported via Setup &gt; System &gt; Import.</span>
       </div>
-      <div class="field" id="octetField">
-        <label for="octet">Static IP (last octet)</label>
-        <input id="octet" type="number" inputmode="numeric" autocomplete="off"
-               oninput="updatePreview()" onkeydown="if(event.key==='Enter')submitConfigure()">
-        <span class="hint" id="octetHint">&nbsp;</span>
-      </div>
       <div class="field field-actions">
         <label aria-hidden="true">&nbsp;</label>
-        <!-- Verify needs neither field: it checks the camera against what it
-             was configured to be, recovered from its own configure record, and
-             changes nothing (TEC-348). A profile or octet chosen here overrides
-             that lookup, for a unit whose record is missing or wrong. -->
+        <!-- Verify needs no field: it checks the camera against what it was
+             configured to be, recovered from its own configure record, and
+             changes nothing (TEC-348). A profile chosen here overrides that
+             lookup, for a unit whose record is missing or wrong. -->
         <div class="btn-row">
           <button id="goBtn" class="btn-primary" onclick="submitConfigure()">Configure</button>
           <button id="verifyBtn" class="btn-outline" type="button">Verify</button>
@@ -119,59 +110,50 @@ let lastFormMac = null;   // clear the form when a different camera is connected
 let profilesLoaded = '';  // re-fill the profile <select> only when the list changes
 let curState = {};
 // Verify sends no overrides from this page on purpose (TEC-348). The profile
-// <select> always holds a value and the octet box is pre-filled with the next
-// cycle number, so passing them would state an expectation the operator never
-// made — and a camera that got 'cellular' would fail against a 'lan' the form
-// merely defaulted to. The camera's own configure record is the only thing here
-// that knows. `POST /api/verify {expected: {...}}` still takes overrides for the
-// CLI and for a unit whose record is missing.
+// <select> always holds a value and the address picker always names an address,
+// so passing them would state an expectation the operator never made — and a
+// camera that got 'cellular' would fail against a 'lan' the form merely
+// defaulted to. The camera's own configure record is the only thing here that
+// knows. `POST /api/verify {expected: {...}}` still takes overrides for the CLI
+// and for a unit whose record is missing.
 const verifyBtn = mountVerifyButton('verifyBtn');
+const ipModes = mountIpModes('ipModes', {
+  noun: 'camera',
+  dhcpNote: 'Nothing here picks the address, so the bench finds the camera '
+    + 'again by MAC on the DHCP scan subnets to verify it.',
+  onChange: (s) => updatePreview(s),
+});
 
 async function reloadAll(){ await postJSON('/api/reload'); }
 async function dismiss(){ await postJSON('/api/dismiss'); }
 
-async function setMode(mode){ await postJSON('/api/ip-mode', {mode}); }
-
 async function submitConfigure(){
-  const mode = curState.ip_mode || 'manual';
-  const body = { profile: $('profile').value, ip_mode: mode };
-  if (mode === 'manual'){
-    const v = parseInt($('octet').value, 10);
-    if (isNaN(v)){ $('octet').focus(); return; }
-    body.octet = v;
-  }
+  const body = { profile: $('profile').value, ip_mode: ipModes.mode(),
+                 octet: ipModes.octet() };
+  if (ipModes.mode() === 'manual' && !body.octet){ ipModes.focusEntry(); return; }
   $('goBtn').disabled = true;
   await postJSON('/api/configure', body, {buttons: ['goBtn']});
 }
 
-function updatePreview(){
-  const s = curState;
-  const prefix = s.subnet_prefix || '192.168.88';
-  const mode = s.ip_mode || 'manual';
-  $('octetHint').textContent = `allowed ${s.octet_min}–${s.octet_max}`;
+// `state` is the one the address picker just got back from the server, when
+// the repaint was triggered by a click on it — fresher than curState, which
+// only moves when the socket ticks.
+function updatePreview(state){
+  const s = state || curState;
+  const mode = ipModes.mode();
   if (mode === 'dhcp'){
     $('namePreview').innerHTML = `Will switch the camera to <b>DHCP</b>, set NTP `
       + `<b>${esc(s.ntp_server||'—')}</b>, and change the password.`;
     return;
   }
-  const octet = mode === 'cycle' ? s.cycle_next : parseInt($('octet').value, 10);
-  const ipOk = octet != null && !isNaN(octet) && octet >= s.octet_min && octet <= s.octet_max;
-  const ip = ipOk ? `${prefix}.${octet}` : '—';
+  // The server already worked out where the next camera goes for every mode
+  // except manual, where the address belongs to the unit on the bench.
+  const typed = ipModes.octet();
+  const ip = mode === 'manual'
+    ? (typed ? (typed.includes('.') ? typed : `${s.subnet_prefix||''}.${typed}`) : '—')
+    : (s.next_ip || '—');
   $('namePreview').innerHTML = `Will set IP <b>${esc(ip)}</b>, NTP <b>${esc(s.ntp_server||'—')}</b>, `
     + `gateway <b>${esc(s.gateway||'—')}</b>, and change the password.`;
-}
-
-function renderIpMode(s){
-  const mode = s.ip_mode || 'manual';
-  const prefix = s.subnet_prefix || '192.168.88';
-  document.querySelectorAll('#ipModeSeg button').forEach(b =>
-    b.classList.toggle('active', b.dataset.mode === mode));
-  const hints = {
-    cycle: `Next camera gets <b>${prefix}.${s.cycle_next}</b>, then auto-advances on each success (wraps ${s.octet_max}&rarr;${s.octet_min}).`,
-    dhcp: `Camera keeps the address its own DHCP server gives it. Nothing here picks it, so the bench finds the camera again by MAC on <b>${esc((s.dhcp_subnets||[]).join(', ')||'—')}</b> to verify it.`,
-    manual: `Enter the last octet (${s.octet_min}&ndash;${s.octet_max}) for each camera.`,
-  };
-  $('ipModeHint').innerHTML = hints[mode] || hints.manual;
 }
 
 // A DHCP run records no IP (the lease is the DHCP server's to change), so show
@@ -210,8 +192,8 @@ function render(s){
 
   $('dismissBtn').classList.toggle('hidden', !isFinished(s));
 
-  // IP-assignment toggle (always visible)
-  renderIpMode(s);
+  // Address-assignment picker (always visible)
+  ipModes.update(s);
 
   // device form: shown while detected and idle; reset when a new camera appears
   const showForm = s.phase === 'detected' && !s.busy;
@@ -219,11 +201,7 @@ function render(s){
   if (showForm){
     fillProfiles(s);
     fc.style.display = '';
-    $('octetField').style.display = (s.ip_mode === 'manual') ? '' : 'none';
-    if (s.active_mac && s.active_mac !== lastFormMac){
-      lastFormMac = s.active_mac;
-      if (s.ip_mode === 'manual' && !$('octet').value) $('octet').value = s.cycle_next || s.octet_min || '';
-    }
+    if (s.active_mac && s.active_mac !== lastFormMac) lastFormMac = s.active_mac;
     $('goBtn').disabled = false;
     updatePreview();
     // A camera answering outside the factory address has been through this tool

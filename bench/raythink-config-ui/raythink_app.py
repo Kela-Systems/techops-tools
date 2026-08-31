@@ -18,9 +18,8 @@ configure_camera pipeline call.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from pydantic import BaseModel
 
@@ -30,6 +29,12 @@ from bench_core.bench_ui import (
     TERMINAL_PHASES,
     BenchConfigurator,
     read_device_mac,
+)
+from bench_core.ip_mode import (
+    ALL_MODES,
+    MODE_DHCP,
+    IpModeError,
+    IpModePolicy,
 )
 from bench_core.run_record import build_run_entry
 
@@ -44,33 +49,17 @@ from raythink_configure import (
     device_name,
     find_camera,
     resolve_profile,
-    target_ip_for,
     verify_camera,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-IP_STATE_PATH = BASE_DIR / "ip_state.json"
-
-# How the camera gets its address: a static one whose last octet the operator
-# types ("manual") or the tool auto-assigns ("cycle"), or the site's own DHCP
-# server ("dhcp" — no octet to choose).
-IP_MODES = ("manual", "cycle", "dhcp")
-
-
-def norm_ip_mode(mode: str) -> str:
-    """One of IP_MODES; anything unrecognised (including a stale value in
-    ip_state.json) falls back to manual."""
-    return mode if mode in IP_MODES else "manual"
 
 
 class ConfigureBody(BaseModel):
     profile: str = ""              # profile key, e.g. "lan" | "cellular"
-    ip_mode: str = ""              # one of IP_MODES; blank = use the saved mode
-    octet: Optional[int] = None    # required for manual mode
-
-
-class IpModeBody(BaseModel):
-    mode: str                      # one of IP_MODES
+    ip_mode: str = ""              # blank = use the mode the operator selected
+    # Required for manual mode; "30", 30 or the full "192.168.88.30".
+    octet: Union[int, str] = ""
 
 
 class RaythinkConfigurator(BenchConfigurator):
@@ -83,9 +72,14 @@ class RaythinkConfigurator(BenchConfigurator):
     tailscale_label = "raythink"
     history_limit = 30
     verify_supported = True    # mutation-free re-check of a finished camera (TEC-348)
+    ip_modes_enabled = True    # fixed / cycle / manual / DHCP (TEC-848)
+    # The name this tool's state file has always had. Kept so a bench upgrading
+    # in place keeps its cycle counter instead of silently restarting the range
+    # (bench_core.ip_mode.IpModeStore also reads the old key names).
+    ip_mode_filename = "ip_state.json"
     record_tool = "raythink"
 
-    # ── helpers: octet range + persisted cycle counter ───────────────────────
+    # ── helpers: octet range + address modes ─────────────────────────────────
 
     def _octet_range(self) -> tuple[int, int]:
         static = self.cfg.get("static", {}) or {}
@@ -96,45 +90,27 @@ class RaythinkConfigurator(BenchConfigurator):
         """Subnets swept for a camera's MAC after it is switched to DHCP."""
         return (self.cfg.get("dhcp", {}) or {}).get("scan_subnets", DEFAULT_SCAN_SUBNETS)
 
-    def _load_ip_state(self) -> tuple[int, str]:
-        """Read the persisted cycle counter + IP mode from ip_state.json, falling
-        back to the config's range/default_mode."""
-        lo, _hi = self._octet_range()
-        default_mode = (self.cfg.get("static", {}) or {}).get("default_mode", "manual")
-        try:
-            data = json.loads(IP_STATE_PATH.read_text())
-            val = int(data.get("cycle_next", lo))
-            mode = data.get("ip_mode", default_mode)
-        except (OSError, ValueError, TypeError):
-            val, mode = lo, default_mode
-        return self._clamp_octet(val), norm_ip_mode(mode)
+    def ip_mode_policy(self) -> IpModePolicy:
+        """All four modes. The camera is the one device on this bench that wants
+        every one of them: several to a site (cycle), one to a site (fixed), a
+        one-off (manual), or the site's own DHCP server (dhcp).
 
-    def _clamp_octet(self, octet: int) -> int:
+        One range bounds all three static modes, as it always has here — the
+        cameras' block on the operational subnet.
+        """
+        static = self.cfg.get("static", {}) or {}
         lo, hi = self._octet_range()
-        if octet < lo or octet > hi:
-            return lo
-        return octet
-
-    def _save_ip_state(self) -> None:
-        try:
-            IP_STATE_PATH.write_text(json.dumps(
-                {"cycle_next": self.state["cycle_next"], "ip_mode": self.state["ip_mode"]}),
-                encoding="utf-8")
-        except OSError:
-            self.logger.warning("Could not persist the IP state to %s.", IP_STATE_PATH)
-
-    def _advance_cycle(self) -> None:
-        lo, hi = self._octet_range()
-        nxt = self.state["cycle_next"] + 1
-        if nxt > hi:
-            nxt = lo
-        self.state["cycle_next"] = nxt
-        self._save_ip_state()
+        return IpModePolicy(
+            modes=ALL_MODES,
+            prefix=static.get("subnet_prefix", "192.168.88"),
+            octet_min=lo, octet_max=hi,
+            default_mode=static.get("default_mode", "manual"),
+            default_fixed_octet=int(static.get("fixed_octet", 0) or 0),
+        )
 
     # ── state ────────────────────────────────────────────────────────────────
 
     def initial_state(self) -> dict:
-        cycle_next, ip_mode = self._load_ip_state()
         return {
             "phase": "waiting",        # waiting|detected|configuring|configured|
                                        # verifying|verified|error
@@ -143,21 +119,17 @@ class RaythinkConfigurator(BenchConfigurator):
             "active_mac": None,
             "on_factory_ip": False,    # False also means "nothing detected"
             "busy": False,
-            "ip_mode": ip_mode,        # one of IP_MODES
-            "cycle_next": cycle_next,
             "message": "Connect the first camera (it ships on 192.168.1.123)…",
             "last_result": None,
             "history": [],
         }
 
     def extra_public_state(self) -> dict:
-        lo, hi = self._octet_range()
+        # The addressing block (mode, range, next address) is contributed by the
+        # shared IpModeStore — see BenchConfigurator.public_state.
         static = self.cfg.get("static", {}) or {}
         return {
             "profiles": list((self.cfg.get("profiles", {}) or {}).keys()),
-            "octet_min": lo,
-            "octet_max": hi,
-            "subnet_prefix": static.get("subnet_prefix", "192.168.88"),
             "ntp_server": self.cfg.get("ntp_server", ""),
             "gateway": static.get("gateway", ""),
             "netmask": static.get("netmask", ""),
@@ -165,10 +137,7 @@ class RaythinkConfigurator(BenchConfigurator):
         }
 
     def reload(self) -> str:
-        msg = super().reload()
-        # Re-clamp the persisted counter AND refresh the saved IP mode, in case
-        # either changed in the config/state file since startup.
-        self.state["cycle_next"], self.state["ip_mode"] = self._load_ip_state()
+        msg = super().reload()   # also re-clamps the mode store into the new range
         n = len(self.cfg.get("profiles", {}) or {})
         return f"{msg} {n} profile(s) configured."
 
@@ -221,7 +190,8 @@ class RaythinkConfigurator(BenchConfigurator):
         overrides = inputs["expected_overrides"]
         inputs["verifying"] = True
         inputs["profile"] = str(overrides.get("profile") or "").strip()
-        inputs["ip_mode"] = "dhcp" if overrides.get("ip_mode") == "dhcp" else ""
+        inputs["ip_mode"] = (MODE_DHCP if overrides.get("ip_mode") == MODE_DHCP
+                             else "")
         octet = overrides.get("octet")
         lo, hi = self._octet_range()
         try:
@@ -266,12 +236,6 @@ class RaythinkConfigurator(BenchConfigurator):
                 "ip_mode": result.get("ip_mode", "static"),
             },
         )
-
-    def on_run_recorded(self, result: dict, inputs: dict, entry: dict) -> None:
-        # Burn a cycle number only on a clean run, so a failed camera keeps its
-        # slot for the retry.
-        if result["ok"] and inputs.get("advance_cycle"):
-            self._advance_cycle()
 
     def success_message(self, result: dict, entry: dict, took: str) -> str:
         dev = entry["device"]
@@ -342,21 +306,7 @@ class RaythinkConfigurator(BenchConfigurator):
     # ── routes ────────────────────────────────────────────────────────────────
 
     def register_routes(self, app) -> None:
-        @app.post("/api/ip-mode")
-        async def set_ip_mode(body: IpModeBody):
-            """Set the addressing mode (persisted). Can be changed any time,
-            including before a camera is connected."""
-            mode = norm_ip_mode(body.mode)
-            self.state["ip_mode"] = mode
-            self._save_ip_state()
-            prefix = (self.cfg.get("static", {}) or {}).get("subnet_prefix", "192.168.88")
-            self.state["message"] = {
-                "cycle": f"IP mode: cycle (next {prefix}.{self.state['cycle_next']}).",
-                "dhcp": "IP mode: DHCP (the camera keeps the address its DHCP "
-                        "server gives it).",
-                "manual": "IP mode: manual (enter the last octet per camera).",
-            }[mode]
-            return self.public_state()
+        # /api/ip-mode is the shared route (TEC-848) — see BenchConfigurator.
 
         @app.post("/api/configure")
         async def configure(body: ConfigureBody):
@@ -374,23 +324,11 @@ class RaythinkConfigurator(BenchConfigurator):
             if not self.state["detected"]:
                 return {"error": "No camera is currently detected."}
 
-            lo, hi = self._octet_range()
-            mode = norm_ip_mode(body.ip_mode or self.state.get("ip_mode", "manual"))
-            if mode != self.state.get("ip_mode"):
-                self.state["ip_mode"] = mode
-                self._save_ip_state()
-            advance_cycle = False
-            octet: Optional[int] = None      # None == leave the camera on DHCP
-            if mode == "cycle":
-                octet = self.state["cycle_next"]
-                advance_cycle = True
-            elif mode == "manual":
-                if body.octet is None:
-                    return {"error": f"Enter the last octet ({lo}-{hi})."}
-                octet = int(body.octet)
-                if not (lo <= octet <= hi):
-                    return {"error": f"IP octet {octet} is out of range {lo}-{hi}."}
-            elif not self.state["active_mac"]:
+            try:
+                assign = self.resolve_ip_mode(body.ip_mode, body.octet)
+            except IpModeError as e:
+                return {"error": str(e)}
+            if assign.dhcp and not self.state["active_mac"]:
                 # DHCP is verified by finding the camera again by MAC, so a
                 # camera whose MAC we never read can't be checked afterwards.
                 return {"error": "Could not read this camera's MAC over ARP, so it "
@@ -398,15 +336,16 @@ class RaythinkConfigurator(BenchConfigurator):
                                  "Check the cabling/adapter subnet, or assign a "
                                  "static IP instead."}
 
-            target_ip = "" if octet is None else target_ip_for(self.cfg, octet)
             inputs = {
-                "profile": profile, "profile_path": profile_path, "octet": octet,
-                "ip_mode": mode, "target_ip": target_ip,
-                "advance_cycle": advance_cycle,
+                "profile": profile, "profile_path": profile_path,
+                "octet": assign.octet,
+                "ip_mode": assign.mode, "target_ip": assign.ip,
+                "advance_cycle": assign.advance_cycle,
                 "host": self.state["active_host"] or self.cfg.get("host", DEFAULT_HOST),
                 "mac": self.state["active_mac"],
             }
-            label = f"{device_name(octet)} -> {target_ip or 'DHCP'} ('{profile}')"
+            label = (f"{device_name(assign.octet)} -> {assign.ip or 'DHCP'} "
+                     f"('{profile}')")
             if not await self.execute_run(inputs, label):
                 return {"error": "A configuration is already in progress."}
             return self.public_state()
@@ -420,6 +359,7 @@ class RaythinkConfigurator(BenchConfigurator):
               "(laptop must be on 192.168.1.x)")
         print(f"  static IP    : {static.get('subnet_prefix', '192.168.88')}.{lo}-{hi} "
               f"(gw {static.get('gateway', '?')} / {static.get('netmask', '?')})")
+        print(f"  address mode : {self.ip_modes.describe()}")
         dhcp = self.cfg.get("dhcp", {}) or {}
         print(f"  or DHCP      : found again by MAC on "
               f"{', '.join(self._dhcp_subnets())} "

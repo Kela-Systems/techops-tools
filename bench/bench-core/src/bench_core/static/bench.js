@@ -433,6 +433,188 @@ function mountLabelScan(onState) {
   };
 }
 
+// ── Address assignment (TEC-848) ────────────────────────────────────────────
+//
+// The picker that decides where a device ends up: the same control on every
+// tool that offers a choice, driven entirely by what the server says it
+// supports (`state.ip_modes`). A tool gets it by putting an empty container on
+// its page and calling mountIpModes(); nothing about the four modes is written
+// per tool.
+const IP_MODE_LABELS = {
+  fixed: 'Same IP every time',
+  cycle: 'Cycle',
+  manual: 'Manual',
+  dhcp: 'DHCP',
+};
+
+// Where the next device is headed, for a settings summary. `state.next_ip` is
+// empty in TWO different situations — DHCP assigns nothing, and manual has
+// nothing to assign until it is typed — so it cannot be read as "not an
+// address, therefore DHCP" the way it invites being read.
+function nextAddressLabel(state) {
+  if (state.next_ip) return state.next_ip;
+  if (state.ip_mode === 'dhcp') return 'left on DHCP';
+  if (state.ip_mode === 'manual') return 'typed per device';
+  return '—';
+}
+
+// Build the mode picker inside `containerId`. Options:
+//   noun       what the device is called in the hints ('camera', 'speaker', …)
+//   dhcpNote   the tool-specific half of the DHCP hint (how it re-finds the
+//              device), appended to the shared explanation
+//   onChange   called after the operator changes anything, so the page can
+//              repaint its own preview line without waiting for the next
+//              frame. Gets the state the server answered with, or null when
+//              the change was only typing (nothing was sent)
+//
+// Returns {update(state), mode(), octet(), focusEntry()}. `octet()` is what the
+// page must put in its /api/configure body — it is only meaningful in manual
+// mode, where the value belongs to this one unit and so is never persisted.
+function mountIpModes(containerId, opts) {
+  opts = opts || {};
+  const host = $(containerId);
+  if (!host) return { update() {}, mode() { return ''; }, octet() { return ''; }, focusEntry() {} };
+  const noun = opts.noun || 'device';
+
+  host.classList.add('ipmode');
+  host.innerHTML =
+    '<div class="seg" data-role="seg"></div>' +
+    '<div class="ipmode-entry hidden" data-role="entry">' +
+      '<label data-role="entryLabel" for="ipModeOctet"></label>' +
+      '<input id="ipModeOctet" type="text" inputmode="numeric" autocomplete="off"' +
+      ' size="16" data-role="octet">' +
+      '<button type="button" class="btn-outline hidden" data-role="apply">Set</button>' +
+    '</div>' +
+    '<div class="preview" data-role="hint">&nbsp;</div>';
+
+  const seg = host.querySelector('[data-role=seg]');
+  const entry = host.querySelector('[data-role=entry]');
+  const entryLabel = host.querySelector('[data-role=entryLabel]');
+  const octetInput = host.querySelector('[data-role=octet]');
+  const applyBtn = host.querySelector('[data-role=apply]');
+  const hint = host.querySelector('[data-role=hint]');
+
+  let modes = [];        // rendered buttons, so the row is rebuilt only on change
+  let mode = '';
+  let touched = false;   // don't overwrite the box while the operator is in it
+  let last = {};         // the newest state, to repaint from between frames
+  let inFlight = 0;      // changes the server hasn't answered yet
+
+  // Send a change and repaint from the answer, which is a full state — so the
+  // picker never waits for the socket's next frame to catch up with a click.
+  // On a refusal it repaints from `last` instead, putting the highlight back
+  // where the server still has it.
+  async function submit(body, postOpts) {
+    inFlight += 1;
+    const answer = await postJSON('/api/ip-mode', body, postOpts);
+    const ok = answer && !answer.error;
+    if (ok) touched = false;
+    inFlight -= 1;
+    const s = ok ? answer : last;
+    // Only the last change outstanding gets to say what the mode is; an
+    // earlier one landing late must not undo a click made since.
+    if (!inFlight) mode = s.ip_mode || mode;
+    render(s);
+    if (opts.onChange) opts.onChange(last);
+  }
+
+  function choose(next) {
+    if (next === mode) return;
+    // Move the highlight NOW. The socket pushes a frame only once a second, so
+    // waiting for the server reads as a missed click — operators press again,
+    // and the second press is the one that has to be undone.
+    mode = next;
+    render(last);
+    submit({ mode: next, octet: '' });
+  }
+
+  function applyFixed() {
+    applyBtn.disabled = true;
+    submit({ mode: 'fixed', octet: octetInput.value }, { buttons: [applyBtn] });
+  }
+
+  applyBtn.addEventListener('click', applyFixed);
+  octetInput.addEventListener('input', () => {
+    touched = true;
+    if (mode === 'manual' && opts.onChange) opts.onChange(null);
+  });
+  octetInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    if (mode === 'fixed') { e.preventDefault(); applyFixed(); }
+  });
+
+  function renderSeg(s) {
+    const want = (s.ip_modes || []).join('|');
+    if (want !== modes.join('|')) {
+      modes = s.ip_modes || [];
+      seg.innerHTML = modes.map(m =>
+        `<button type="button" data-mode="${esc(m)}">${esc(IP_MODE_LABELS[m] || m)}</button>`
+      ).join('');
+      seg.querySelectorAll('button').forEach(b =>
+        b.addEventListener('click', () => choose(b.dataset.mode)));
+    }
+    seg.querySelectorAll('button').forEach(b =>
+      b.classList.toggle('active', b.dataset.mode === mode));
+  }
+
+  function renderEntry(s) {
+    const wants = mode === 'fixed' || mode === 'manual';
+    entry.classList.toggle('hidden', !wants);
+    applyBtn.classList.toggle('hidden', mode !== 'fixed');
+    if (!wants) return;
+    entryLabel.textContent = mode === 'fixed'
+      ? 'Address for every ' + noun : 'Address for this ' + noun;
+    octetInput.placeholder = `${s.subnet_prefix || ''}.${s.octet_min ?? ''}–${s.octet_max ?? ''}`;
+    // The fixed value is server state and is mirrored back; the manual one
+    // belongs to the unit on the bench and is left exactly as typed.
+    if (mode === 'fixed' && !touched && document.activeElement !== octetInput)
+      octetInput.value = s.fixed_octet ?? '';
+  }
+
+  function renderHint(s) {
+    const prefix = s.subnet_prefix || '';
+    const texts = {
+      fixed: `Every ${noun} gets <b class="mono">${esc(s.fixed_ip || '—')}</b>. `
+        + 'Set it once and keep plugging units in — the mode survives restarts.',
+      cycle: `Next ${noun} gets <b class="mono">${esc(prefix)}.${esc(s.cycle_next)}</b>, `
+        + `then it advances on each success (wrapping ${esc(s.cycle_max)}&rarr;${esc(s.cycle_min)}).`,
+      manual: `Type the address for each ${noun} `
+        + `(<span class="mono">${esc(prefix)}.${esc(s.octet_min)}&ndash;${esc(s.octet_max)}</span>, `
+        + 'or paste the whole address).',
+      dhcp: `The ${noun} keeps the address its own DHCP server gives it and the `
+        + 'bench assigns nothing. ' + (opts.dhcpNote || ''),
+    };
+    const html = texts[mode] || '';
+    if (hint.innerHTML !== html) hint.innerHTML = html;
+  }
+
+  // Paint from `s` at whatever `mode` currently is — which is the server's
+  // between clicks, and the operator's for the moment a click is in flight.
+  function render(s) {
+    last = s;
+    if (!s.ip_modes || !s.ip_modes.length) { host.classList.add('hidden'); return; }
+    host.classList.remove('hidden');
+    renderSeg(s);
+    renderEntry(s);
+    renderHint(s);
+    octetInput.disabled = !!s.busy;
+    applyBtn.disabled = !!s.busy;
+  }
+
+  return {
+    update(s) {
+      // A frame that was already on the wire when the operator clicked still
+      // carries the old mode; adopting it would bounce the highlight back for
+      // the rest of the round trip.
+      if (!inFlight) mode = s.ip_mode || (s.ip_modes || [])[0] || '';
+      render(s);
+    },
+    mode() { return mode; },
+    octet() { return mode === 'manual' ? octetInput.value.trim() : ''; },
+    focusEntry() { if (mode === 'manual') octetInput.focus(); },
+  };
+}
+
 // Resilient WebSocket state feed.
 //
 // Calls `onState(state)` for every frame. Also bootstraps once via GET

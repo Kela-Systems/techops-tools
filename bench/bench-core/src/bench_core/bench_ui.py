@@ -35,7 +35,7 @@ import time
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -48,6 +48,7 @@ from bench_core.central import spool_run_record, start_central_uploader
 from bench_core.config_check import check_config, config_fingerprint
 from bench_core.device_label import DeviceLabel, parse_device_label
 from bench_core.history import resolve_expected
+from bench_core.ip_mode import IpModeError, IpModePolicy, IpModeStore
 from bench_core.run_record import KIND_CONFIGURE, KIND_VERIFY
 
 try:
@@ -285,6 +286,18 @@ class VerifyBody(BaseModel):
     expected: dict = {}
 
 
+class IpModeBody(BaseModel):
+    """Request body of the shared POST /api/ip-mode route (TEC-848).
+
+    `octet` only means anything for the `fixed` mode, where it sets the one
+    address every device from then on will get. It takes a string as well as an
+    int so the operator can paste a whole `192.168.88.70` — `parse_octet`
+    accepts either form and is the only thing that decides what is valid.
+    """
+    mode: str = ""
+    octet: Union[int, str] = ""
+
+
 # ── Device-label scanning ────────────────────────────────────────────────────
 #
 # Scanning the QR on a device's sticker instead of retyping the factory
@@ -469,6 +482,13 @@ class BenchConfigurator:
     # button, rather than a button that errors — and so the tool it IS wired up
     # on is a deliberate choice per family.
     verify_supported: bool = False
+    # Opt in to operator-selectable address assignment — fixed / cycle / manual
+    # / DHCP (TEC-848). Off by default: a tool that has exactly one sensible
+    # answer for where its device ends up should not grow a picker offering
+    # three wrong ones. A tool that opts in also implements `ip_mode_policy`.
+    ip_modes_enabled: bool = False
+    # Where the selected mode is persisted, relative to the tool folder.
+    ip_mode_filename: str = IpModeStore.FILENAME
     # The tool name used to look a device's configure record up (must match the
     # `tool` its build_entry passes to build_run_entry). Set per subclass.
     record_tool: str = ""
@@ -492,6 +512,12 @@ class BenchConfigurator:
         self.config_hash: str = ""
         self.config_warnings: list[str] = []
         self._check_config()
+        # Built before `initial_state`, because a tool's opening message says
+        # what the current mode will do to the first device.
+        self.ip_modes: Optional[IpModeStore] = None
+        if self.ip_modes_enabled:
+            self.ip_modes = IpModeStore(base_dir / self.ip_mode_filename,
+                                        self.ip_mode_policy(), self.logger)
         self.state: dict = self.initial_state()
         self.state["config_loaded"] = bool(self.cfg)
         self._live_collector: Optional[StepCollector] = None
@@ -562,12 +588,44 @@ class BenchConfigurator:
     def extra_public_state(self) -> dict:  # override to add manifest / name_prefix / etc.
         return {}
 
+    # ── address assignment (TEC-848; only for `ip_modes_enabled` tools) ──────
+
+    def ip_mode_policy(self) -> IpModePolicy:  # override
+        """Which address modes this tool offers, on which subnet, in which
+        range — read from `self.cfg` so a station can widen a range by editing
+        its config. Called at startup and again on every reload."""
+        raise NotImplementedError
+
+    def ip_mode_message(self) -> str:
+        """What the page says after the operator changes mode. Override to add
+        anything device-specific (a re-scan hint, say)."""
+        return self.ip_modes.describe() if self.ip_modes else ""
+
+    def resolve_ip_mode(self, mode: str = "", octet=None):
+        """This run's addressing, remembering a mode the request named.
+
+        The page's picker has already posted to `/api/ip-mode` by the time it
+        submits, so the remembering is for everything else: a script or a CLI
+        driving `/api/configure` directly should not have its choice forgotten
+        by the next unit, which is how this tool has always behaved.
+
+        Raises `IpModeError` — the caller returns its message to the operator.
+        """
+        assign = self.ip_modes.resolve(mode, octet)
+        if mode and assign.mode != self.ip_modes.mode:
+            self.ip_modes.set_mode(assign.mode)
+        return assign
+
     def reload(self) -> str:
         """Re-read config from disk. Override to also reload a manifest. Returns
         the status message to show in the UI."""
         self.cfg = self.load_config()
         self._check_config()
         self.state["config_loaded"] = bool(self.cfg)
+        if self.ip_modes is not None:
+            # The selection is the operator's and survives; only the ranges it
+            # is clamped into come from the file that just changed.
+            self.ip_modes.retarget(self.ip_mode_policy())
         return ("Config reloaded." if self.cfg
                 else f"No {self.config_filename} found — copy the example.")
 
@@ -589,6 +647,7 @@ class BenchConfigurator:
                 # can label a verify pass as one instead of saying "Configured".
                 "verify_supported": self.verify_supported,
                 "run_kind": self._run_kind,
+                **(self.ip_modes.public_state() if self.ip_modes else {}),
                 **self.extra_public_state()}
 
     # ── device-label scanning (TEC-349) ──────────────────────────────────────
@@ -929,6 +988,13 @@ class BenchConfigurator:
             self.state["history"].insert(0, entry)
             del self.state["history"][self.history_limit:]
             self.state["last_result"] = entry
+            # Burn a cycle number only on a run that actually used one and came
+            # out clean, so a failed device keeps its slot for the retry. Only
+            # a configure run sets `advance_cycle`; a verify pass assigns
+            # nothing and so can never consume an address.
+            if (self.ip_modes is not None and result["ok"]
+                    and inputs.get("advance_cycle")):
+                self.ip_modes.advance_cycle()
             self.on_run_recorded(result, inputs, entry)
             if result["ok"]:
                 self.state["phase"] = "verified" if verifying else "configured"
@@ -1046,6 +1112,23 @@ class BenchConfigurator:
             name = self.operator_store.set(body.operator)
             self.logger.info("Operator set to '%s'.", name or "(cleared)")
             return self.public_state()
+
+        if self.ip_modes is not None:
+            @app.post("/api/ip-mode")
+            async def set_ip_mode(body: IpModeBody):
+                """Select where devices from now on should end up (TEC-848).
+
+                Deliberately not gated on a device being detected: the mode is
+                a batch-level decision the operator makes before plugging the
+                first unit in, and it persists across units and restarts.
+                """
+                try:
+                    self.ip_modes.set_mode(body.mode, body.octet)
+                except IpModeError as e:
+                    return {"error": str(e)}
+                self.state["message"] = self.ip_mode_message()
+                self.logger.info("%s", self.ip_modes.describe())
+                return self.public_state()
 
         if self.label_scan_enabled:
             @app.post("/api/label-scan")
