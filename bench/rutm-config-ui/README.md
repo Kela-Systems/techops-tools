@@ -13,13 +13,16 @@ CSV** — when a router is detected, the UI asks for the **site name** and the
 2. Set the admin/root password to the shared default (`Kelasys123!`).
 3. Hostname / device name → `rut-<site_name>`.
 4. Timezone → `Asia/Jerusalem`.
-5. Firmware upgrade (FOTA latest-stable by default; local `.bin` supported).
-6. Enable RMS on-device + register the unit in the RMS cloud (serial+MAC),
+5. NTP client → `192.168.88.10`, as the only time source. The router is the
+   gateway of the LAN that server sits on, so it addresses it directly.
+6. Firmware upgrade (FOTA latest-stable by default; local `.bin` supported).
+7. Enable RMS on-device + register the unit in the RMS cloud (serial+MAC),
    then assign the RMS Management pack license (`rms.pack`, the UI's
    "Set pack" action) so the device doesn't run on 30-day credits.
-7. Join Tailscale (per-device minted key or a static one).
-8. Verify every setting by reading it back off the device.
-9. **Last step:** move the LAN to `192.168.88.1`. The connection drops by
+8. Join Tailscale (per-device minted key or a static one).
+9. *(off by default)* NTP forward + static WAN — see below.
+10. Verify every setting by reading it back off the device.
+11. **Last step:** move the LAN to `192.168.88.1`. The connection drops by
    design; success is confirmed by reaching the device on the new address
    (the laptop's DHCP lease is renewed so it follows into the new subnet).
 
@@ -27,6 +30,30 @@ The LAN move runs last because the device leaves `192.168.1.1` the moment it
 applies. The detection loop watches both addresses, so an already-moved router
 can be plugged back in and re-run — leave the password field empty (it's
 already on the shared password).
+
+## The fleet-constant WAN address (TEC-857, opt-in)
+
+The site's OTD500 sits **upstream** of this router and cannot address the time
+server on its LAN. Two settings fix that, and both ship disabled:
+
+- `ntp_forward` puts a named DNAT rule on the router — UDP 123 arriving on the
+  `wan` zone, restricted to the OTD, forwarded to `192.168.88.10:123`.
+- `wan` pins the WAN port to `192.168.1.2/24` via `192.168.1.1`. That address
+  is the same at every site by design, which is the point: the OTD's NTP config
+  becomes one identical line fleet-wide, and a replacement unit needs no site
+  knowledge.
+
+Two things to know before switching them on:
+
+- **The WAN pin ends internet on the bench.** The port stops taking a lease and
+  starts waiting for a gateway that only exists at the site, so the step runs
+  after FOTA, RMS and Tailscale, and nothing needing the uplink can follow it.
+- **`192.168.1.2` is also the TSW202's factory address.** Don't provision a
+  switch on the same bench segment while this step runs.
+
+Verification of both is a read-back — the WAN faces a device that isn't on the
+bench — and there is deliberately no "did it sync" row. The reasoning is in
+[`../docs/verification-rows.md`](../docs/verification-rows.md).
 
 ## Factory passwords (TEC-845)
 

@@ -10,6 +10,22 @@
   "timezone": "Asia/Jerusalem",
   "name_prefix": "otd-",
 
+  "ntp": {
+    "_comment": "TEC-857 — the OTD500's time source. It sits UPSTREAM of the site's RUTM08 and cannot address the time server on that router's LAN, so it aims at the router's WAN address and the router forwards UDP 123 on to the real server. That address is the same at every site by design, so this line is a fleet constant and never needs a per-site value. Setting it to the server's own address instead would configure a host the device can never reach, which RutOS fails silently — it falls back to the GSM modem clock and looks fine.",
+    "_comment_verify": "Unreachable from this bench by construction: the tools do one device at a time, so an OTD500 is never cabled behind the router that would carry it there. Verification therefore checks the configuration, not a synced clock — see docs/verification-rows.md.",
+    "enabled": true,
+    "server": "192.168.1.2",
+    "_comment_interval": "Poll seconds. Stock RutOS ships 86400 — one probe per day is not sync, it is a daily chance to notice the clock is wrong. The stock servers 2-4 (time2/3/4.google.com) are deleted, not left below ours: on an offline site each one costs a failover timeout before the server that would have worked is tried.",
+    "interval": 3600
+  },
+
+  "dhcp_pool": {
+    "_comment": "TEC-857 — the OTD500 serves DHCP on its LAN, and the router below it holds the ntp.server address above statically without defending it. The pool is kept clear of that address so it is never leased to something else. start/limit are the first host octet and how many addresses follow, so 100/150 leases .100-.249. 'reserved' defaults to ntp.server; set it only if you need to protect a different address.",
+    "enabled": true,
+    "start": 100,
+    "limit": 150
+  },
+
   "sim_4g_only": true,
 
   "sim_switch": {

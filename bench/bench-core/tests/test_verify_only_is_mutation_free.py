@@ -110,6 +110,22 @@ ALLOWED_READS = [
     "[ -x /sbin/quota-sync ] && echo script; [ -x /etc/init.d/quota-sync ] && echo boot-hook",
     "ps w 2>/dev/null | grep '[n]tpd'",
     "tr -d '\\000' < /proc/device-tree/model 2>/dev/null",
+    # The TEC-857 rows. `uci show <pkg>` is a read whatever the package, but
+    # these get listed because the deny-list matches `uci` verbs anywhere in a
+    # line and a new package name is exactly where a near-miss would hide.
+    "uci show ntpclient 2>/dev/null",
+    "uci show firewall 2>/dev/null",
+    "uci show dhcp 2>/dev/null",
+    "uci show system 2>/dev/null",
+    # The NTP daemon row. Three `$(...)` substitutions and a `>` in each — the
+    # exact shape a redirect-hunting pattern gets wrong, and `/proc/` IS one of
+    # the protected write targets, so it only passes because the `>` belongs to
+    # a `2>/dev/null` pointing somewhere else.
+    ("pid=$(ps w 2>/dev/null | grep '[n]tpclient' | awk '{print $1}' "
+     "| head -n1); "
+     'echo "pid=${pid:-}"; '
+     'echo "started=$(date -r /proc/${pid:-0} +%s 2>/dev/null)"; '
+     'echo "written=$(date -r /etc/config/ntpclient +%s 2>/dev/null)"'),
 ]
 
 

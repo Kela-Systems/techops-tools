@@ -533,42 +533,12 @@ SETTINGS = {"timezone": "Asia/Jerusalem", "sim_4g_only": True,
             "esim": {"enabled": False}}
 
 
-class StubClient:
-    """Records what the pipeline calls. Enough client surface for a run with
-    everything but the SIM steps switched off."""
-    fw_target = ""
-
-    def __init__(self):
-        self.calls: list[str] = []
-        self.verified_with: dict = {}
-
-    def __getattr__(self, name):
-        def record(*args, **kwargs):
-            self.calls.append(name)
-        return record
-
-    def get_identity(self):
-        return {"model": "OTD500", "serial": "SN-1", "mac": "aa:bb:cc:dd:ee:01",
-                "imei": "350000000000001", "firmware": FW_VERIFIED}
-
-    def verify_identity(self, identity, expected):
-        return []
-
-    def verify_configuration(self, **kwargs):
-        self.verified_with = kwargs
-        return []
+# `run_pipeline` and `stub_client` are the shared OTD pipeline harness, in
+# conftest.py — `test_otd_configure.py` drives the same pipeline for the time
+# source and needs the identical stand-in.
 
 
-def run_pipeline(settings) -> StubClient:
-    import otd_configure
-    client = StubClient()
-    result = otd_configure.configure_device(client, label_password="pw",
-                                            site_name="haifa", settings=settings)
-    assert result["failures"] == []
-    return client
-
-
-def test_pipeline_configures_the_switch_before_the_modem_bounce():
+def test_pipeline_configures_the_switch_before_the_modem_bounce(run_pipeline):
     client = run_pipeline(SETTINGS)
     # The switch rules are pure UCI, written before sim-4g-only — the one step
     # that re-attaches the modem. The quota-sync FILES deploy later (see the
@@ -579,7 +549,7 @@ def test_pipeline_configures_the_switch_before_the_modem_bounce():
     assert client.verified_with["sim_switch"] == SIM_SWITCH_CFG
 
 
-def test_pipeline_installs_quota_sync_after_a_firmware_flash():
+def test_pipeline_installs_quota_sync_after_a_firmware_flash(run_pipeline):
     # A keep-settings sysupgrade preserves /etc/config (the sim_switch UCI is
     # safe) but wipes /usr/bin and /etc/init.d — deploying the quota script
     # before the flash would delete it right after installing it.
@@ -588,51 +558,50 @@ def test_pipeline_installs_quota_sync_after_a_firmware_flash():
         < client.calls.index("install_quota_sync")
 
 
-def test_pipeline_rejects_a_bad_operator_table_before_touching_the_device():
+def test_pipeline_rejects_a_bad_operator_table_before_touching_the_device(
+        stub_client):
     import otd_configure
-    client = StubClient()
     settings = {**SETTINGS, "sim_switch": {**SIM_SWITCH_CFG, "operators": [
         {"name": "typo", "iccid_prefixes": ["8997 202"], "data_limit_mb": 1,
          "reset_day": 1, "enabled": True}]}}
     with pytest.raises(SystemExit, match="iccid_prefixes"):
-        otd_configure.configure_device(client, label_password="pw",
+        otd_configure.configure_device(stub_client, label_password="pw",
                                        site_name="haifa", settings=settings)
-    assert client.calls == []   # config validated before login, let alone UCI
+    assert stub_client.calls == []   # validated before login, let alone UCI
 
 
-def test_pipeline_rejects_a_mistyped_icmp_host_before_touching_the_device():
+def test_pipeline_rejects_a_mistyped_icmp_host_before_touching_the_device(
+        stub_client):
     import otd_configure
-    client = StubClient()
     settings = {**SETTINGS,
                 "sim_switch": {**SIM_SWITCH_CFG, "icmp_host": "8.8.8.8,"}}
     with pytest.raises(SystemExit, match="icmp_host"):
-        otd_configure.configure_device(client, label_password="pw",
+        otd_configure.configure_device(stub_client, label_password="pw",
                                        site_name="haifa", settings=settings)
-    assert client.calls == []
+    assert stub_client.calls == []
 
 
-def test_a_device_that_refuses_the_file_fails_one_step_not_the_run():
+def test_a_device_that_refuses_the_file_fails_one_step_not_the_run(stub_client):
     import otd_configure
 
-    class Refusing(StubClient):
-        def install_quota_sync(self, cfg):
-            self.calls.append("install_quota_sync")
-            raise SystemExit("Could not write /usr/local/bin/kela-quota-sync on "
-                             "the device: Read-only file system")
+    def refuse(cfg):
+        stub_client.calls.append("install_quota_sync")
+        raise SystemExit("Could not write /usr/local/bin/kela-quota-sync on "
+                         "the device: Read-only file system")
 
-    client = Refusing()
-    result = otd_configure.configure_device(client, label_password="pw",
+    stub_client.install_quota_sync = refuse
+    result = otd_configure.configure_device(stub_client, label_password="pw",
                                             site_name="haifa", settings=SETTINGS)
     assert result["ok"] is False
     assert len(result["failures"]) == 1
     assert result["failures"][0].startswith("quota-sync: Could not write")
     # The run carried on: the operator gets the verification table and the other
     # steps, not a run that stopped at the first file the device wouldn't take.
-    assert "set_sims_4g_only" in client.calls
-    assert client.verified_with["sim_switch"] == SIM_SWITCH_CFG
+    assert "set_sims_4g_only" in stub_client.calls
+    assert stub_client.verified_with["sim_switch"] == SIM_SWITCH_CFG
 
 
-def test_pipeline_skips_the_sim_steps_when_disabled():
+def test_pipeline_skips_the_sim_steps_when_disabled(run_pipeline):
     client = run_pipeline({**SETTINGS, "sim_switch": {"enabled": False}})
     assert "configure_sim_switch" not in client.calls
     assert "install_quota_sync" not in client.calls
@@ -640,7 +609,7 @@ def test_pipeline_skips_the_sim_steps_when_disabled():
     assert client.verified_with["sim_switch"] == {"enabled": False}
 
 
-def test_pipeline_without_a_sim_switch_block_still_runs():
+def test_pipeline_without_a_sim_switch_block_still_runs(run_pipeline):
     settings = {k: v for k, v in SETTINGS.items() if k != "sim_switch"}
     client = run_pipeline(settings)
     assert "configure_sim_switch" not in client.calls
