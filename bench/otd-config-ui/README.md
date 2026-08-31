@@ -8,6 +8,8 @@ password**, and it provisions. Nothing is saved beyond the session history.
 ## What it does per device
 
 1. Login with the label password (falls back to the shared password for re-runs).
+   The label password is also kept on bench-central, keyed to the serial — see
+   "Factory passwords" below.
 2. Set the admin/root password to the shared default.
 3. Hostname / device name → `otd-<site_name>`.
 4. Timezone, SIM failover rules (if enabled), then SIM 4G-only (if enabled).
@@ -175,6 +177,20 @@ decide *whether* it fails over (`enabled`, `interval`, `retry_count`,
 `weak_signal`, `enable_back`, `data_fail_host`), plus rows for the script and boot
 hook being installed, the cron entry, and the keep list — that last one naming
 any path a firmware upgrade would drop.
+
+## Factory passwords (TEC-845)
+
+The label password this unit shipped with is sent to bench-central as the run
+finishes, keyed to its serial, and kept there forever. That value is what the
+device reverts to on a factory reset, so keeping it is the difference between
+recovering a unit reset in the field and losing access to it.
+
+It never enters the run record — it rides its own queue
+(`logs/outbox-labels/`) into its own store, because a device has one factory
+password however many times it is run. Nothing is kept when the password field
+is left empty (a re-run on the shared password), or when what was typed *is*
+the shared password. Read them back in the **Factory passwords** panel on the
+bench-central dashboard.
 
 ## Setup
 

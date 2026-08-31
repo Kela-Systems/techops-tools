@@ -72,7 +72,9 @@ def _queue(tmp_path, n=1):
 
 
 def _uploader(outbox):
-    return CentralUploader(outbox, COLLECTOR)
+    # The uploader is given the tool's logs/ directory and finds its queues
+    # under it, so hand it the outbox's parent.
+    return CentralUploader(outbox.parent, COLLECTOR)
 
 
 def test_drain_uploads_oldest_first_and_deletes(tmp_path, monkeypatch):

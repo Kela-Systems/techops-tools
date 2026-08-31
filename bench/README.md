@@ -312,6 +312,16 @@ records upload when connectivity returns, with backoff, and a run never
 blocks or fails because the network is down. Raw Magos device payloads stay
 in the local per-run JSON only; they are never shipped. When the variable is
 unset (the default), nothing is spooled and no uploader runs.
+- **Factory passwords are kept (Teltonika only):** the OTD500, RUTM08 and
+TSW202 tools ship each unit's factory-label password to bench-central, keyed
+to its serial, so a device factory-reset in the field is still reachable
+(it reverts to that password, and nobody used to have it). It rides its own
+queue (`<tool>/logs/outbox-labels/`) into its own store, **not** the run
+record — a device has one factory password however many times it is run, and
+run records feed the read-only dashboard. Nothing is kept when the operator
+leaves the password field empty, or types the station's shared password. Read
+them back in the dashboard's **Factory passwords** panel; the whole design is
+in `bench_core/src/bench_core/label_record.py`.
 - **Tests** live per tool under `<tool>/tests/` (plus `tests/` at this root
 for `scripts/updater.py`) and run with no hardware. From the `bench/` root:
 `.venv/bin/python -m pytest` runs every suite.
