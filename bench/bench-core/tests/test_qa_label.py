@@ -149,6 +149,46 @@ def test_a_static_mode_is_not_overridden_by_a_missing_address():
     assert pick_face(entry) == "unit-ip"
 
 
+@pytest.mark.parametrize("name", ["speaker", "tsw-static"])
+def test_the_speaker_and_switch_reach_the_dhcp_face_too(name):
+    """TEC-848 gives both of these a DHCP option. The face is already shared,
+    so this asserts the wiring rather than adding a face: the tool name has to
+    be in `_DHCP_CAPABLE` for `_on_dhcp` to look at all, and a typo there fails
+    silently by printing a stale default address."""
+    entry = record(name)
+    entry["device"]["ip_mode"] = "dhcp"
+    content = label_content(entry)
+    assert content.face == "dhcp-mac"
+    assert content.hero == "DHCP"
+    assert "192.168" not in render_zpl(entry)
+
+
+@pytest.mark.parametrize("name,expected_face", [("speaker", "shared-ip"),
+                                                ("tsw-static", "shared-ip"),
+                                                ("raythink-lan", "unit-ip")])
+def test_a_manual_address_prints_as_typed(name, expected_face):
+    """The other half of TEC-848: an operator can type the address. No face may
+    print an assumed default, so the hero has to follow the record wherever it
+    goes — including off the subnet these tools normally use."""
+    entry = record(name)
+    entry["device"]["ip"] = "10.20.30.40"
+    content = label_content(entry)
+    assert content.face == expected_face
+    assert content.hero == "10.20.30.40"
+    assert "10.20.30.40" in render_zpl(entry)
+
+
+def test_a_dhcp_lease_is_never_printed_as_the_address():
+    """A DHCP run may well record the address the bench found the unit on. That
+    is a lease, not an assignment, and a lease on a sticker outlives its own
+    truth — so `ip_mode` wins over a present address."""
+    entry = record("speaker")
+    entry["device"]["ip_mode"] = "dhcp"
+    entry["device"]["ip"] = "192.168.1.57"
+    assert label_content(entry).hero == "DHCP"
+    assert "192.168.1.57" not in render_zpl(entry)
+
+
 def test_the_otd_can_never_reach_the_dhcp_face():
     """It has no LAN address at all, so "no address" is normal rather than a
     decision someone made."""
