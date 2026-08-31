@@ -32,8 +32,33 @@ plain MD5 hex (the device's design, via its `jquery.md5.js`).
 6. Verify every setting by reading it back off the speaker on its new address.
 
 The IP move runs last because the speaker leaves its DHCP address the moment it
-applies. Every speaker ends on the **same** final IP, so provision one at a
-time — finish and unplug before connecting the next.
+applies.
+
+## Where the speaker ends up (TEC-848)
+
+`192.168.88.70` is the default, not the only answer. The page's **Address
+assignment** box offers all four shared modes:
+
+| Mode | Behaviour |
+|---|---|
+| `fixed` | Every speaker to the same address — set once, survives units and restarts. Starts on the config's `static.ip`. |
+| `cycle` | Alternates `static.cycle_min`/`cycle_max` (`.70`/`.71`), for a site taking two. The number is burned only by a run that succeeds, so a failed speaker keeps its slot for the retry. |
+| `manual` | Typed per speaker, as a last octet or a full `192.168.88.x`. One on another subnet is refused — the tool writes its own gateway and netmask alongside. |
+| `dhcp` | Left on DHCP; the bench assigns nothing and finds the speaker again by MAC over `scan_subnets`. |
+
+Under any mode but `cycle`, every speaker ends on the **same** final IP, so
+provision one at a time — finish and unplug before connecting the next.
+
+The selection lives in `ip-state.json` beside the tool rather than in the
+config: it is a switch an operator flips during a shift, and putting it in the
+config would change `config_hash` every time they did.
+
+Each run records `device.ip` (what the bench assigned — empty under DHCP, since
+the lease is the site's to change), `device.ip_mode`, and `device.reached_at`
+(where the speaker actually answered). A verify pass reads the mode back out of
+that unit's own configure record, so it checks where *this* speaker was sent
+rather than the station default. That triplet is also what a QA label needs in
+order to print the real address instead of an assumed one (TEC-352).
 
 ## Setup
 
@@ -49,13 +74,17 @@ every tool together.
 
 Because the speaker is on DHCP, the bench PC just needs an address on a subnet
 whose DHCP server also serves the speaker; after the run the speaker moves to
-`192.168.88.70`, so be able to reach that subnet to confirm the move.
+wherever the address mode sent it, so be able to reach that subnet to confirm
+the move. Under `dhcp` mode that is the subnet it leased from, since the
+rediscovery is over ARP and ARP is link-local.
 
 There is also a single-speaker CLI:
 
 ```
 python3 speaker_configure.py                       # scan the subnets, then configure
 python3 speaker_configure.py --host 192.168.1.57   # skip the scan
+python3 speaker_configure.py --ip 192.168.88.71    # somewhere other than the default
+python3 speaker_configure.py --dhcp                # assign nothing; re-find by MAC
 python3 speaker_configure.py --host 127.0.0.1:8080 # dev port-forward (the final
                                                    # IP-move check can't follow a
                                                    # forward, so it reports unverified)

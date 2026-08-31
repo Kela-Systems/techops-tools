@@ -211,6 +211,18 @@ pre.log {
 .seg button.active { background: var(--accent); color: #fff; }
 .seg button + button { border-left: 1px solid var(--border); }
 
+/* Address-assignment picker (TEC-848) — built by bench.js mountIpModes() */
+.ipmode-entry { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.ipmode-entry label { font-size: .78rem; color: var(--text-dim); }
+.ipmode-entry input {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-size: .95rem; padding: 8px 12px; height: 38px;
+  outline: none; width: 170px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.ipmode-entry input:focus { border-color: var(--accent); }
+.ipmode-entry button { height: 38px; }
+
 /* Channel selector (Magos) */
 .channels { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
 .chan {

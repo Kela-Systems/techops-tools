@@ -23,13 +23,20 @@
   "media_file": "media/announcement.mp3",
   "media_slot": 0,
 
-  "_comment_static": "The speaker moves to this static IP as the LAST step (the connection drops; the tool reconnects on the new address and renews the bench PC's DHCP lease). ip_move_timeout: seconds to wait for it to answer there.",
+  "_comment_static": "Where the speaker ends up, applied as the LAST step (the connection drops; the tool reconnects on the new address and renews the bench PC's DHCP lease). `ip` is the station default and the address the UI's 'fixed' mode starts on. The operator picks the mode per batch and it is remembered in ip-state.json across units and restarts: 'fixed' = every speaker to the same address, 'cycle' = alternate cycle_min/cycle_max (.70/.71, for a site taking two), 'manual' = type it per speaker, 'dhcp' = leave it on DHCP and assign nothing (the tool then finds it again by MAC on scan_subnets). octet_min/octet_max bound what may be typed. default_mode sets which the UI opens on.",
   "static": {
     "ip": "192.168.88.70",
     "netmask": "255.255.255.0",
     "gateway": "192.168.88.1",
     "dns1": "192.168.88.1",
-    "dns2": ""
+    "dns2": "",
+    "octet_min": 70,
+    "octet_max": 79,
+    "cycle_min": 70,
+    "cycle_max": 71,
+    "default_mode": "fixed"
   },
-  "ip_move_timeout": 120
+  "_comment_timeouts": "ip_move_timeout: seconds to wait for the speaker to answer on a new static address. lease_timeout: seconds to wait for one left on DHCP to reboot, take a lease AND start its web server — much longer, since more than the address changes.",
+  "ip_move_timeout": 120,
+  "lease_timeout": 300
 }

@@ -5,6 +5,7 @@ No hardware/network: detection is faked via `_find_speaker` + `read_device_mac`
 and the device pipeline via `_do_configure`.
 """
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -33,10 +34,19 @@ def fake_result(ok=True, serial="TM-CS20-000001-XX", hostname="speaker-70",
     }
 
 
+FIXED_IP = "192.168.88.70"
+
+
 @pytest.fixture(autouse=True)
 def clean_state(monkeypatch):
     cfg.state.update(cfg.initial_state())
     cfg.state["config_loaded"] = True
+    # Addressing is the shared store's business (TEC-848); keep the file on
+    # disk out of it and start every test from the station default.
+    monkeypatch.setattr(cfg.ip_modes, "save", lambda: None)
+    cfg.ip_modes.mode = "fixed"
+    cfg.ip_modes.fixed_octet = 70
+    cfg.ip_modes.cycle_next = 70
     monkeypatch.setattr(cfg, "_save_log", lambda entry: None)
 
 
@@ -51,10 +61,32 @@ def poll():
     asyncio.run(run())
 
 
-def run_configure(ok=True, monkeypatch=None):
-    monkeypatch.setattr(cfg, "_do_configure", lambda inputs: fake_result(ok=ok))
-    inputs = {"host": HOST, "mac": "74:f8:db:5f:25:6a", "media_path": ""}
+def run_configure(ok=True, monkeypatch=None, target_ip=FIXED_IP,
+                  ip_mode="fixed", result=None):
+    monkeypatch.setattr(cfg, "_do_configure",
+                        lambda inputs: result or fake_result(ok=ok))
+    inputs = {"host": HOST, "mac": "74:f8:db:5f:25:6a", "media_path": "",
+              "target_ip": target_ip, "ip_mode": ip_mode,
+              "advance_cycle": False}
     asyncio.run(cfg.execute_run(inputs, "test"))
+
+
+def configure(monkeypatch, **body):
+    """POST /api/configure through the real route, with the pipeline stubbed."""
+    monkeypatch.setattr(cfg, "_do_configure", lambda inputs: fake_result())
+    monkeypatch.setattr(mod, "resolve_media", lambda cfgdict: Path("alarm.mp3"))
+    captured = {}
+    real_execute = cfg.execute_run
+
+    async def execute_run(inputs, label):
+        captured["inputs"] = inputs
+        captured["label"] = label
+        return await real_execute(inputs, label)
+
+    monkeypatch.setattr(cfg, "execute_run", execute_run)
+    handler = next(r.endpoint for r in mod.app.routes
+                   if getattr(r, "path", "") == "/api/configure")
+    return asyncio.run(handler(mod.ConfigureBody(**body))), captured
 
 
 def test_waiting_to_detected_and_back(monkeypatch):
@@ -82,20 +114,22 @@ def test_detection_keeps_finished_phase_while_visible(monkeypatch):
     # After a run the speaker may still answer (now on its static IP); the
     # result must stay on screen instead of flipping back to "detected".
     cfg.state["phase"] = "configured"
-    set_detection(monkeypatch, cfg._target_ip())
+    set_detection(monkeypatch, FIXED_IP)
     poll()
     assert cfg.state["phase"] == "configured"
 
 
 def test_configure_records_history(monkeypatch):
-    run_configure(ok=True, monkeypatch=monkeypatch)
+    result = fake_result()
+    result["ip"] = FIXED_IP
+    run_configure(monkeypatch=monkeypatch, result=result)
     assert cfg.state["phase"] == "configured"
     entry = cfg.state["history"][0]
     assert entry["schema"] == RUN_RECORD_SCHEMA
     assert entry["tool"] == "speaker"
     assert entry["status"] == "ok"
     assert entry["serial"] == "TM-CS20-000001-XX"
-    assert entry["device"]["ip"] == cfg._target_ip()
+    assert entry["device"]["ip"] == FIXED_IP
     assert entry["device"]["from_host"] == HOST
 
 
@@ -106,7 +140,138 @@ def test_failed_configure_sets_error(monkeypatch):
 
 
 def test_hostname_uses_target_ip_octet():
-    assert cfg.hostname_for({}) == f"speaker-{cfg._target_ip().rsplit('.', 1)[-1]}"
+    assert cfg.hostname_for({"target_ip": FIXED_IP}) == "speaker-70"
+
+
+# ── address modes (TEC-848) ──────────────────────────────────────────────────
+
+def test_all_four_modes_are_offered():
+    assert cfg.public_state()["ip_modes"] == ["fixed", "cycle", "manual", "dhcp"]
+
+
+def test_the_default_is_still_the_config_address(monkeypatch):
+    """A bench that never touches the picker must behave exactly as it did
+    before the modes existed: every speaker to static.ip."""
+    set_detection(monkeypatch, HOST)
+    poll()
+    _out, captured = configure(monkeypatch)
+    assert captured["inputs"]["target_ip"] == FIXED_IP
+    assert captured["inputs"]["ip_mode"] == "fixed"
+
+
+def test_cycle_alternates_between_70_and_71(monkeypatch):
+    cfg.ip_modes.set_mode("cycle")
+    assert cfg.ip_modes.cycle_next == 70
+    cfg.ip_modes.advance_cycle()
+    assert cfg.ip_modes.cycle_next == 71
+    cfg.ip_modes.advance_cycle()
+    assert cfg.ip_modes.cycle_next == 70   # a site takes two, so it wraps here
+
+
+def test_a_cycled_run_burns_its_number_only_on_success(monkeypatch):
+    cfg.ip_modes.set_mode("cycle")
+    set_detection(monkeypatch, HOST)
+    poll()
+    _out, captured = configure(monkeypatch)
+    assert captured["inputs"]["target_ip"] == "192.168.88.70"
+    assert cfg.ip_modes.cycle_next == 71
+
+    cfg.ip_modes.cycle_next = 71
+    run_configure(ok=False, monkeypatch=monkeypatch, ip_mode="cycle")
+    assert cfg.ip_modes.cycle_next == 71
+
+
+def test_manual_takes_an_octet_or_a_whole_address(monkeypatch):
+    # The two spellings of one address, asserted against each other rather than
+    # against a literal: the range is the STATION's to set in speaker.config.json
+    # (gitignored), so a test that named an octet would break the day an
+    # operator retuned it, and would be claiming something about their bench
+    # rather than about this code.
+    policy = cfg.ip_modes.policy
+    octet = policy.octet_min
+    want = f"{policy.prefix}.{octet}"
+
+    set_detection(monkeypatch, HOST)
+    poll()
+    _out, captured = configure(monkeypatch, ip_mode="manual", octet=str(octet))
+    assert captured["inputs"]["target_ip"] == want
+
+    poll()
+    _out, captured = configure(monkeypatch, ip_mode="manual", octet=want)
+    assert captured["inputs"]["target_ip"] == want
+
+
+def test_a_manual_address_outside_the_configured_range_is_refused(monkeypatch):
+    policy = cfg.ip_modes.policy
+    set_detection(monkeypatch, HOST)
+    poll()
+    out, captured = configure(monkeypatch, ip_mode="manual",
+                              octet=str(policy.octet_max + 1))
+    assert "outside the allowed range" in out["error"]
+    assert "inputs" not in captured
+
+
+def test_a_manual_address_on_another_subnet_is_refused(monkeypatch):
+    # Refused rather than quietly reduced to its last octet: the tool writes
+    # its own gateway and netmask alongside, so honouring half of what was
+    # typed would strand the speaker.
+    set_detection(monkeypatch, HOST)
+    poll()
+    out, captured = configure(monkeypatch, ip_mode="manual", octet="10.0.0.70")
+    assert "not on this tool's subnet" in out["error"]
+    assert "inputs" not in captured
+
+
+def test_manual_with_nothing_typed_is_refused(monkeypatch):
+    set_detection(monkeypatch, HOST)
+    poll()
+    out, captured = configure(monkeypatch, ip_mode="manual")
+    assert "Enter an address" in out["error"]
+    assert "inputs" not in captured
+
+
+def test_dhcp_assigns_nothing(monkeypatch):
+    set_detection(monkeypatch, HOST)
+    poll()
+    _out, captured = configure(monkeypatch, ip_mode="dhcp")
+    assert captured["inputs"]["target_ip"] == ""
+    assert captured["inputs"]["ip_mode"] == "dhcp"
+    assert "DHCP" in captured["label"]
+
+
+def test_dhcp_is_refused_without_a_mac(monkeypatch):
+    """Left on DHCP the speaker may move, and its MAC is the only way back to
+    it — so a run that never read one could confirm nothing afterwards."""
+    set_detection(monkeypatch, HOST, mac=None)
+    poll()
+    out, captured = configure(monkeypatch, ip_mode="dhcp")
+    assert "MAC" in out["error"]
+    assert "inputs" not in captured
+
+
+def test_a_dhcp_run_records_no_assigned_address(monkeypatch):
+    """The lease is the site DHCP server's, so there is no address of ours to
+    record — a QA label (TEC-352) must print DHCP, not a made-up .70."""
+    result = fake_result(hostname="speaker-dhcp")
+    result["ip"] = ""
+    result["ip_mode"] = "dhcp"
+    result["reached_at"] = "192.168.1.57"
+    run_configure(monkeypatch=monkeypatch, target_ip="", ip_mode="dhcp",
+                  result=result)
+    dev = cfg.state["history"][0]["device"]
+    assert dev["ip"] == ""
+    assert dev["ip_mode"] == "dhcp"
+    assert dev["reached_at"] == "192.168.1.57"
+
+
+def test_a_static_run_records_the_mode_too(monkeypatch):
+    result = fake_result()
+    result["ip"] = "192.168.88.71"
+    result["ip_mode"] = "cycle"
+    run_configure(monkeypatch=monkeypatch, result=result)
+    dev = cfg.state["history"][0]["device"]
+    assert dev["ip"] == "192.168.88.71"
+    assert dev["ip_mode"] == "cycle"
 
 
 # ── /api/verify (TEC-348) ────────────────────────────────────────────────────
@@ -206,3 +371,53 @@ def test_verify_runs_are_counted_separately(monkeypatch):
     post_verify()
     assert cfg.counts() == {"done": 0, "error": 0,
                             "verified": 1, "verify_failed": 0}
+
+
+# ── verify against the address THIS unit was given (TEC-848) ─────────────────
+
+def test_verify_states_no_address_by_default(monkeypatch):
+    """The point of the mode: the operator holding a finished speaker knows
+    nothing about which address it got. None means "use its record"."""
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: seen.update(inputs) or verify_result())
+    set_detection(monkeypatch, FIXED_IP)
+    poll()
+    post_verify()
+    assert seen["target_ip"] is None
+    assert seen["ip_mode"] == ""
+
+
+def test_an_operator_can_state_the_address(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: seen.update(inputs) or verify_result())
+    set_detection(monkeypatch, "192.168.88.71")
+    poll()
+    post_verify(expected={"ip": "71"})
+    assert seen["target_ip"] == "192.168.88.71"
+
+
+def test_an_operator_can_state_that_it_was_left_on_dhcp(monkeypatch):
+    # An absent address and "this one is on DHCP" are different claims, and
+    # only the second one means "expect no bench-assigned address".
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: seen.update(inputs) or verify_result())
+    set_detection(monkeypatch, HOST)
+    poll()
+    post_verify(expected={"ip_mode": "dhcp"})
+    assert seen["ip_mode"] == "dhcp"
+    assert seen["target_ip"] == ""
+
+
+def test_an_off_subnet_stated_address_is_dropped_rather_than_trusted(monkeypatch):
+    # An expectation no speaker on this bench could meet would fail every unit
+    # it was typed against; falling back to the record is the honest reading.
+    seen = {}
+    monkeypatch.setattr(cfg, "_do_verify",
+                        lambda inputs: seen.update(inputs) or verify_result())
+    set_detection(monkeypatch, FIXED_IP)
+    poll()
+    post_verify(expected={"ip": "10.0.0.70"})
+    assert seen["target_ip"] is None

@@ -26,6 +26,14 @@
     <button id="dismissBtn" class="btn-outline hidden" onclick="dismiss()">Dismiss</button>
   </div>
 
+  <!-- ADDRESS ASSIGNMENT (always visible — choose any time, even before a
+       speaker). The control itself is built by the shared mountIpModes()
+       (TEC-848), so all four modes look and behave the same on every tool. -->
+  <div class="card">
+    <h3>Address assignment</h3>
+    <div id="ipModes"></div>
+  </div>
+
   <!-- DEVICE FORM (visible while a speaker is detected and idle) -->
   <div class="card form-card" id="formCard" style="display:none;">
     <!-- Not "New speaker": a speaker found on the target static address is
@@ -38,9 +46,9 @@
       </div>
       <div class="field field-actions">
         <label aria-hidden="true">&nbsp;</label>
-        <!-- Verify checks the speaker against this same config and changes
-             nothing (TEC-348). Every expectation a speaker has is station-wide,
-             so it needs no input at all. -->
+        <!-- Verify checks the speaker and changes nothing (TEC-348). It needs
+             no input: the address this unit was given comes off its own
+             configure record, and everything else is station-wide. -->
         <div class="btn-row">
           <button id="goBtn" class="btn-primary" onclick="submitConfigure()">Configure</button>
           <button id="verifyBtn" class="btn-outline" type="button">Verify</button>
@@ -99,16 +107,36 @@
 <script>
 let lastPhase = null;
 let curState = {};
-// Verify takes no input at all here — a speaker's expectations are all
-// station-wide (TEC-348).
+// Verify takes no input here. The address is per-unit since TEC-848, but the
+// speaker's own configure record is what knows it — the picker above states
+// what the NEXT speaker gets, which is not a claim about the one on the bench.
 const verifyBtn = mountVerifyButton('verifyBtn');
+const ipModes = mountIpModes('ipModes', {
+  noun: 'speaker',
+  dhcpNote: 'Nothing here picks the address, so the bench finds the speaker '
+    + 'again by MAC on the scan subnets to verify it.',
+  // The picker hands over the state the server answered with, so the preview
+  // line below follows the click instead of the socket's next frame.
+  onChange: (s) => render(s || curState),
+});
 
 async function reloadAll(){ await postJSON('/api/reload'); }
 async function dismiss(){ await postJSON('/api/dismiss'); }
 
 async function submitConfigure(){
+  const body = { ip_mode: ipModes.mode(), octet: ipModes.octet() };
+  if (ipModes.mode() === 'manual' && !body.octet){ ipModes.focusEntry(); return; }
   $('goBtn').disabled = true;
-  await postJSON('/api/configure', {}, {buttons: ['goBtn']});
+  await postJSON('/api/configure', body, {buttons: ['goBtn']});
+}
+
+// A DHCP run records no IP (the lease is the site DHCP server's to change), so
+// show how it was addressed rather than an empty cell.
+function addrLabel(device){
+  const d = device || {};
+  if (d.ip) return d.ip;
+  if (d.ip_mode !== 'dhcp') return '—';
+  return d.reached_at ? `DHCP (${d.reached_at})` : 'DHCP';
 }
 
 function render(s){
@@ -131,6 +159,9 @@ function render(s){
 
   $('dismissBtn').classList.toggle('hidden', !isFinished(s));
 
+  // Address-assignment picker (always visible)
+  ipModes.update(s);
+
   // device form: shown while detected and idle
   const showForm = s.phase === 'detected' && !s.busy;
   const fc = $('formCard');
@@ -138,17 +169,27 @@ function render(s){
     fc.style.display = '';
     $('detectedAt').textContent = (s.active_host || '—')
       + (s.active_mac ? `  (MAC ${s.active_mac})` : '');
-    // A speaker answering ON the target static address has already been
+    // A speaker answering on a bench-assigned static address has already been
     // through this tool, so Verify is what the operator wants; one still on
-    // DHCP has not. That is a real signal, unlike on the OTD500.
-    const atTarget = (s.active_host || '').split(':')[0] === s.target_ip;
+    // DHCP has not. Under DHCP mode nothing is assigned, so there is no such
+    // signal and Configure stays the primary action.
+    const here = (s.active_host || '').split(':')[0];
+    // The server already worked out where the next speaker goes for every mode
+    // except manual, where the address belongs to the unit on the bench.
+    const typed = ipModes.octet();
+    const willGet = ipModes.mode() === 'manual'
+      ? (typed ? (typed.includes('.') ? typed : `${s.subnet_prefix||''}.${typed}`) : '')
+      : (s.next_ip || '');
+    const atTarget = !!willGet && here === willGet;
     $('namePreview').innerHTML = atTarget
-      ? `Already on <b class="mono">${esc(s.target_ip||'—')}</b> — <b>Verify</b> will `
-        + 'check its password, NTP, media file and network against this config, '
-        + 'changing nothing.'
+      ? `Already on <b class="mono">${esc(willGet)}</b> — <b>Verify</b> will `
+        + 'check its password, NTP, media file and network against its own '
+        + 'configure record, changing nothing.'
       : `<b>Configure</b> will set the password, NTP <b>${esc(s.ntp_server||'—')}</b>, `
-        + `upload <b>${esc(s.media_file||'—')}</b>, and move the speaker to `
-        + `<b class="mono">${esc(s.target_ip||'—')}</b>.`
+        + `upload <b>${esc(s.media_file||'—')}</b>, and `
+        + (ipModes.mode() === 'dhcp'
+            ? 'leave the speaker on <b>DHCP</b>.'
+            : `move the speaker to <b class="mono">${esc(willGet||'—')}</b>.`)
         + (s.media_found ? '' : ' <b style="color:#f85149;">Media file missing — fix the config first.</b>');
     $('formTitle').textContent = atTarget ? 'Speaker already provisioned'
                                           : 'Detected speaker';
@@ -187,7 +228,7 @@ function render(s){
       <td>${badge(r)}</td>
       <td class="muted">${r.kind === 'verify' ? 'verify' : 'configure'}</td>
       <td>${esc((r.device||{}).hostname||'')}</td>
-      <td class="mono">${esc((r.device||{}).ip||'—')}</td>
+      <td class="mono">${esc(addrLabel(r.device))}</td>
       <td class="mono">${esc(r.mac||'—')}</td>
       <td class="mono">${esc(r.serial||'—')}</td><td>${esc(r.firmware||'—')}</td>
       <td>${r.duration_s!=null?fmtDur(r.duration_s):'—'}</td>
@@ -202,7 +243,7 @@ function render(s){
       ? 'Last speaker (verify — nothing was changed)' : 'Last speaker';
     $('identity').innerHTML = `
       <span>speaker <b>${esc((lr.device||{}).hostname||'—')}</b></span>
-      <span>IP <b class="mono">${esc((lr.device||{}).ip||'—')}</b></span>
+      <span>IP <b class="mono">${esc(addrLabel(lr.device))}</b></span>
       <span>MAC <b class="mono">${esc(lr.mac||'—')}</b></span>
       <span>serial <b class="mono">${esc(lr.serial||'—')}</b></span>
       <span>fw <b class="mono">${esc(lr.firmware||'—')}</b></span>` +
@@ -219,7 +260,7 @@ function render(s){
   if (Object.keys(cfg).length){
     $('settingsSummary').innerHTML = `
       <span>detection <b>DHCP scan: ${esc((s.scan_subnets||[]).join(', ')||'—')}</b></span>
-      <span>static IP <b class="mono">${esc(s.target_ip||'—')}</b></span>
+      <span>next speaker <b class="mono">${esc(nextAddressLabel(s))}</b></span>
       <span>gateway <b>${esc(s.gateway||'—')}</b></span>
       <span>netmask <b>${esc(s.netmask||'—')}</b></span>
       <span>NTP <b>${esc(s.ntp_server||'—')}</b></span>

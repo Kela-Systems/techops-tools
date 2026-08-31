@@ -41,6 +41,7 @@ except ImportError:
 
 from bench_core import (
     MutationBlocked,
+    find_ip_by_mac,
     format_verification,
     host_iface_for,
     install_log_context,
@@ -396,6 +397,59 @@ class SpeakerClient:
         return {"item": "static IP", "expected": ip,
                 "actual": f"no answer on {ip} after {wait}s (bench PC subnet?)", "ok": False}
 
+    def set_dhcp(self, *, mac: str, subnets: list[str], wait: int = 300) -> dict:
+        """Leave the speaker on DHCP — the alternative last step to
+        `set_static_ip`, for a site whose own DHCP server owns the address
+        (TEC-848).
+
+        A speaker ARRIVES on DHCP, so this is not always a change: a unit still
+        on its factory lease is only being told to stay there. It is written
+        anyway, because "arrived on DHCP" and "configured for DHCP" are not the
+        same claim to make in a run record — a unit re-run after an earlier
+        static provision is on `dhcp: 0` and really does have to be moved back.
+
+        Nothing here picks the address, so the speaker is found again by MAC:
+        the same trick the camera tool uses, and the reason a run whose MAC
+        could not be read is refused before it starts. Returns a
+        verification-style row; never raises after the write.
+        """
+        row = {"item": "DHCP", "expected": "a lease from the site's DHCP server"}
+        was = self.host
+        log.info("Leaving the speaker on DHCP — the address may change from %s, "
+                 "so it will be found again by its MAC.", was)
+        try:
+            self.cgi_post("config=network.set", {"dhcp": 1}, "network.set")
+        except SpeakerError as e:
+            if "connection failed" not in str(e):
+                log.error("network.set rejected: %s", e)
+                return {**row, "actual": f"device rejected the change: {e}",
+                        "ok": False}
+            log.info("Connection dropped applying DHCP (expected): %s", e)
+
+        if not mac:
+            # Refused up front by the UI; reachable from the CLI, where saying
+            # so beats silently reporting the old address as the new one.
+            return {**row, "actual": "the speaker's MAC is unknown, so it could "
+                                     "not be found again after the change",
+                    "ok": False}
+
+        deadline = time.time() + wait
+        time.sleep(3)
+        while time.time() < deadline:
+            found = find_ip_by_mac(mac, subnets, port=self._port())
+            if found:
+                log.info("Speaker is answering on %s.", found)
+                self.host = found if self._port() == 80 else f"{found}:{self._port()}"
+                self.base = f"{self.scheme}://{self.host}"
+                return {**row, "actual": f"answering on {found}", "ok": True}
+            time.sleep(5)
+        log.warning("Speaker was not found by MAC %s on %s within %ds.",
+                    mac, ", ".join(subnets), wait)
+        return {**row,
+                "actual": f"not found by MAC on {', '.join(subnets)} after "
+                          f"{wait}s — is this PC on the subnet it leased from?",
+                "ok": False}
+
     # --- reachability -------------------------------------------------------------------
     def _port(self) -> int:
         if ":" in self.host:
@@ -413,10 +467,18 @@ class SpeakerClient:
     # --- verification ---------------------------------------------------------------------
     def verify_configuration(self, *, new_password: str, ntp_server: str,
                              ip: str, netmask: str, gateway: str,
-                             media_name: str = "", media_slot: int = 0) -> list[dict]:
+                             media_name: str = "", media_slot: int = 0,
+                             dhcp: bool = False) -> list[dict]:
         """Re-read the settings we changed and confirm they took. Runs AFTER the
-        IP move (we are already re-pointed at the new address). Returns
-        {item, expected, actual, ok} rows."""
+        address step (we are already re-pointed at wherever the speaker went).
+        Returns {item, expected, actual, ok} rows.
+
+        `dhcp` swaps the three address rows for one (TEC-848). Under DHCP the
+        bench chose no address, so checking one would be checking the site's
+        DHCP server rather than this speaker — the honest question is only
+        whether the speaker is set to ask, and the lease it happens to hold is
+        reported alongside for the record.
+        """
         checks: list[dict] = []
 
         def add(item, expected, actual, ok):
@@ -454,15 +516,21 @@ class SpeakerClient:
         try:
             net = self.get_network()
             got_ip = net.get("netip", "")
-            dhcp = net.get("dhcp")
-            add("static IP", ip, f"{got_ip} (dhcp={dhcp})",
-                got_ip == ip and str(dhcp) == "0")
-            add("netmask", netmask, net.get("netmask", "?"),
-                net.get("netmask") == netmask)
-            add("gateway", gateway, net.get("gateway", "?"),
-                net.get("gateway") == gateway)
+            on_dhcp = net.get("dhcp")
+            if dhcp:
+                add("DHCP", "enabled",
+                    f"dhcp={on_dhcp} (currently leased {got_ip or 'nothing'})",
+                    str(on_dhcp) == "1")
+            else:
+                add("static IP", ip, f"{got_ip} (dhcp={on_dhcp})",
+                    got_ip == ip and str(on_dhcp) == "0")
+                add("netmask", netmask, net.get("netmask", "?"),
+                    net.get("netmask") == netmask)
+                add("gateway", gateway, net.get("gateway", "?"),
+                    net.get("gateway") == gateway)
         except SpeakerError as e:
-            add("static IP", ip, f"read failed: {e}", False)
+            add("DHCP" if dhcp else "static IP", "enabled" if dhcp else ip,
+                f"read failed: {e}", False)
 
         return checks
 

@@ -123,6 +123,11 @@ BLOCKED_WRITES = [
     "uci set system.system.hostname='otd-haifa' && uci commit system",
     "uci set 'simcard.@sim[0].service=lte'",
     "uci -q delete system.ntp.server",
+    # The DHCP move (TEC-848), verbatim — a `uci -q delete` in the middle of an
+    # otherwise-innocuous-looking line is exactly what a screen can miss.
+    ("uci set 'network.lan.proto=dhcp' || exit 1; "
+     "uci -q delete 'network.lan.ipaddr'; uci -q delete 'network.lan.netmask'; "
+     "uci -q delete 'network.lan.gateway'; uci commit network"),
     "uci add_list system.ntp.server='192.168.88.10'",
     "uci add sim_switch sim_switch",
     "uci commit network",
@@ -203,6 +208,7 @@ def test_read_only_is_off_by_default():
     lambda c: c._fire_and_forget("reboot"),
     lambda c: c.upgrade_firmware(fota=True),
     lambda c: c.move_lan("192.168.88.1"),
+    lambda c: c.move_lan_dhcp(mac="20:97:27:2b:00:f7", subnets=["192.168.88.0/24"]),
     lambda c: c.set_admin_password("something-else"),
 ])
 def test_every_writing_method_refuses(call):
@@ -279,6 +285,63 @@ def test_the_lan_ip_row_catches_an_address_set_by_hand_but_not_committed():
     row = c.lan_ip_check("192.168.88.1")
     assert row["ok"] is False
     assert "next reboot" in row["actual"]
+
+
+# ── the DHCP twin of the LAN IP row (TEC-848) ────────────────────────────────
+#
+# A device may now be left on DHCP, where there is no address to hold it to.
+# The answerable question becomes whether it is configured to ASK for one, and
+# these pin the three answers that question has.
+
+def dhcp_client(uci_show: str, host="192.168.88.57"):
+    """A client whose whole `network` package is `uci_show`, answering both the
+    dump and the single-option read `current_lan_ip` makes off it."""
+    lines = dict(line.split("=", 1) for line in uci_show.split() if "=" in line)
+
+    def answer(cmd, **kw):
+        if "uci show network" in cmd:
+            return uci_show
+        path = cmd.split("uci get ", 1)[-1].split(" ", 1)[0]
+        return lines.get(path, "").strip("'\"")
+
+    c = client(read_only=True)
+    c.host = host
+    c.ssh_exec = answer
+    return c
+
+
+def test_the_dhcp_row_passes_a_device_that_is_asking_for_a_lease():
+    c = dhcp_client("network.loopback.proto='static'\nnetwork.lan.proto='dhcp'\n")
+    row = c.lan_dhcp_check()
+    assert row["ok"] is True
+    assert "currently reached at 192.168.88.57" in row["actual"]
+
+
+def test_the_dhcp_row_fails_a_device_that_was_left_static():
+    # The unit did not get the treatment the record says it got — the same
+    # class of finding as a switch sitting on the wrong static address.
+    c = dhcp_client("network.lan.proto='static'\nnetwork.lan.ipaddr='192.168.88.2'\n")
+    row = c.lan_dhcp_check()
+    assert row["ok"] is False
+    assert "not left on DHCP" in row["actual"]
+
+
+def test_a_leftover_static_address_under_dhcp_is_a_finding():
+    # `proto=dhcp` with an `ipaddr` still configured means "on DHCP, or else
+    # back on the bench address if no lease arrives" — two different devices to
+    # ship, from one record. Deleting the option is what move_lan_dhcp does;
+    # this is the row that catches one where it did not happen.
+    c = dhcp_client("network.lan.proto='dhcp'\nnetwork.lan.ipaddr='192.168.88.2'\n",
+                    host="192.168.88.2")
+    row = c.lan_dhcp_check()
+    assert row["ok"] is False
+    assert "fall back" in row["actual"]
+
+
+def test_the_dhcp_row_asks_the_device_nothing_it_could_change():
+    c = client(read_only=True)
+    c.lan_dhcp_check()
+    assert [cmd for cmd in c.device.commands if _MUTATING_COMMANDS.search(cmd)] == []
 
 
 def test_mutation_blocked_is_not_absorbed_by_a_step_runner():

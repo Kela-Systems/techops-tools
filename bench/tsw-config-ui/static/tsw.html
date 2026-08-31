@@ -26,6 +26,15 @@
     <button id="dismissBtn" class="btn-outline hidden" onclick="dismiss()">Dismiss</button>
   </div>
 
+  <!-- ADDRESS ASSIGNMENT (always visible — choose any time, even before a
+       switch). The control itself is built by the shared mountIpModes()
+       (TEC-848), so the modes look and behave the same on every tool; this
+       tool offers three of the four (no cycle — a site takes one switch). -->
+  <div class="card">
+    <h3>Address assignment</h3>
+    <div id="ipModes"></div>
+  </div>
+
   <!-- DEVICE FORM (visible while a switch is detected and idle) -->
   <div class="card form-card" id="formCard" style="display:none;">
     <h3 id="formTitle">New switch</h3>
@@ -81,8 +90,8 @@
       <span class="pill">verify failed <b id="cVerifyFailed">0</b></span>
     </div>
     <table>
-      <thead><tr><th>Status</th><th>Run</th><th>Serial</th><th>MAC</th><th>FW</th><th>Firmware step</th><th>Took</th><th>Time</th></tr></thead>
-      <tbody id="histBody"><tr><td colspan="8" class="muted">No switches configured yet.</td></tr></tbody>
+      <thead><tr><th>Status</th><th>Run</th><th>Serial</th><th>MAC</th><th>Address</th><th>FW</th><th>Firmware step</th><th>Took</th><th>Time</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="9" class="muted">No switches configured yet.</td></tr></tbody>
     </table>
   </div>
 
@@ -100,14 +109,36 @@ let lastPhase = null;
 let lastFormMac = null;   // clear the form when a different switch is plugged in
 let curState = {};
 const verifyBtn = mountVerifyButton('verifyBtn');   // TEC-348
+// Verify takes no address input: the switch's own configure record knows where
+// that unit was sent, whereas the picker states what the NEXT one gets.
+const ipModes = mountIpModes('ipModes', {
+  noun: 'switch',
+  dhcpNote: 'Nothing here picks the address, so the bench finds the switch '
+    + 'again by MAC after it moves — this station needs an address on '
+    + 'whichever subnet the switch leases from.',
+  // The picker hands over the state the server answered with, so the preview
+  // line below follows the click instead of the socket's next frame.
+  onChange: (s) => render(s || curState),
+});
 
 async function reloadAll(){ await postJSON('/api/reload'); }
 async function dismiss(){ await postJSON('/api/dismiss'); }
 
 async function submitConfigure(){
+  const body = { initial_password: $('labelPw').value,
+                 ip_mode: ipModes.mode(), octet: ipModes.octet() };
+  if (ipModes.mode() === 'manual' && !body.octet){ ipModes.focusEntry(); return; }
   $('goBtn').disabled = true;
-  await postJSON('/api/configure',
-    {initial_password: $('labelPw').value}, {buttons: ['goBtn']});
+  await postJSON('/api/configure', body, {buttons: ['goBtn']});
+}
+
+// A DHCP run records no IP (the lease is the site DHCP server's to change), so
+// show how it was addressed rather than an empty cell.
+function addrLabel(device){
+  const d = device || {};
+  if (d.ip) return d.ip;
+  if (d.ip_mode !== 'dhcp') return '—';
+  return d.reached_at ? `DHCP (${d.reached_at})` : 'DHCP';
 }
 
 function render(s){
@@ -129,6 +160,9 @@ function render(s){
     : 'dot' + ((s.phase === 'waiting' || s.phase === 'detected') ? ' pulse' : '');
 
   $('dismissBtn').classList.toggle('hidden', !isFinished(s));
+
+  // Address-assignment picker (always visible)
+  ipModes.update(s);
 
   // device form: shown while detected and idle; cleared when the MAC changes
   const showForm = s.phase === 'detected' && !s.busy;
@@ -156,11 +190,19 @@ function render(s){
   // There is no name to preview, so the line says what each button will DO —
   // including the address the switch leaves on, which is the surprising part.
   const cfg = s.config || {};
+  // The server already worked out where the next switch goes for every mode
+  // except manual, where the address belongs to the unit on the bench.
+  const typed = ipModes.octet();
+  const willGet = ipModes.mode() === 'manual'
+    ? (typed ? (typed.includes('.') ? typed : `${s.subnet_prefix||''}.${typed}`) : '')
+    : (s.next_ip || '');
   $('namePreview').innerHTML =
     `<b>Configure</b> will set the shared password, NTP <b>${esc(s.ntp_server||'—')}</b>, `
-    + `timezone <b>${esc(cfg.timezone||'—')}</b>, and move the switch to `
-    + `<b>${esc(cfg.lan_ip||'192.168.88.2')}</b> as the last step. `
-    + `<b>Verify</b> checks all of that and changes nothing.`;
+    + `timezone <b>${esc(cfg.timezone||'—')}</b>, and `
+    + (ipModes.mode() === 'dhcp'
+        ? 'leave the switch on <b>DHCP</b> as the last step.'
+        : `move the switch to <b class="mono">${esc(willGet||'—')}</b> as the last step.`)
+    + ` <b>Verify</b> checks all of that and changes nothing.`;
 
   renderLiveLog(s);
 
@@ -177,7 +219,7 @@ function render(s){
   const body = $('histBody');
   const rows = s.history || [];
   if (!rows.length){
-    body.innerHTML = '<tr><td colspan="8" class="muted">No switches configured yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="muted">No switches configured yet.</td></tr>';
   } else {
     // A verify row that said DONE would read as "this switch was provisioned",
     // which is the one thing it does not mean.
@@ -191,6 +233,7 @@ function render(s){
       <td class="muted">${r.kind === 'verify' ? 'verify' : 'configure'}</td>
       <td class="mono">${esc(r.serial||'—')}</td>
       <td class="mono">${esc(r.mac||'')}</td>
+      <td class="mono">${esc(addrLabel(r.device))}</td>
       <td>${esc(r.firmware||'—')}</td>
       <td class="muted">${esc((r.device||{}).firmware_note||'—')}</td>
       <td>${r.duration_s!=null?fmtDur(r.duration_s):'—'}</td>
@@ -206,7 +249,7 @@ function render(s){
     $('identity').innerHTML = `
       <span>model <b>${esc(lr.model||'—')}</b></span>
       <span>serial <b class="mono">${esc(lr.serial||'—')}</b></span>
-      <span>address <b class="mono">${esc((lr.device||{}).ip||'—')}</b></span>
+      <span>address <b class="mono">${esc(addrLabel(lr.device))}</b></span>
       <span>fw <b class="mono">${esc(lr.firmware||'—')}</b></span>` +
       (lr.duration_s != null ? `<span>took <b>${fmtDur(lr.duration_s)}</b></span>` : '');
     renderVerifyTable(lr.verification, 'verifyTable', 'verifyBody');
@@ -224,7 +267,7 @@ function render(s){
       : 'image missing (only needed below the floor)';
     $('settingsSummary').innerHTML = `
       <span>factory IP <b>${esc(cfg.host||'192.168.1.2')}</b></span>
-      <span>management IP <b>${esc(cfg.lan_ip||'192.168.88.2')}</b></span>
+      <span>next switch <b class="mono">${esc(nextAddressLabel(s))}</b></span>
       <span>NTP <b>${esc(s.ntp_server||'—')}</b></span>
       <span>timezone <b>${esc(cfg.timezone||'—')}</b></span>
       <span>password <b>${esc(cfg.new_password||'(unset)')}</b></span>

@@ -1,8 +1,8 @@
 """State-machine tests for the Raythink camera configurator (raythink_app.py).
 
 No hardware/network: detection is faked via `_reachable` + `read_device_mac`,
-the device pipeline via `_do_configure`, and the IP-state file write is stubbed
-so the real ip_state.json is never touched.
+the device pipeline via `_do_configure`, and the shared address-mode store's
+file write is stubbed so the real ip_state.json is never touched.
 """
 import asyncio
 
@@ -37,10 +37,12 @@ def fake_result(ok=True, serial="SN-CAM-1", hostname="raythink-30",
 def clean_state(monkeypatch):
     cfg.state.update(cfg.initial_state())
     cfg.state["config_loaded"] = True
-    cfg.state["cycle_next"] = 30
-    cfg.state["ip_mode"] = "manual"
+    # Addressing is the shared store's business now (TEC-848), not page state.
+    monkeypatch.setattr(cfg.ip_modes, "save", lambda: None)
+    cfg.ip_modes.mode = "manual"
+    cfg.ip_modes.cycle_next = 30
+    cfg.ip_modes.fixed_octet = 30
     monkeypatch.setattr(cfg, "_save_log", lambda entry: None)
-    monkeypatch.setattr(cfg, "_save_ip_state", lambda: None)
 
 
 def set_detection(monkeypatch, reachable, mac="aa:bb:cc:dd:ee:03", host=HOST):
@@ -118,20 +120,20 @@ def test_configure_records_history(monkeypatch):
 
 
 def test_cycle_advances_only_on_success(monkeypatch):
-    cfg.state["cycle_next"] = 30
+    cfg.ip_modes.cycle_next = 30
     run_inputs(octet=30, advance_cycle=True, ok=True, monkeypatch=monkeypatch)
-    assert cfg.state["cycle_next"] == 31
+    assert cfg.ip_modes.cycle_next == 31
 
-    cfg.state["cycle_next"] = 31
+    cfg.ip_modes.cycle_next = 31
     run_inputs(octet=31, advance_cycle=True, ok=False, monkeypatch=monkeypatch)
-    assert cfg.state["cycle_next"] == 31   # failed run keeps its slot
+    assert cfg.ip_modes.cycle_next == 31   # failed run keeps its slot
 
 
 def test_advance_cycle_wraps_at_max():
     lo, hi = cfg._octet_range()
-    cfg.state["cycle_next"] = hi
-    cfg._advance_cycle()
-    assert cfg.state["cycle_next"] == lo
+    cfg.ip_modes.cycle_next = hi
+    cfg.ip_modes.advance_cycle()
+    assert cfg.ip_modes.cycle_next == lo
 
 
 def test_hostname_uses_octet():
@@ -164,9 +166,9 @@ def test_static_run_records_the_mode_too(monkeypatch):
 
 
 def test_dhcp_run_never_burns_a_cycle_number(monkeypatch):
-    cfg.state["cycle_next"] = 30
+    cfg.ip_modes.cycle_next = 30
     run_inputs(octet=None, ip_mode="dhcp", monkeypatch=monkeypatch)
-    assert cfg.state["cycle_next"] == 30
+    assert cfg.ip_modes.cycle_next == 30
 
 
 # ── the configure route's mode handling ──────────────────────────────────────
@@ -199,21 +201,80 @@ def test_configure_manual_still_requires_an_octet_in_range(monkeypatch):
     assert "octet" in out["error"]
 
     out, _ = configure(monkeypatch, profile="lan", ip_mode="manual", octet=99)
-    assert "out of range" in out["error"]
+    assert "outside the allowed range" in out["error"]
+
+
+def test_configure_accepts_a_whole_address_not_just_an_octet(monkeypatch):
+    """"Type the address you want" is what the operator was told, so a pasted
+    192.168.88.35 has to mean the same as 35."""
+    set_detection(monkeypatch, True)
+    poll()
+    _out, captured = configure(monkeypatch, profile="lan", ip_mode="manual",
+                               octet="192.168.88.35")
+    assert captured["inputs"]["target_ip"] == "192.168.88.35"
+
+
+def test_a_manual_address_on_another_subnet_is_refused(monkeypatch):
+    """The tool writes its own gateway and netmask alongside the address, so
+    honouring only the host part would strand the camera."""
+    set_detection(monkeypatch, True)
+    poll()
+    out, _ = configure(monkeypatch, profile="lan", ip_mode="manual",
+                       octet="10.0.0.35")
+    assert "not on this tool's subnet" in out["error"]
 
 
 def test_configure_persists_the_chosen_mode(monkeypatch):
     set_detection(monkeypatch, True)
     poll()
     configure(monkeypatch, profile="lan", ip_mode="dhcp")
-    assert cfg.state["ip_mode"] == "dhcp"
+    assert cfg.ip_modes.mode == "dhcp"
 
 
-def test_unknown_mode_falls_back_to_manual():
-    assert mod.norm_ip_mode("dhcp") == "dhcp"
-    assert mod.norm_ip_mode("cycle") == "cycle"
-    for junk in ("", "static", "nonsense", None):
-        assert mod.norm_ip_mode(junk) == "manual"
+def test_unknown_mode_falls_back_to_the_configured_default():
+    policy = cfg.ip_mode_policy()
+    assert policy.normalize_mode("dhcp") == "dhcp"
+    assert policy.normalize_mode("cycle") == "cycle"
+    assert policy.normalize_mode("fixed") == "fixed"
+    for junk in ("", "static", "nonsense"):
+        assert policy.normalize_mode(junk) == policy.default_mode
+
+
+# ── fixed mode: every camera gets the same address (TEC-848) ─────────────────
+#
+# For projects where each site takes ONE camera: every unit ships with the same
+# default configuration, and no two of them ever meet on a live network.
+
+def test_fixed_mode_gives_every_camera_the_same_address(monkeypatch):
+    set_detection(monkeypatch, True)
+    poll()
+    cfg.ip_modes.set_mode("fixed", 40)
+
+    _out, first = configure(monkeypatch, profile="lan")
+    poll()
+    _out, second = configure(monkeypatch, profile="lan")
+
+    assert first["inputs"]["target_ip"] == "192.168.88.40"
+    assert second["inputs"]["target_ip"] == "192.168.88.40"
+
+
+def test_fixed_mode_never_advances_anything(monkeypatch):
+    cfg.ip_modes.set_mode("fixed", 40)
+    cfg.ip_modes.cycle_next = 30
+    set_detection(monkeypatch, True)
+    poll()
+    _out, captured = configure(monkeypatch, profile="lan")
+    assert captured["inputs"]["advance_cycle"] is False
+    assert cfg.ip_modes.cycle_next == 30
+
+
+def test_the_fixed_address_survives_a_config_reload(monkeypatch):
+    # The mode is the operator's choice for this batch; reload re-reads the
+    # station's config, which must not silently reset it.
+    cfg.ip_modes.set_mode("fixed", 44)
+    cfg.reload()
+    assert cfg.ip_modes.mode == "fixed"
+    assert cfg.ip_modes.fixed_octet == 44
 
 
 # ── detection now covers the assigned range too (TEC-348) ────────────────────
@@ -345,13 +406,13 @@ def test_a_dhcp_verify_records_no_assigned_address(monkeypatch):
 def test_a_verify_run_never_burns_a_cycle_number(monkeypatch):
     # Cycle numbers name new cameras. Re-checking one must not consume the next
     # camera's address.
-    cfg.state["ip_mode"] = "cycle"
-    cfg.state["cycle_next"] = 30
+    cfg.ip_modes.mode = "cycle"
+    cfg.ip_modes.cycle_next = 30
     monkeypatch.setattr(cfg, "_do_verify", lambda inputs: verify_result())
     set_detection(monkeypatch, True, host="192.168.88.31")
     poll()
     post_verify()
-    assert cfg.state["cycle_next"] == 30
+    assert cfg.ip_modes.cycle_next == 30
 
 
 def test_the_run_label_survives_having_no_octet(monkeypatch):

@@ -11,6 +11,10 @@ forces a password change on first login. Pipeline for one switch:
     -> move the management IP to 192.168.88.2 (LAST — drops the connection;
        confirmed by reaching the switch on the new address)
 
+Where that last step lands is the operator's choice, not this file's (TEC-848):
+192.168.88.2 is the default, but a switch may be sent to a typed address or
+left on DHCP instead. See `configure_tsw`'s `ip_mode`.
+
 Two things separate this from the router pipelines next door:
 
 * **Firmware is a floor, not a pin.** The config names the minimum acceptable
@@ -41,6 +45,7 @@ import os
 import sys
 from getpass import getpass
 from pathlib import Path
+from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -61,6 +66,7 @@ from bench_core import (
     make_step_runner,
     set_log_serial,
 )
+from bench_core.ip_mode import MODE_DHCP
 
 # --- TSW202 factory + target defaults -----------------------------------------
 DEFAULT_TSW_HOST = "192.168.1.2"
@@ -69,6 +75,16 @@ DEFAULT_TSW_NETMASK = "255.255.255.0"
 DEFAULT_TSW_GATEWAY = "192.168.88.1"     # the RUTM08 on the operational subnet
 DEFAULT_TSW_NTP_SERVER = "192.168.88.10"
 DEFAULT_TSW_MIN_FIRMWARE = "TSW2_R_00.01.07.1"
+
+# Where to look for a switch that was left on DHCP and has therefore gone
+# somewhere this tool did not choose: the factory subnet and the management one.
+# A lease is likelier on the latter, but a bench with its own server on 192.168.1
+# is the reason both are swept.
+DEFAULT_TSW_DHCP_SUBNETS = ["192.168.88.0/24", "192.168.1.0/24"]
+# Seconds to wait for a switch on DHCP to restart its network, take a lease and
+# answer there. Longer than a static move: the address is not ours to predict,
+# so this covers a DHCP server that is slow to answer as well as the switch.
+DEFAULT_TSW_LEASE_TIMEOUT = 300
 
 # The model this tool provisions. Prefix-matched, so a TSW212 is refused rather
 # than provisioned with a TSW202 image.
@@ -264,11 +280,19 @@ def apply_firmware_floor(client: TswClient, settings: dict,
 # --- pipeline (shared by CLI + web UI) ----------------------------------------
 
 def configure_tsw(client: TswClient, *, initial_password: str,
-                  settings: dict) -> dict:
+                  settings: dict, target_ip: Optional[str] = None,
+                  ip_mode: str = "", mac: str = "") -> dict:
     """Run the full provisioning pipeline for ONE TSW202. Logs every step through
     the shared 'teltonika' logger. Returns identity + per-step failures +
     verification. Raises SystemExit on a hard failure (login, password change, a
-    firmware flash that goes wrong)."""
+    firmware flash that goes wrong).
+
+    `target_ip` is where the management interface should end up, overriding the
+    config's `lan_ip` — the address the operator typed, or the fixed one the UI
+    is set to. `ip_mode` of `"dhcp"` means don't assign anything at all and find
+    the switch again by `mac` afterwards; passing None/"" for both keeps the
+    long-standing behaviour of moving to `lan_ip`, which is what the CLI does.
+    """
     new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
     ntp_server = settings.get("ntp_server", DEFAULT_TSW_NTP_SERVER)
     zonename = settings.get("timezone", DEFAULT_TIMEZONE)
@@ -328,20 +352,38 @@ def configure_tsw(client: TswClient, *, initial_password: str,
     except SystemExit as e:
         log.error("Verification step could not run: %s", e)
 
-    # Management IP LAST — after this the switch answers on lan_ip, not the
-    # factory address. renew_dhcp=False: a switch serves no DHCP, and renewing
-    # would drop the station's static bench address.
-    lan_ip = (settings.get("lan_ip") or "").strip()
-    if lan_ip:
+    # Management address LAST — after this the switch is no longer on the
+    # address we are talking to it on, whichever way it goes.
+    dhcp = ip_mode == MODE_DHCP
+    lan_ip = "" if dhcp else (target_ip or settings.get("lan_ip") or "").strip()
+    reached_at = client.host
+    if dhcp or lan_ip:
         try:
-            verification.append(client.move_lan(
-                lan_ip,
-                netmask=settings.get("netmask", DEFAULT_TSW_NETMASK),
-                gateway=settings.get("gateway", DEFAULT_TSW_GATEWAY),
-                renew_dhcp=False))
+            if dhcp:
+                row = client.move_lan_dhcp(
+                    mac=mac,
+                    subnets=settings.get("dhcp_subnets", DEFAULT_TSW_DHCP_SUBNETS),
+                    wait=int(settings.get("lease_timeout",
+                                          DEFAULT_TSW_LEASE_TIMEOUT)))
+            else:
+                # renew_dhcp=False: a switch serves no DHCP, and renewing would
+                # drop the station's static bench address.
+                row = client.move_lan(
+                    lan_ip,
+                    netmask=settings.get("netmask", DEFAULT_TSW_NETMASK),
+                    gateway=settings.get("gateway", DEFAULT_TSW_GATEWAY),
+                    renew_dhcp=False)
+            verification.append(row)
+            # Where the switch actually IS, which on DHCP is the only way to
+            # know it at all. Only claimed when the move was confirmed: both
+            # helpers point the client at the new address before checking it
+            # answers, so client.host alone would report an address we asked
+            # for and never reached.
+            reached_at = client.host if row.get("ok") else ""
         except SystemExit as e:
             failures.append(f"lan-ip: {e}")
             log.error("Step 'lan-ip' FAILED: %s", e)
+            reached_at = ""
 
     verify_failed = [c["item"] for c in verification if c["ok"] is False]
     ok = not failures and not verify_failed
@@ -353,25 +395,29 @@ def configure_tsw(client: TswClient, *, initial_password: str,
         log.error("Provisioning of %s finished with problems: %s", name, " | ".join(problems))
     return {"identity": identity, "warnings": warnings, "failures": failures,
             "verification": verification, "ok": ok, "ip": lan_ip,
+            "ip_mode": ip_mode, "reached_at": reached_at,
             "firmware_note": firmware_note}
 
 
 # --- verify-only pass (TEC-348) -----------------------------------------------
 
-def verify_tsw(client: TswClient, *, settings: dict, resolve=None) -> dict:
+def verify_tsw(client: TswClient, *, settings: dict, resolve=None,
+               target_ip: Optional[str] = None, ip_mode: str = "") -> dict:
     """Check ONE finished TSW202 against the baseline, changing nothing.
 
-    The simplest of the five verify passes, because nothing about a TSW202's
-    intended state is per-unit: the baseline is password, firmware floor, NTP
-    server, timezone and management address, and every one of those comes from
-    the station config. So there is nothing to look up — but `resolve` is still
-    called, because "was this switch ever provisioned by us at all" is a real
-    question a pre-ship gate should ask, and its answer is the one row that
-    cannot come from the config.
+    Almost nothing about a TSW202's intended state is per-unit: password,
+    firmware floor, NTP server and timezone all come from the station config,
+    so there is nothing to look up. The management address is the exception
+    since TEC-848 — it is now whatever that unit's run chose, so the
+    expectation comes from the unit's own configure record via `resolve`, which
+    also answers "was this switch ever provisioned by us at all", the one row
+    that could never come from the config.
 
     `resolve` is `BenchConfigurator.verify_resolver`'s callable, or None for a
     CLI run — in which case there is no prior-run row and an engineer is taking
-    responsibility for knowing the unit is one of ours.
+    responsibility for knowing the unit is one of ours. `target_ip` / `ip_mode`
+    override what the record says, for the engineer who knows where this one
+    was sent.
 
     The switch is logged into on the SHARED password. That is not an assumption
     to be worked around: a finished unit is on it, and one that is not fails the
@@ -391,7 +437,22 @@ def verify_tsw(client: TswClient, *, settings: dict, resolve=None) -> dict:
     assert_device_model(identity, EXPECTED_MODEL, "TSW202 configurator")
 
     verification: list[dict] = []
-    prior_run_row = resolve(identity)[1] if resolve else None
+    # Only now is there a serial to look this unit's configure record up by, so
+    # this is the first point at which "which address was THIS switch given"
+    # can be answered. An operator-stated expectation wins over the record; the
+    # config's lan_ip is the last resort, for a unit provisioned before modes
+    # existed (when every switch went there).
+    prior_run_row = None
+    if resolve is not None:
+        expected, prior_run_row = resolve(identity)
+        if target_ip is None and not ip_mode:
+            ip_mode = str(expected.get("ip_mode") or "")
+            target_ip = expected.get("ip") if "ip" in expected else None
+    if target_ip is None:
+        target_ip = "" if ip_mode == MODE_DHCP else (settings.get("lan_ip") or "")
+    target_ip = target_ip.strip()
+    dhcp_mode = ip_mode == MODE_DHCP or not target_ip
+
     if prior_run_row is not None:
         verification.append(prior_run_row)
     verification += client.verify_configuration(
@@ -399,10 +460,11 @@ def verify_tsw(client: TswClient, *, settings: dict, resolve=None) -> dict:
         ntp_server=ntp_server, minimum_firmware=minimum)
 
     # The management address, asked by having reached the switch rather than by
-    # moving it — see TeltonikaClient.lan_ip_check.
-    lan_ip = (settings.get("lan_ip") or "").strip()
-    if lan_ip:
-        verification.append(client.lan_ip_check(lan_ip))
+    # moving it — see TeltonikaClient.lan_ip_check / lan_dhcp_check.
+    if dhcp_mode:
+        verification.append(client.lan_dhcp_check())
+    else:
+        verification.append(client.lan_ip_check(target_ip))
 
     for line in format_verification(verification).splitlines():
         log.info("%s", line)
@@ -414,13 +476,16 @@ def verify_tsw(client: TswClient, *, settings: dict, resolve=None) -> dict:
         log.info("%s PASSED verification — nothing was changed.", name)
     else:
         log.error("%s FAILED verification: %s", name, ", ".join(failed))
-    # `ip` is where the switch was actually reached, which on a verify pass is
-    # the finding rather than a restatement of the config. The firmware NOTE is
-    # about what the firmware step decided to do; there is no firmware step here
-    # (the firmware version itself is still checked, as a row).
+    # `ip` is what the bench assigned this unit, empty under DHCP; `reached_at`
+    # is where it was actually found, which is the finding on a verify pass.
+    # The firmware NOTE is about what the firmware step decided to do; there is
+    # no firmware step here (the firmware version itself is still checked).
     return {"identity": identity, "warnings": [], "failures": [],
             "verification": verification, "ok": ok,
-            "ip": client.host, "firmware_note": "no firmware step on a verify run"}
+            "ip": "" if dhcp_mode else target_ip,
+            "ip_mode": ip_mode or ("dhcp" if dhcp_mode else "static"),
+            "reached_at": client.host,
+            "firmware_note": "no firmware step on a verify run"}
 
 
 def main():
@@ -431,9 +496,19 @@ def main():
     p.add_argument("--verify", action="store_true",
                    help="check a finished switch against the baseline and change "
                         "nothing (TEC-348); exits 0 only on a full PASS")
+    p.add_argument("--ip", default="",
+                   help="management address to leave the switch on, overriding "
+                        "lan_ip from the config (on --verify: the address to "
+                        "expect it at)")
+    p.add_argument("--dhcp", action="store_true",
+                   help="leave the switch on DHCP instead of assigning it an "
+                        "address; it is found again by MAC afterwards")
     p.add_argument("--config", default=str(BASE_DIR / "config" / "tsw.config.json"),
                    help="shared settings JSON (default: config/tsw.config.json)")
     args = p.parse_args()
+    if args.dhcp and args.ip:
+        p.error("--dhcp and --ip contradict each other: one leaves the address "
+                "to the site's DHCP server, the other states it.")
 
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter(LOG_LINE_FORMAT))
@@ -453,10 +528,16 @@ def main():
         label_pw = getpass("Label password (empty = already on the shared password): ")
 
     set_log_serial(None)
+    ip_mode = MODE_DHCP if args.dhcp else ""
     # A verify run reaches a finished switch on its FINAL address, not the
-    # factory one — that is where the unit it is checking actually is.
-    host = (settings.get("lan_ip", DEFAULT_TSW_LAN_IP) if args.verify
-            else settings.get("host", DEFAULT_TSW_HOST))
+    # factory one — that is where the unit it is checking actually is. Under
+    # --dhcp there is no such address to aim at, so the engineer names one with
+    # --ip; the switch is wherever its lease put it and only they know where.
+    host = (args.ip or settings.get("lan_ip", DEFAULT_TSW_LAN_IP)) if args.verify \
+        else settings.get("host", DEFAULT_TSW_HOST)
+    if args.verify and args.dhcp and not args.ip:
+        sys.exit("--verify --dhcp needs --ip: a switch left on DHCP is wherever "
+                 "its lease put it, so this tool cannot guess where to reach it.")
     client = TswClient(
         host=host,
         username=settings.get("username", DEFAULT_USERNAME),
@@ -464,9 +545,20 @@ def main():
         verify=not settings.get("insecure", True),
     )
     try:
-        result = (verify_tsw(client, settings=settings) if args.verify
-                  else configure_tsw(client, initial_password=label_pw,
-                                     settings=settings))
+        if args.verify:
+            result = verify_tsw(client, settings=settings,
+                                target_ip="" if args.dhcp else (args.ip or None),
+                                ip_mode=ip_mode)
+        else:
+            # The MAC is only needed to find a switch that was left on DHCP.
+            # Imported lazily so a CLI run without the [ui] extra still works.
+            mac = ""
+            if args.dhcp:
+                from bench_core.bench_ui import read_device_mac
+                mac = read_device_mac(host) or ""
+            result = configure_tsw(client, initial_password=label_pw,
+                                   settings=settings, target_ip=args.ip or None,
+                                   ip_mode=ip_mode, mac=mac)
     finally:
         client.close()
     sys.exit(0 if result["ok"] else 1)
