@@ -181,6 +181,23 @@ def test_a_face_that_cannot_be_built_is_reported_not_raised(tmp_path):
     assert "label not built" in block["error"]
 
 
+def test_a_label_that_would_print_as_mojibake_is_not_printed(monkeypatch,
+                                                             tmp_path):
+    """`qa_label` folds every field to ASCII, so this cannot happen today — the
+    encode on the way out is that invariant asserted where it turns into bytes.
+    Should a face ever leak a non-ASCII field, the choice locked in here is to
+    print nothing and warn: an operator chases a missing label, but a garbled
+    one gets stuck on a box and shipped."""
+    monkeypatch.setattr(mod, "render_content", lambda c: "^XA^FD\u20ac^FS^XZ")
+    p = printer(tmp_path)
+    entry = record()
+    block = p.print_run(entry)
+    assert block["printed"] is False
+    assert entry["status"] == "ok"                 # the run itself is untouched
+    assert not (tmp_path / "labels.zpl").exists()  # nothing reached the printer
+    assert entry["serial"] in p.status()["warning"]
+
+
 class _ImmediateThread:
     """Runs the target on start(), so the startup probe is synchronous and the
     test is not a race."""

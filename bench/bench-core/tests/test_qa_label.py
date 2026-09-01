@@ -419,6 +419,25 @@ def test_non_ascii_is_folded_rather_than_dropped_or_mangled():
     assert zpl.isascii()
 
 
+@pytest.mark.parametrize("name", ALL_RECORDS)
+def test_every_face_renders_pure_ascii_whatever_the_record_holds(name):
+    """This invariant is load-bearing, not cosmetic: `label_printer` encodes
+    the ZPL as ASCII on the way to the printer, so a face that let a non-ASCII
+    field through would not print at all. Every string the label reads from a
+    record is operator-supplied or device-reported, so all of them get one at
+    once here."""
+    entry = record(name)
+    entry["serial"] = "SN\u2013001"
+    entry["model"] = "mod\u00e8le"
+    dev = entry.setdefault("device", {})
+    for key in ("hostname", "site_name", "profile", "imei", "ip"):
+        if key in dev:
+            dev[key] = f"{dev[key]}\u2014\u00fc"
+    zpl = render_zpl(entry)
+    assert zpl.isascii()
+    zpl.encode("ascii")            # the exact call the print path makes
+
+
 # ── nothing runs off the stock ────────────────────────────────────────────────
 
 _FO = re.compile(r"\^FO(\d+),(\d+)")

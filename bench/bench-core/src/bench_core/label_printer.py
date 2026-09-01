@@ -500,7 +500,15 @@ class LabelPrinter:
             return block
 
         try:
-            transport.send(zpl.encode("utf-8"))
+            # ascii, not utf-8: `qa_label._ascii` folds every field, so this
+            # encode is that invariant asserted at the one place it becomes
+            # bytes. Were a field ever to reach here unfolded, utf-8 would
+            # silently emit multibyte and the ZD421 would print mojibake onto a
+            # QA document; ascii raises instead, and a raise here is already
+            # handled as an unprinted label — which is the right outcome, since
+            # a label nobody can read is worse than the missing one the
+            # operator is warned about.
+            transport.send(zpl.encode("ascii"))
         except Exception as e:  # noqa: BLE001 — any socket/spooler/OS error
             with self._lock:
                 # Drop the cached transport: the printer was there and is not
