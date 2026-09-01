@@ -33,6 +33,9 @@ ATTACHED_4G = '+COPS: 0,0,"Partner",7\n\nOK'
 ATTACHED_3G = '+COPS: 0,0,"Partner",2\n\nOK'
 NOT_ATTACHED = "+COPS: 0\n\nOK"
 NTP = "192.168.88.10"
+# The OTD500 aims at the site router's WAN address, not at the time server
+# itself — it is upstream of that router and cannot address its LAN (TEC-857).
+OTD_NTP = "192.168.1.2"
 CORRECT_OFFSET = expected_utc_offset(ZONE) or "+0300"
 
 needs_tzdata = pytest.mark.skipif(
@@ -50,7 +53,10 @@ class FakeOtd:
                  cops=ATTACHED_4G, ts_ip="100.64.0.5", rms_enable="1",
                  rms_status='{"connection_state":"connected"}',
                  esim_profile="profile: 8944...", quota_installed="script boot-hook",
-                 quota_cron=None, quota_keep=None):
+                 quota_cron=None, quota_keep=None,
+                 ntp_servers=(OTD_NTP,), ntp_enabled="1", ntp_interval="3600",
+                 ntp_package=True, dhcp_start="100", dhcp_limit="150",
+                 ntp_pid="15296", ntp_started=2000, ntp_written=1000):
         self.commands: list[str] = []
         self.hostname = hostname
         # The RUNNING kernel hostname, independent of the UCI option for the
@@ -72,11 +78,57 @@ class FakeOtd:
         self.quota_installed = quota_installed
         self.quota_cron = quota_cron
         self.quota_keep = quota_keep
+        # The `ntpclient` package: server sections named 1..4 the way RutOS
+        # numbers them, plus the settings section that owns the poll interval.
+        self.ntp_servers = list(ntp_servers)
+        self.ntp_enabled = ntp_enabled
+        self.ntp_interval = ntp_interval
+        self.ntp_package = ntp_package
+        self.dhcp_start = dhcp_start
+        self.dhcp_limit = dhcp_limit
+        # The daemon that reads the config above, once, at startup.
+        self.ntp_pid = ntp_pid
+        self.ntp_started = ntp_started
+        self.ntp_written = ntp_written
+
+    def _ntpclient_show(self) -> str:
+        if not self.ntp_package:
+            return ""
+        lines = ["ntpclient.@ntpclient[0]=ntpclient",
+                 f"ntpclient.@ntpclient[0].enabled='{self.ntp_enabled}'",
+                 f"ntpclient.@ntpclient[0].interval='{self.ntp_interval}'",
+                 f"ntpclient.@ntpclient[0].zoneName='{self.zone_shown}'"]
+        for i, server in enumerate(self.ntp_servers, start=1):
+            lines += [f"ntpclient.{i}=server",
+                      f"ntpclient.{i}.hostname='{server}'",
+                      f"ntpclient.{i}.port='123'"]
+        return "\n".join(lines)
 
     def __call__(self, command, check=True, exec_timeout=None):
         self.commands.append(command)
         if command.startswith("date +%z"):
             return self.offset
+        if "uci show ntpclient" in command:
+            return self._ntpclient_show()
+        if "uci show system" in command:
+            # The other time subsystem. It carries the same server, because a
+            # device whose two subsystems disagree is the TEC-846 finding.
+            first = self.ntp_servers[0] if self.ntp_servers else ""
+            return (f"system.system.hostname='{self.hostname}'\n"
+                    f"system.ntp=timeserver\n"
+                    f"system.ntp.server='{first}'\n"
+                    f"system.ntp.enabled='1'\n")
+        if "uci show dhcp" in command:
+            return (f"dhcp.lan=dhcp\ndhcp.lan.start='{self.dhcp_start}'\n"
+                    f"dhcp.lan.limit='{self.dhcp_limit}'\n")
+        if "[n]tpclient" in command:
+            # The daemon row: a healthy device has the process running and
+            # started after the last write to the config it reads at startup.
+            return (f"pid={self.ntp_pid}\n"
+                    f"started={self.ntp_started}\n"
+                    f"written={self.ntp_written}\n")
+        if "system.ntp.enabled" in command:
+            return self.ntp_enabled
         if "system.system.zoneName" in command:
             return self.zone_shown
         if "system.system.hostname" in command:
@@ -215,7 +267,7 @@ def test_the_full_row_set_is_asked(monkeypatch):
     asked = items(result)
     for expected_row in ("admin/root password", "hostname", "timezone",
                          "SIM 4G-only", "RMS", "Tailscale", "eSIM profile",
-                         "firmware"):
+                         "firmware", "NTP client", "NTP daemon", "DHCP pool"):
         assert expected_row in asked, expected_row
     # The SIM-switch block contributes its own rows.
     assert any("quota sync" in item for item in asked)

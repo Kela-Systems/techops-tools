@@ -3,8 +3,9 @@
 
 The device client (TeltonikaClient and the shared helpers) lives in the
 `bench_core` package; this module owns only the OTD500 step sequence
-(set password -> hostname -> timezone -> SIM switch -> 4G-only -> firmware ->
-quota-sync -> RMS -> Tailscale -> [optional] eSIM) and the single-device CLI.
+(set password -> hostname -> timezone -> NTP + DHCP pool -> SIM switch ->
+4G-only -> firmware -> quota-sync -> RMS -> Tailscale -> [optional] eSIM) and
+the single-device CLI.
 
 CLI (single device):
   python3 otd_configure.py --site haifa-port --label-password 'Xy7Kp2Lm9Qa'
@@ -26,6 +27,7 @@ from bench_core import (
     DEFAULT_TIMEZONE,
     DEFAULT_USERNAME,
     LOG_LINE_FORMAT,
+    NTP_CLIENT_INTERVAL,
     TeltonikaClient,
     assert_device_model,
     device_name,
@@ -39,8 +41,44 @@ from bench_core import (
     validate_sim_switch_config,
 )
 
+# The OTD500 sits UPSTREAM of the site's RUTM08 and cannot address the time
+# server on that router's LAN directly, so it aims at the router's WAN address
+# and the router forwards it on (TEC-857). That address is a fleet constant,
+# which is the whole point: one identical NTP line everywhere, no per-site
+# lookup, and a replacement unit that needs no site knowledge.
+DEFAULT_OTD_NTP_SERVER = "192.168.1.2"
+# The stock pool starts at .100, which already clears the address above. It is
+# set explicitly anyway so the exclusion is a property of the config we shipped
+# rather than a default somebody else may have moved.
+DEFAULT_DHCP_START = 100
+DEFAULT_DHCP_LIMIT = 150
+
 
 # --- pipeline (shared by CLI + web UI) --------------------------------------
+
+def time_rows(client: TeltonikaClient, settings: dict) -> list[dict]:
+    """The NTP-client and DHCP-pool rows, identical on the configure and verify
+    paths so a QA sweep asks exactly what the provisioning run asked."""
+    ntp = settings.get("ntp", {}) or {}
+    pool = settings.get("dhcp_pool", {}) or {}
+    server = ntp.get("server", DEFAULT_OTD_NTP_SERVER)
+    rows: list[dict] = []
+    if ntp.get("enabled", True):
+        rows.append(client.ntp_client_check(
+            server, interval=int(ntp.get("interval", NTP_CLIENT_INTERVAL))))
+        # The config row above reads the FILE. This one asks whether the running
+        # daemon ever read it — the restart that makes a commit live is
+        # best-effort, and a device that skipped it looks perfect on paper.
+        rows.append(client.ntp_daemon_check())
+    if pool.get("enabled", True):
+        # The address to keep out of the pool IS the NTP server: it is the
+        # downstream router's static WAN address, and the router will not
+        # defend it against a lease handed to something else.
+        rows.append(client.dhcp_pool_check(
+            int(pool.get("start", DEFAULT_DHCP_START)),
+            int(pool.get("limit", DEFAULT_DHCP_LIMIT)),
+            reserved=pool.get("reserved", server)))
+    return rows
 
 def configure_device(client: TeltonikaClient, *, label_password: str, site_name: str,
                      settings: dict, expected: Optional[dict] = None) -> dict:
@@ -92,6 +130,22 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
     # data, and so settings survive a keep-settings firmware reboot.
     _step("hostname", lambda: client.set_hostname(name))
     _step("timezone", lambda: client.set_timezone(settings.get("timezone", DEFAULT_TIMEZONE)))
+    # Time source (TEC-857), right after the timezone that it shares a zoneName
+    # with. Pure UCI like the SIM rules below, so it needs nothing online and
+    # survives a keep-settings firmware flash. It is NOT verifiable here beyond
+    # a read-back: the server lives behind the site's router, which is not on
+    # this bench — see docs/verification-rows.md.
+    ntp = settings.get("ntp", {}) or {}
+    if ntp.get("enabled", True):
+        _step("ntp", lambda: client.set_ntp_client(
+            ntp.get("server", DEFAULT_OTD_NTP_SERVER),
+            interval=int(ntp.get("interval", NTP_CLIENT_INTERVAL)),
+            zonename=settings.get("timezone", DEFAULT_TIMEZONE)))
+    pool = settings.get("dhcp_pool", {}) or {}
+    if pool.get("enabled", True):
+        _step("dhcp-pool", lambda: client.set_dhcp_pool(
+            int(pool.get("start", DEFAULT_DHCP_START)),
+            int(pool.get("limit", DEFAULT_DHCP_LIMIT))))
     # SIM failover rules (TEC-359): pure UCI, needs no SIM inserted, and UCI
     # survives a keep-settings firmware flash — so it runs here, before the
     # 4G-only switch (the one step that bounces the modem). The quota-sync half
@@ -198,6 +252,7 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
             rms_api_token=rms.get("api_token", ""),
             serial=identity.get("serial", ""),
         )
+        verification += time_rows(client, settings)
         for line in format_verification(verification).splitlines():
             log.info("%s", line)
     except SystemExit as e:
@@ -282,6 +337,8 @@ def verify_device(client: TeltonikaClient, *, settings: dict, resolve=None,
         rms_api_token=rms.get("api_token", ""),
         serial=identity.get("serial", ""),
     ) if not (c["item"] == "hostname" and not name)]   # already reported above
+
+    verification += time_rows(client, settings)
 
     for line in format_verification(verification).splitlines():
         log.info("%s", line)

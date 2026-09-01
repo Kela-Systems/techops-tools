@@ -65,6 +65,11 @@ SIM row out.
 | `eSIM profile` | `gsmctl --esim-list` returning anything. | known gap |
 | `firmware` | `/etc/version` — the firmware that is running. | effect-based |
 | `LAN IP` (verify only) | `lan_ip_check`: the address the session actually reached, **and** the configured address it will come back on after a reboot. | effect-based |
+| `NTP client` | Four facts: every server in **both** RutOS time subsystems (`system` and the `ntpclient` package, so a stock `time2.google.com` is found), both enable flags, and the poll interval. See the known gap below for why there is no sync half. `test_ntp_client_applied.py`. | read-back |
+| `NTP daemon` | Whether the RUNNING client has read the config the row above checks. RutOS starts it as `ntpclient -s -l`, with no server on the command line, so there is nothing to read the way the `ntpd` row reads `-p <server>` — instead the process start time (the mtime of `/proc/<pid>`) is compared against the config file's. A daemon older than the file is still polling what it read at boot. Amber when the device will not report either timestamp. `test_ntp_client_applied.py`. | effect-based |
+| `DHCP pool` (OTD500) | Not the two options read back — that cannot fail. Whether the pool can still lease the address the downstream router holds statically, computed from `start`/`limit`. A pool starting at `.1` fails with both options committed exactly as written. `test_ntp_path_applied.py`. | read-back |
+| `WAN address` (RUTM08, opt-in) | The address **and** `proto=static`, so an interface left on `dhcp` with a stale `ipaddr` does not read back correct while taking whatever the site hands it. | read-back |
+| `NTP forward` (RUTM08, opt-in) | The redirect's options, **and** whether the wired WAN interface is actually in the `wan` firewall zone the rule matches on — TEC-857's prerequisite, after the demo unit's zone turned out to list only the mobile interfaces. Amber-tolerant on that half: an unreadable zone does not fail the row. | read-back |
 | `prior run` (verify only) | `bench_core/history.py`: whether this unit has a recorded configure run at all. Bookkeeping, not a device check — it fails when nothing is found rather than dropping the checks that needed it. | n/a |
 
 ## Teltonika TSW202
@@ -78,7 +83,7 @@ TEC-848 and is recovered from that switch's own configure record.
 | --- | --- | --- |
 | `admin/root password` | As above. | effect-based |
 | `timezone` | The shared `timezone_check` — the row this whole document is about. | effect-based |
-| `NTP server` | Three facts: every server in the `system` package (not just the option we wrote, so a leftover pool entry is found), the enable flag, and the servers the **running** ntpd was started with, off its command line. | effect-based |
+| `NTP server` | Three facts: every server the device has (not just the option we wrote, so a leftover pool entry is found), the enable flag, and the servers the **running** ntpd was started with, off its command line. Since TEC-857 the server scan covers the `ntpclient` package too; a TSW202 has none, so the row is unchanged — the widening was for the routers, which do. | effect-based |
 | `firmware` | `/etc/version` against the firmware floor. | effect-based |
 | `LAN IP` (verify only, static) | `lan_ip_check`, as above. | effect-based |
 | `LAN IP` (verify only, DHCP) | `lan_dhcp_check`: there is no address to hold the switch to, so the answerable question is whether it is configured to ask for one. A leftover static `ipaddr` alongside `proto=dhcp` **fails** — that switch falls back to the bench address when no lease arrives, which is a second device shipped under one record. | effect-based |
@@ -196,6 +201,90 @@ documented read for the current variant (ask Magos), or a `get_params` frame
 over the same WebSocket, if one exists. Until then the row is amber on firmware
 that reports nothing, and it must stay amber — a guessed pass here would be
 worse than no row, because somebody would ship on it.
+
+**`NTP client` (OTD500, RUTM08), and why the bench cannot tell you a pair
+synced.** TEC-857 asks for a verify mode that reports *synced* rather than
+merely configured, distinguishes NTP-sourced time from the GSM modem clock, and
+confirms `date -u` agrees across the OTD500, the router and the time server.
+None of that is a bench row, for a reason that is structural rather than
+temporary: the OTD500 is **upstream** of the router and reaches the time server
+only through a port forward on it, and this bench provisions **one device at a
+time** — an OTD500 is never cabled behind the router that would carry it there.
+There is no path to the server on this bench, so an `ntpclient -d` probe here
+could only ever report "no reply", on a device that is perfectly configured.
+
+Recorded so it is not re-proposed: the tempting version is to run the probe
+anyway and mark the row amber when it finds nothing. That fails rule 1 in the
+same way the Magos clock row did — a fresh OTD500 and one whose forward is
+misconfigured are indistinguishable from the bench, so the row is amber on every
+unit and teaches operators that skips are furniture.
+
+What the bench *can* answer, and now does, is the half of the question that
+needs no reachable server: whether the running daemon has read the config at
+all. That is the `NTP daemon` row, added after a bench OTD500 (2026-08-31)
+showed the client is started as `ntpclient -s -l` and reads its servers from
+`/etc/config/ntpclient` **once, at startup** — so the best-effort restart in
+`set_ntp_client` is what makes a commit live, and a restart that quietly failed
+leaves a correct file, a green `NTP client` row and a daemon still polling what
+it read at boot. It does not prove sync; it removes one way of failing silently.
+
+Two things do close the rest, neither a bench row:
+
+* **The sync check belongs to assembly**, where the pair is cabled together and
+  the server is reachable. That check must use `ntpclient -d` reading
+  `/etc/config/ntpclient` — this RutOS build **ignores a positional hostname
+  argument**, so a probe passing the server on the command line silently tests
+  the configured target instead and tells you nothing.
+* **The competing time source has to be named.** RutOS falls back to the
+  cellular modem clock (`get_time_from_modem`) whenever NTP samples are
+  rejected, silently, so "the clock looks right" is not evidence of sync. Any
+  assembly-side check has to separate the two.
+
+Note also that as of TEC-846 a correctly configured pair still does **not**
+sync: the round trip measured 2252 ms, samples reach the server and are
+discarded, and the root cause is unfound. TEC-846 attributes the rejection to
+ntpclient's `min_delay 800`; that does not hold up, and is recorded here so the
+next person does not spend a day on it. Upstream documents `-q min_delay` as
+**microseconds** (800 = 0.8 ms, so the comparison is off by 1000x) and as the
+*shortest* possible round trip — a floor the `-l` lock algorithm uses, not a
+ceiling that discards samples. Raising it is what upstream warns against; the
+recommended direction is *down*. What does reject packets is the RFC-4330
+cross-check set (`cross_check 1` in the debug output), whose candidates include
+`abs(DELAY)>65536` and `LI==3`. Which one fires is not worth guessing:
+`ntpclient -d` prints `rejected packet: <reason>` verbatim, and nobody has yet
+run it against a reachable server.
+
+Two constraints on any fix, both from the OTD500 bench unit (2026-08-31). The
+build's usage line is `[-d] [-f frequency] [-g goodness] [-l] [-p port]
+[-q min_delay] [-s]` — Teltonika dropped upstream's `-h`, `-c`, `-i` **and the
+`-t`/`-x` switches that turn the cross-checks off**, so they cannot be disabled
+from the command line. And `/etc/init.d/ntpclient` runs a fixed
+`/usr/sbin/ntpclient -s -l`, passing nothing from the config, so `min_delay` is
+always the compiled-in 800 and no UCI option can reach it. Changing either means
+editing the init script, which a sysupgrade wipes — the same constraint that
+makes quota-sync install after the firmware step. The binary parses
+`/etc/config/ntpclient` itself, and `strings /usr/sbin/ntpclient` gives its
+option surface: `hostname`, `interval`, `freq`, `tmz_sync_enabled` — and
+**`force`**, which is the config-side face of the WebUI's "Force Servers"
+(there is no `-t` flag on this build). So the cross-checks *are* reachable, by
+UCI rather than by command line. `interval` is validated to 60..2147483647 and
+silently falls back to **10 minutes**, not to 86400, when it cannot be read.
+
+Two things in that binary matter more than the tuning, and both are worth
+checking before anyone touches `force`:
+
+* `[...] Parsed time is older than the current system time. Not syncing.` —
+  Teltonika added a guard that **refuses to step the clock backwards**. A unit
+  whose GSM modem clock runs ahead of real time therefore never syncs, no matter
+  how correct its config, and says so only in debug output. That is an untested
+  candidate root cause for TEC-846 and a distinct failure from any sanity check.
+* `[...] Delay=%.1f  Dispersion=%.1f ...` and `LI=%d VN=%d Mode=%d Stratum=%d` —
+  the debug output prints the actual values, so a single `ntpclient -d` against a
+  reachable server settles which check fires and with what numbers, rather than
+  anyone reasoning about it from a threshold. The
+bench rows above deliberately do not encode that — they say what was
+configured, which is true and useful, and they would otherwise fail every unit
+for a fault that is not the unit's.
 
 **`NTP server` (Magos pair), and why there is no clock row at all.** The NTP
 server the tools point a unit at (`192.168.88.10`) is on the **assembly**

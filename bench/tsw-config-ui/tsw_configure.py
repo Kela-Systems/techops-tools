@@ -56,6 +56,9 @@ from bench_core import (
     DEFAULT_USERNAME,
     LOG_LINE_FORMAT,
     POSIX_TZ,
+    UCI_NTP_ENABLED,
+    UCI_NTP_SECTION,
+    UCI_NTP_SERVER,
     TeltonikaClient,
     assert_device_model,
     format_verification,
@@ -90,11 +93,9 @@ DEFAULT_TSW_LEASE_TIMEOUT = 300
 # than provisioned with a TSW202 image.
 EXPECTED_MODEL = "TSW202"
 
-# UCI paths. The timeserver section is the standard OpenWrt/RutOS one that
-# set_timezone() already writes into.
-UCI_NTP_SECTION = "system.ntp"
-UCI_NTP_SERVER = "system.ntp.server"
-UCI_NTP_ENABLED = "system.ntp.enabled"
+# The UCI timeserver paths (UCI_NTP_*) come from bench_core, which the routers
+# write to as well since TEC-857. Two copies of the same three strings is one
+# edit away from the switch and the routers disagreeing about where NTP lives.
 
 
 class TswClient(TeltonikaClient):
