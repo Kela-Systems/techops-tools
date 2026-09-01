@@ -22,10 +22,15 @@ import pytest
 
 from bench_core.qa_label import (
     FACES,
+    FEED_INSET,
     FOOT_Y,
+    HEAD_INSET,
     LABEL_H,
     LABEL_W,
     MARGIN,
+    MAX_HEAD_DOTS,
+    MEDIA_L,
+    PRINT_W,
     QR_X,
     barcode_module_width,
     label_content,
@@ -387,7 +392,9 @@ def test_every_face_carries_a_qr_and_a_code128_of_the_serial(name):
     entry = record(name)
     zpl = render_zpl(entry)
     assert "^BQN,2," in zpl, "no QR — the scanner has nothing to match back"
-    assert "^BCN," in zpl, "no Code 128 of the serial"
+    # B, not N: the whole label is rotated onto the feed, so an unrotated
+    # barcode would run across the label and off the 832-dot printhead.
+    assert "^BCB," in zpl, "no Code 128 of the serial"
     assert entry["serial"] in zpl
 
 
@@ -439,15 +446,64 @@ def test_every_face_renders_pure_ascii_whatever_the_record_holds(name):
 
 
 # ── nothing runs off the stock ────────────────────────────────────────────────
+#
+# These assert in PRINTER space, because that is where the first hardware run
+# failed: the design fitted its own 1199-dot width perfectly and was still
+# unprintable, the printhead being 832 dots wide. Design-space coordinates are
+# recovered from the emitted `^FO` by inverting `_fo` — see `_placed`.
 
 _FO = re.compile(r"\^FO(\d+),(\d+)")
 
 
+def _placed(zpl: str):
+    """Every field in `zpl` as (head, feed, design_y, design_right).
+
+    `_fo` maps design (x, y) with a known length to printer (y + HEAD_INSET,
+    LABEL_W - x - length + FEED_INSET). The length is not recoverable from the
+    ZPL, so neither is the design's x — but its FAR edge is, and that is the
+    edge these tests care about.
+    """
+    for head, feed in _FO.findall(zpl):
+        head, feed = int(head), int(feed)
+        yield head, feed, head - HEAD_INSET, LABEL_W - feed + FEED_INSET
+
+
+def test_the_design_fits_the_printhead():
+    """The bug that reached hardware, as an assertion. No stock can rescue a
+    design wider than the head, so this is checked on the constants rather than
+    on any one record."""
+    assert LABEL_H + 2 * HEAD_INSET <= MAX_HEAD_DOTS
+    assert LABEL_H + 2 * HEAD_INSET <= PRINT_W
+    assert PRINT_W <= MAX_HEAD_DOTS
+    # and the feed axis has to hold the design plus its inset at both ends
+    assert LABEL_W + 2 * FEED_INSET <= MEDIA_L
+
+
+@pytest.mark.parametrize("name", ALL_RECORDS)
+def test_no_field_falls_off_the_media(name):
+    """In printer terms: nothing may sit beyond the head's width or past the
+    end of the label's feed."""
+    for head, feed, _, _ in _placed(render_zpl(record(name))):
+        assert 0 <= head <= PRINT_W, f"{name}: field {head} dots across the head"
+        assert 0 <= feed <= MEDIA_L, f"{name}: field {feed} dots along the feed"
+
+
+@pytest.mark.parametrize("name", ALL_RECORDS)
+def test_nothing_is_printed_against_a_physical_edge(name):
+    """The other half of the first hardware report: the header band's edge came
+    back shaved. Registration play is normal, so the design keeps clear of all
+    four edges rather than trusting the media to be where it should be."""
+    for head, feed, _, _ in _placed(render_zpl(record(name))):
+        assert head >= HEAD_INSET, f"{name}: field {head} is on the head edge"
+        assert feed >= FEED_INSET, f"{name}: field {feed} is on the label edge"
+
+
 @pytest.mark.parametrize("name", ALL_RECORDS)
 def test_no_field_starts_outside_the_label(name):
-    for x, y in _FO.findall(render_zpl(record(name))):
-        assert 0 <= int(x) <= LABEL_W, f"{name}: field at x={x}"
-        assert 0 <= int(y) <= LABEL_H, f"{name}: field at y={y}"
+    for _, _, design_y, design_right in _placed(render_zpl(record(name))):
+        assert 0 <= design_y <= LABEL_H, f"{name}: field at design y={design_y}"
+        assert 0 <= design_right <= LABEL_W, \
+            f"{name}: field ends at design x={design_right}"
 
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
@@ -457,11 +513,11 @@ def test_the_body_never_starts_under_the_barcode(name):
     for line in render_zpl(record(name)).splitlines():
         if "^BC" in line:                    # the barcode itself lives there
             continue
-        for x, y in _FO.findall(line):
-            if int(x) >= QR_X:               # the QR column is its own thing
+        for _, _, design_y, design_right in _placed(line):
+            if design_right >= QR_X:         # the QR column is its own thing
                 continue
-            assert int(y) < FOOT_Y, \
-                f"{name}: body field at y={y} is under the barcode"
+            assert design_y < FOOT_Y, \
+                f"{name}: body field at y={design_y} is under the barcode"
 
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
@@ -479,9 +535,12 @@ def test_a_very_long_serial_narrows_the_barcode_instead_of_overflowing():
 
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
-def test_the_label_declares_the_15x5_stock(name):
+def test_the_label_declares_the_media_not_the_design(name):
+    """`^PW`/`^LL` are printer geometry. Declaring the design's 1199 x 400 here
+    is what told the printer to expect a label it cannot print."""
     zpl = render_zpl(record(name))
-    assert f"^PW{LABEL_W}" in zpl and f"^LL{LABEL_H}" in zpl
+    assert f"^PW{PRINT_W}" in zpl and f"^LL{MEDIA_L}" in zpl
+    assert f"^PW{LABEL_W}" not in zpl
 
 
 # ── missing fields degrade instead of printing a heading over a blank ─────────

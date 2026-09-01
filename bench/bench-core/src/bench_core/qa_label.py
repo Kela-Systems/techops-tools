@@ -57,12 +57,24 @@ from bench_core.run_record import parse_run_record
 
 # ── stock and geometry ───────────────────────────────────────────────────────
 #
-# Zebra ZD421, 203 dpi, 15 x 5 cm (TEC-351). 15 cm is the chosen stock: the APU
-# pairing table is the densest face and still fits, and 15 x 10 cm is the same
-# content with more air rather than room for more fields.
+# Zebra ZD421, 203 dpi, 15 x 5 cm of printed area (TEC-351). 15 cm is the
+# chosen size: the APU pairing table is the densest face and still fits, and
+# 15 x 10 cm is the same content with more air rather than room for more fields.
+#
+# The 15 cm axis is the FEED direction, not the printhead. It has to be: the
+# ZD421's head is 104 mm (832 dots) at 203 dpi and the widest media it accepts
+# is 118 mm, so a 15 cm span across the head is not a stock choice that could be
+# revisited — it cannot be printed at all. Every field is therefore emitted
+# rotated, which is what `_fo` and the `B` orientations below are doing. The
+# design coordinates are left exactly as they were drawn and reviewed.
 DPI = 203
-LABEL_W = 1199        # 15 cm at 203 dpi
-LABEL_H = 400         # 5 cm
+# 15 cm of feed is 1200 dots, and the design may not use all of them: ink laid
+# into the first or last dot rows of a label is shaved by normal registration
+# play, which is what the first hardware run showed. 1180 leaves 10 clear at
+# each end — the "free space" the layout was allowed to give up, and cheaper
+# than a re-fit of every face.
+LABEL_W = 1180        # DESIGN width, along the feed
+LABEL_H = 400         # 5 cm — DESIGN height, across the printhead
 
 MARGIN = 14
 HEAD_H = 46           # the inverted header band
@@ -74,6 +86,14 @@ BAR_H = 42
 BAR_TEXT_H = 20
 QR_X = 975            # the QR column; the body's left column ends before it
 QR_Y = 54
+# The band the QR is allowed to occupy, from QR_Y down to the black LAN strip
+# on the `hostname-gateway` face. The rotation needs a height for every field
+# (see `_fo`) and a QR's real size depends on how much the payload made the
+# printer encode, which is not known here — so the reserved envelope is used
+# instead. A symbol smaller than the band sits at the bottom of it rather than
+# the top, which is why `qr_magnification` bounding the size is what keeps it
+# off the strip either way.
+QR_H = 194
 # Width available to the body. The gap to QR_X is clearance, not decoration:
 # the APU face right-aligns its radar addresses to the end of this and they
 # would otherwise touch the QR's quiet zone.
@@ -85,6 +105,29 @@ FS_VAL = 28
 FS_SUB = 40
 FS_HERO = 58
 FS_HERO_BIG = 72
+
+# ── the media, in printer space ──────────────────────────────────────────────
+#
+# Across the head, then along the feed. The stock in use is 10 x 15 cm, so the
+# design's 400-dot height uses half the available width; the rest is blank.
+# Narrower stock (5 x 15 cm) would print the identical label with no waste.
+PRINT_W = 800         # 10 cm across the head
+MEDIA_L = 1200        # 15 cm of feed per label
+# The printhead itself: 104 mm at 203 dpi, per Zebra's ZD421 spec sheet. This
+# is the wall the first hardware attempt hit — the design was 1199 dots across
+# and everything past 832 simply had no head over it, so the labels came out
+# correct on the left and progressively absent to the right. Nothing may exceed
+# it, and no stock can raise it: the widest media the printer accepts is 118 mm.
+MAX_HEAD_DOTS = 832
+# Nothing is drawn against a physical edge, on either axis.
+#
+# Across the head there is room to spare, so this is simply an inset. Along the
+# feed there is almost none — the design is 1180 of the 1200 available — so the
+# design is centred in what is left, which is where the 10 dots at each end come
+# from. Both exist for the same reason: the header band starts at design y=0 and
+# the first hardware run came back with its edge shaved off.
+HEAD_INSET = 8
+FEED_INSET = (MEDIA_L - LABEL_W) // 2
 
 FACES = ("hostname-imei", "hostname-gateway", "shared-ip", "unit-ip",
          "dhcp-mac", "channel", "pairing")
@@ -133,6 +176,38 @@ def _mac(value) -> str:
 
 
 # ── ZPL primitives ───────────────────────────────────────────────────────────
+#
+# Every one of these emits its position through `_fo`, so the rotation onto the
+# media lives in exactly one place and the faces below are written in the
+# design's own coordinates.
+
+def _fo(x: int, y: int, length: int) -> str:
+    """The `^FO` for a field the design places at (x, y), `length` dots wide.
+
+    The design's x — its long axis — becomes the printer's feed direction, and
+    the design's y becomes the position across the head. A plain transpose is
+    not enough: a transpose alone is a REFLECTION rather than a rotation, and it
+    prints a label whose text reads correctly but whose layout is mirrored,
+    header on the right and QR on the left. So the feed axis is flipped, which
+    is where `length` comes in — the flip needs to know where the field ENDS,
+    not just where it starts.
+
+    `length` is also why every text field carries an explicit `^FB` block: a
+    proportional font's width is not knowable here, so the block declares the
+    extent instead and lets the printer place the text inside it. Alignment
+    within the block needs no adjustment for the rotation — `L` is still the
+    design's left.
+
+    Fields are emitted `B`. Both `B` and `R` anchor at the same corner and
+    occupy the same box, differing only in that `R` prints its glyphs 180
+    degrees round, upside down once the label is turned the way it is read.
+
+    All of the above was settled on renders rather than derived; the four
+    candidate combinations and the loop that produced them are in
+    docs/qa-labels.md.
+    """
+    return f"^FO{y + HEAD_INSET},{LABEL_W - x - length + FEED_INSET}"
+
 
 def _text(x: int, y: int, size: int, value, *, reverse: bool = False,
           width: Optional[int] = None, align: str = "L") -> str:
@@ -141,12 +216,16 @@ def _text(x: int, y: int, size: int, value, *, reverse: bool = False,
     body = _zpl(value)
     if not body:
         return ""
-    # Height only, no width: `^A0N,h,w` scales every glyph into a w-wide cell,
+    # The block runs from x to the end of the label unless the caller states
+    # otherwise. It is a placement box, not a visible one, so a generous
+    # default costs nothing: with `align="L"` the text still starts exactly at
+    # x. What it must never be is *narrower* than the text, since `^FB` with a
+    # one-line limit truncates rather than shrinking.
+    block = LABEL_W - MARGIN - x if width is None else width
+    # Height only, no width: `^A0B,h,w` scales every glyph into a w-wide cell,
     # which pads the narrow ones — a hostname like `otd-kela-fob-12` prints as
     # `otd - kela - fob - 12`. Omitting w keeps font 0 proportional.
-    out = f"^FO{x},{y}^A0N,{size}"
-    if width is not None:
-        out += f"^FB{width},1,0,{align},0"
+    out = f"{_fo(x, y, block)}^A0B,{size}^FB{block},1,0,{align},0"
     if reverse:
         out += "^FR"                      # invert: white text on the black band
     return out + f"^FD{body}^FS"
@@ -161,12 +240,17 @@ def _box(x: int, y: int, w: int, h: int) -> str:
     beside it. At `min(w, h)` the border is thick enough to close over itself
     on both axes (2t >= the other side, for any aspect up to 2:1) while
     neither dimension gets inflated.
+
+    `^GB` takes no orientation parameter and so is not rotated by `^FW` either —
+    the swap of `w` and `h` here IS the rotation for a box.
     """
-    return f"^FO{x},{y}^GB{w},{h},{min(w, h)}^FS"
+    return f"{_fo(x, y, w)}^GB{h},{w},{min(w, h)}^FS"
 
 
 def _rule(x: int, y: int, w: int, thickness: int = 3) -> str:
-    return f"^FO{x},{y}^GB{w},0,{thickness}^FS"
+    """A hairline the design draws horizontally, which on the media runs along
+    the feed — hence the zero width and `w` as the height."""
+    return f"{_fo(x, y, w)}^GB0,{w},{thickness}^FS"
 
 
 def _kv(x: int, y: int, key: str, value, *, size: int = FS_VAL) -> str:
@@ -194,7 +278,10 @@ def _qr(payload: str) -> str:
     # ^FD for ^BQ is "<error correction><input mode>,<data>". Q = 25% recovery,
     # chosen over the usual M because these labels live on equipment that gets
     # handled, racked and occasionally scuffed before anyone scans them.
-    return (f"^FO{QR_X},{QR_Y}^BQN,2,{qr_magnification(payload)}"
+    #
+    # Left `N` while everything else rotates: a QR is square and reads at any
+    # angle, so rotating it would change nothing a scanner cares about.
+    return (f"{_fo(QR_X, QR_Y, QR_H)}^BQN,2,{qr_magnification(payload)}"
             f"^FDQA,{_zpl(payload)}^FS")
 
 
@@ -206,14 +293,30 @@ def barcode_module_width(value: str) -> int:
     clips rather than scales. A clipped Code 128 still looks like a barcode
     and scans as nothing, which is the failure this label exists to prevent.
     """
-    # Code 128: 11 modules per symbol, one symbol per character plus start,
-    # checksum and stop, and the stop pattern is 2 modules longer.
-    modules = (len(value) + 3) * 11 + 2
+    modules = barcode_modules(value)
     usable = LABEL_W - 2 * MARGIN
     for width in (4, 3, 2):
         if modules * width <= usable:
             return width
     return 2
+
+
+def barcode_modules(value: str) -> int:
+    """How many Code 128 modules `value` encodes to.
+
+    Code 128: 11 modules per symbol, one symbol per character plus start,
+    checksum and stop, and the stop pattern is 2 modules longer.
+    """
+    return (len(value) + 3) * 11 + 2
+
+
+def barcode_length(value: str) -> int:
+    """How far the barcode reaches along the design's x, in dots.
+
+    Needed because the rotation has to know where each field ends (see `_fo`),
+    and this is the one field whose extent depends on its content.
+    """
+    return barcode_modules(value) * barcode_module_width(value)
 
 
 def _barcode(value: str) -> str:
@@ -226,8 +329,9 @@ def _barcode(value: str) -> str:
     # Left at the printer default it comes out in a bitmapped font at whatever
     # size the last job left behind.
     return (f"^CF0,{BAR_TEXT_H}"
-            f"^FO{MARGIN},{FOOT_Y}^BY{barcode_module_width(body)},3,{BAR_H}"
-            f"^BCN,{BAR_H},Y,N,N^FD{body}^FS")
+            f"{_fo(MARGIN, FOOT_Y, barcode_length(body))}"
+            f"^BY{barcode_module_width(body)},3,{BAR_H}"
+            f"^BCB,{BAR_H},Y,N,N^FD{body}^FS")
 
 
 # ── what goes on one label ───────────────────────────────────────────────────
@@ -665,7 +769,12 @@ def render_content(c: LabelContent) -> str:
     parts = [
         "^XA",
         "^CI28",                                  # UTF-8 in, though _ascii folds
-        f"^PW{LABEL_W}", f"^LL{LABEL_H}", "^LH0,0",
+        # Printer space, so the design's axes are swapped here: the width is
+        # across the head and the length is the feed the design's 15 cm runs
+        # along. `^LH0,0` keeps the home position at the corner — the inset that
+        # keeps ink off the edge is `EDGE`, applied per field in `_fo`, so it
+        # cannot be undone by a printer whose home position has been shifted.
+        f"^PW{PRINT_W}", f"^LL{MEDIA_L}", "^LH0,0",
         _box(0, 0, LABEL_W, HEAD_H),
         _text(MARGIN, 10, FS_HEAD, c.family, reverse=True),
         _text(0, 12, 24, c.mode, reverse=True,

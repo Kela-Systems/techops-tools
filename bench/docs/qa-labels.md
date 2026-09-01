@@ -43,14 +43,61 @@ original was damaged, peeled or never printed, without touching the device.
 
 ## Stock and printer
 
-Zebra ZD421, 203 dpi, **15 × 5 cm** labels.
+Zebra ZD421, 203 dpi. The printed area is **15 × 5 cm**, on 10 × 15 cm stock.
 
-15 cm is the chosen width because the APU's pairing face — the densest of the
-eight — fits it. Wider stock would be the same content with more air, not room
-for more fields. The layout constants live at the top of
+15 cm is the design's long side because the APU's pairing face — the densest of
+the eight — needs it. More would be the same content with more air, not room
+for more fields.
+
+**The 15 cm runs along the feed, not across the printhead, and this is not a
+choice.** The ZD421's head is 104 mm — 832 dots at 203 dpi — and the widest
+media it accepts is 118 mm, so there is no stock on which a 15 cm span across
+the head could print. The first hardware attempt declared `^PW1199` and the
+labels came back correct at the left edge and progressively absent to the
+right, the QR (at design x=975) missing entirely. Every field is therefore
+emitted rotated; see [Rotation](#rotation-onto-the-media) below.
+
+On 10 × 15 cm stock the design uses the full 15 cm of feed and 5 of the 10 cm
+across the head, so half of each label is blank. 5 × 15 cm stock would print
+the identical label with no waste, and is the media to order when the current
+roll runs out. Nothing in the code needs to change for it — `PRINT_W` describes
+the stock, not the design.
+
+The layout constants live at the top of
 [`bench_core/qa_label.py`](../bench-core/src/bench_core/qa_label.py); the tests
-assert nothing runs off the edge, because ZPL clips silently rather than
-scaling, and a clipped barcode still looks like a barcode.
+assert nothing runs off either the design or the *media*, because ZPL clips
+silently rather than scaling, and a clipped barcode still looks like a barcode.
+
+### Rotation onto the media
+
+The faces are written in design coordinates — x along the 1180-dot long axis, y
+down the 400-dot short one, exactly as the mockups were drawn. `_fo` is the
+single place that maps those onto the printer, and every primitive goes through
+it, so no face carries any knowledge of the rotation.
+
+Two things it does, both of which cost a wasted round of label stock to
+discover:
+
+- **The design's x becomes the feed direction and its y the position across the
+  head — and then the feed axis is flipped.** A transpose on its own is a
+  reflection rather than a rotation: it prints a label whose text reads
+  correctly but whose layout is mirrored, header on the right and QR on the
+  left. Flipping the feed axis turns it back into a rotation, which is why `_fo`
+  needs each field's *length* and not just its position.
+- **Fields are emitted `B`, not `R`.** The two anchor at the same corner and
+  occupy the same box; they differ only in that `R` prints its glyphs 180°
+  round, which comes out upside down once the label is turned to be read.
+
+Because a proportional font's width cannot be known here, every text field
+declares an explicit `^FB` block and lets the printer place the text inside it.
+That block is the length `_fo` needs. Alignment inside the block is unaffected
+by the rotation — `L` is still the design's left.
+
+Nothing is drawn against a physical edge, on either axis: the first hardware run
+also came back with the header band's edge shaved off, which is ordinary media
+registration play rather than a bug. `HEAD_INSET` and `FEED_INSET` keep a
+millimetre clear all round, and the design gave up 19 dots of its width
+(1199 → 1180) to make room along the feed, where there was none to spare.
 
 ### Configuring it
 
@@ -263,7 +310,27 @@ flagged). To see what the printer will actually do:
 ```
 
 Paste the output into <https://labelary.com/viewer.html> set to **8 dpmm** and
-**5.9 × 1.97 in**. There is one sample record per face in
+**3.94 × 5.91 in** — the media, portrait, because that is what the printer is
+being handed. The label will appear rotated a quarter turn, which is correct:
+it is how it comes off the printer.
+
+To review it the way it will be read, use the API instead of the viewer and ask
+for the rotation:
+
+```bash
+curl -s -X POST --data-binary @all.zpl \
+    -H "Accept: image/png" -H "X-Rotation: 90" \
+    http://api.labelary.com/v1/printers/8dpmm/labels/3.94x5.91/0/ -o label.png
+```
+
+`X-Rotation: 90` is the reading orientation. Any other value is a good way to
+convince yourself the layout is mirrored or upside down when it is not — the
+four combinations of orientation and axis flip all look plausible at the wrong
+one, which is exactly how the rotation above took several attempts to settle.
+The trailing `/0/` is the label index, so `/1/` is the second label in a
+multi-label dump.
+
+There is one sample record per face in
 [`bench-core/tests/label-records/`](../bench-core/tests/label-records/), and a
 wildcard dumps all of them at once — expanded by the tool, not the shell, so
 the same command works on the bench station:

@@ -18,9 +18,11 @@ produce UTF-16 the printer cannot read):
     bench-core/tests/label-records/'*.json'
 ```
 
-Paste the ZPL into <https://labelary.com/viewer.html> (8 dpmm, 5.9 x 1.97 in)
-to see exactly what the ZD421 prints. `docs/qa-labels.md` has the full
-workflow.
+Paste the ZPL into <https://labelary.com/viewer.html> (8 dpmm, 3.94 x 5.91 in)
+to see exactly what the ZD421 prints. It appears a quarter turn round, because
+the design's 15 cm side runs along the feed — the printhead is only 104 mm wide,
+so it cannot be otherwise. `docs/qa-labels.md` shows how to get the render in
+reading orientation, and explains why.
 
 Every record here is `status: "ok"` with `verified: true`, because that is the
 only combination that prints. Records for the gate itself (verified false,
