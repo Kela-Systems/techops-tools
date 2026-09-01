@@ -192,6 +192,35 @@ module.
 To try a single setting without editing the station file, the same flags work on
 an ordinary dump: `--media`, `--darkness`, `--speed`.
 
+### When the settings run out
+
+Measured on the first 58 mm roll, darkness buys about 25% more ink between 12
+and 25 and then **stops** — 28 and 30 are indistinguishable from 25. Speed 2 is
+the slowest the printer goes. So `{"darkness": 25, "speed": 2}` is roughly the
+ceiling of what the bench can do, and a label still weak at those values is not
+going to be rescued by a number.
+
+Two symptoms tell you to stop tuning and look at the hardware:
+
+- **Solid fills come out speckled while bold text is fine.** Heat that is merely
+  insufficient makes everything uniformly grey. Patchy solids next to legible
+  text means the ink is not *adhering* evenly, which is a media, ribbon or
+  printhead-contact problem.
+- **The darkness ladder is flat.** If every rung looks the same, the limiting
+  factor is not heat.
+
+In that order: clean the printhead (a stock change drags fresh adhesive and dust
+across it, and this costs a cotton bud and some isopropyl); confirm what the
+media actually is; then check the ribbon is the right chemistry for the label
+face — wax wants a matte paper face, and a gloss or synthetic face needs resin
+or wax-resin, which is exactly the pairing that prints speckled.
+
+Note that **direct thermal is not the easy way out here.** It needs no ribbon
+and prints beautifully, but it fades within a year or so of heat and light, and
+these labels are meant to identify a unit for as long as the unit exists. A
+thermal-transfer resin ribbon is the right technology for the job; the work is
+in pairing it correctly, not in escaping it.
+
 ### A note on hyphens in the preview
 
 Hostnames render in Labelary with conspicuously wide gaps around their hyphens —
