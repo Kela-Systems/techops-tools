@@ -126,6 +126,72 @@ Module width is capped at 3 for the same reason: a wider module drags the
 interpretation line taller with it, and a scanner that reads 3 comfortably gains
 nothing from 4.
 
+## Print quality
+
+Three things decide whether a label is readable, none of which touch the
+layout: whether the printer thinks there is a ribbon in the path (`^MT`), how
+hard the head burns (`~SD`), and how fast the media moves (`^PR`). All three are
+optional, and **omitted entirely when the station has not set them**, so a bench
+that has never configured any of this keeps printing exactly as its printer is
+set today.
+
+```json
+{
+  "printer": {
+    "media": "direct",
+    "darkness": 24,
+    "speed": 3
+  }
+}
+```
+
+They are sent with every label rather than left on the printer because a
+printer's stored settings are invisible to the bench. A station whose darkness
+had drifted low would print pale labels for as long as it took a person to
+notice, and nothing in the tools could see it. Sent per job, print quality is a
+property of the config: swap the printer and the labels come out the same.
+
+`media` is the one that is not a matter of degree. `direct` (`^MTD`) is
+heat-sensitive paper and no ribbon; `transfer` (`^MTT`) melts a ribbon onto
+plain stock. Getting it wrong is not subtle — thermal-transfer mode on direct
+thermal media puts a ribbon between the head and the paper, which insulates it,
+and every label comes out **uniformly pale**. If that is the symptom, this is
+the first thing to check, ahead of any amount of darkness.
+
+Darkness is `~SD`, not `^MD`, because `^MD` adjusts *relative* to whatever the
+printer is already set to and so inherits the very drift it is meant to remove.
+Out-of-range values are clamped rather than rejected: a fat-fingered `300` in a
+station file should still print labels. A bad `media` or a non-numeric darkness
+is ignored for the same reason — a pale label is much easier to notice than a
+bench that has stopped.
+
+Reach for **speed before darkness** when print is weak. Slowing the printer
+darkens the result just as effectively and is considerably kinder to the head.
+
+### Choosing the darkness
+
+Don't guess one value at a time. Print the ladder:
+
+```bash
+.venv/bin/python -m bench_core.qa_label --ladder \
+    -o ladder.zpl bench-core/tests/label-records/speaker.json
+```
+
+That is the same real label seven times, at darkness 12 through 30, each one
+printing its own setting where the mode normally goes. Send it to the printer,
+then pick **the darkest rung whose barcode still scans** and put that number in
+the station file.
+
+It prints the real face rather than a test pattern on purpose, because both
+failure directions end in an unscannable barcode: too light and the bars are too
+faint to read, too dark and they bleed into each other. The only way to judge
+that is with the actual barcode carrying an actual serial — and the speaker
+record is the one worth testing, since its long serial forces the narrowest
+module.
+
+To try a single setting without editing the station file, the same flags work on
+an ordinary dump: `--media`, `--darkness`, `--speed`.
+
 ### A note on hyphens in the preview
 
 Hostnames render in Labelary with conspicuously wide gaps around their hyphens —

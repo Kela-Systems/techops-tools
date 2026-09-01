@@ -609,6 +609,69 @@ def test_a_junk_port_falls_back_to_9100(tmp_path):
     assert printer_settings(tmp_path).port == 9100
 
 
+# ── print quality from the station file ──────────────────────────────────────
+
+def test_print_quality_is_read_from_the_station_file(tmp_path):
+    (tmp_path / ".bench-station.json").write_text(json.dumps(
+        {"printer": {"media": "direct", "darkness": 24, "speed": 3}}),
+        encoding="utf-8")
+    settings = printer_settings(tmp_path)
+    assert settings.quality() == {"media": "direct", "darkness": 24,
+                                  "speed": 3}
+
+
+def test_a_station_that_configures_no_quality_asks_for_none(tmp_path):
+    """An empty dict, not zeroes — the difference between "leave the printer
+    alone" and "print at darkness 0", which is the lightest setting there is."""
+    assert printer_settings(tmp_path).quality() == {}
+
+
+def test_darkness_zero_survives_into_the_quality(tmp_path):
+    (tmp_path / ".bench-station.json").write_text(json.dumps(
+        {"printer": {"darkness": 0}}), encoding="utf-8")
+    assert printer_settings(tmp_path).quality() == {"darkness": 0}
+
+
+@pytest.mark.parametrize("block", [{"darkness": "dark"}, {"speed": ""},
+                                   {"media": "thermal"}, {"darkness": None}])
+def test_a_typo_in_the_quality_block_leaves_the_printer_alone(tmp_path, block):
+    """A pale label is a great deal easier to notice than a bench that has
+    stopped, so a bad value here degrades to the printer's own settings rather
+    than raising on the way to a print."""
+    (tmp_path / ".bench-station.json").write_text(json.dumps(
+        {"printer": block}), encoding="utf-8")
+    assert printer_settings(tmp_path).quality() == {}
+
+
+def test_the_environment_overrides_the_quality_too(tmp_path, monkeypatch):
+    (tmp_path / ".bench-station.json").write_text(json.dumps(
+        {"printer": {"darkness": 10}}), encoding="utf-8")
+    monkeypatch.setenv("BENCH_PRINTER_DARKNESS", "27")
+    monkeypatch.setenv("BENCH_PRINTER_MEDIA", "TRANSFER")
+    settings = printer_settings(tmp_path)
+    assert settings.darkness == 27
+    assert settings.media == "transfer"       # case-folded, not rejected
+
+
+def test_the_configured_quality_reaches_the_printed_label(tmp_path):
+    """The wiring, end to end: a station file with a darkness in it has to come
+    out as a `~SD` in front of the ZPL that gets sent."""
+    p = printer(tmp_path, media="direct", darkness=26, speed=2)
+    entry = record()
+    p.print_run(entry)
+    assert entry["label"]["printed"] is True
+    written = Path(p.settings.sink).read_text(encoding="ascii")
+    assert written.split("^XA", 1)[0].strip().endswith("^PR2")
+    assert "^MTD" in written and "~SD26" in written
+
+
+def test_an_unconfigured_station_still_prints_exactly_as_before(tmp_path):
+    p = printer(tmp_path)
+    p.print_run(record())
+    written = Path(p.settings.sink).read_text(encoding="ascii")
+    assert written.startswith("^XA")
+
+
 # ── the transports themselves ────────────────────────────────────────────────
 
 def test_the_tcp_transport_sends_the_raw_zpl():

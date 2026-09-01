@@ -757,11 +757,62 @@ _FACE_RENDERERS = {
 }
 
 
+# ── print quality ────────────────────────────────────────────────────────────
+#
+# How hard the head burns, how fast the media moves, and whether there is a
+# ribbon in the way. None of it changes the layout, and all of it changes
+# whether the label is readable.
+#
+# These are sent with the label rather than left to the printer because a
+# printer's stored settings are invisible: a station whose darkness had drifted
+# low printed pale labels for as long as it took someone to notice, and nothing
+# in the bench could see that it had. Sent per job, print quality is a property
+# of the config, and a swapped printer behaves like the one it replaced.
+#
+# All three are optional and omitted when unset, so a station that has never
+# configured them keeps whatever its printer does today.
+
+MEDIA_COMMAND = {"direct": "^MTD", "transfer": "^MTT"}
+DARKNESS_RANGE = (0, 30)
+SPEED_RANGE = (2, 6)          # inches/sec, per the ZD421 spec sheet
+
+
+def _quality(media: str = "", darkness: Optional[int] = None,
+             speed: Optional[int] = None) -> list[str]:
+    """The print-quality preamble, in the order the printer wants it."""
+    out = []
+    if media:
+        # ^MT tells the printer whether a ribbon is in the path. Getting it
+        # wrong is not a subtle difference: thermal-transfer mode on direct
+        # thermal stock puts a ribbon between the head and heat-sensitive
+        # paper, which insulates it, and every label comes out uniformly pale.
+        out.append(MEDIA_COMMAND[media])
+    if darkness is not None:
+        # ~SD, not ^MD. ^MD is an adjustment RELATIVE to whatever the printer
+        # is already set to, so it inherits the drift it is meant to remove;
+        # ~SD is absolute and makes the value in the config the value that
+        # prints. It sets the running darkness only — saving to flash needs
+        # ^JUS, which is deliberately not sent.
+        out.append(f"~SD{_clamp(darkness, *DARKNESS_RANGE)}")
+    if speed is not None:
+        # Slower is darker, and gentler on the head than the equivalent
+        # darkness increase — worth reaching for first when print is pale.
+        out.append(f"^PR{_clamp(speed, *SPEED_RANGE)}")
+    return out
+
+
+def _clamp(value: int, low: int, high: int) -> int:
+    return max(low, min(high, int(value)))
+
+
 # ── rendering ────────────────────────────────────────────────────────────────
 
-def render_content(c: LabelContent) -> str:
+def render_content(c: LabelContent, *, media: str = "",
+                   darkness: Optional[int] = None,
+                   speed: Optional[int] = None) -> str:
     """`c` as one ZPL label."""
     parts = [
+        *_quality(media, darkness, speed),
         "^XA",
         "^CI28",                                  # UTF-8 in, though _ascii folds
         # `^LH0,0` keeps the home position at the label corner, so the margins
@@ -781,9 +832,36 @@ def render_content(c: LabelContent) -> str:
     return "\n".join(p for p in parts if p) + "\n"
 
 
-def render_zpl(entry: dict) -> str:
+def render_zpl(entry: dict, **quality) -> str:
     """One run record as the ZPL for its QA label."""
-    return render_content(label_content(entry))
+    return render_content(label_content(entry), **quality)
+
+
+def render_darkness_ladder(entry: dict, *, media: str = "",
+                           speed: Optional[int] = None,
+                           steps: tuple[int, ...] = (12, 16, 19, 22, 25, 28, 30),
+                           ) -> str:
+    """`entry`'s real label, once per darkness in `steps`.
+
+    The way the right darkness gets chosen: print the strip, find the darkest
+    label whose barcode still scans, and put that number in the station config.
+    The alternative is guessing one value at a time against a printer that
+    takes a roll of labels to answer.
+
+    It prints the REAL face rather than a test pattern on purpose. Too little
+    darkness and the bars are too faint to read; too much and they bleed into
+    each other and stop scanning just as completely, so the thing being judged
+    has to be the actual barcode with the actual serial. The setting replaces
+    the mode on the header, which is the one place on a full label with room
+    for it.
+    """
+    out = []
+    for darkness in steps:
+        content = label_content(entry)
+        content.mode = f"D{darkness}" + (f" S{speed}" if speed else "")
+        out.append(render_content(content, media=media, darkness=darkness,
+                                  speed=speed))
+    return "".join(out)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -801,9 +879,38 @@ def main(argv: Optional[list[str]] = None) -> int:
     same reason: PowerShell 5.1's `>` produces UTF-16, and a printer fed that
     prints a page of nothing recognisable. ZPL is ASCII by construction here
     (see `_ascii`), so the file this writes is the bytes the printer wants.
+
+    `--ladder` turns one record into a strip of the same label at a range of
+    darkness settings, for choosing the value that goes in the station config.
+    `--media`, `--darkness` and `--speed` set the print quality of an ordinary
+    dump, for trying a setting before committing it.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     out_path = ""
+    ladder = False
+    quality: dict = {}
+    if "--ladder" in args:
+        args.remove("--ladder")
+        ladder = True
+    for flag, key, cast in (("--media", "media", str),
+                            ("--darkness", "darkness", int),
+                            ("--speed", "speed", int)):
+        if flag not in args:
+            continue
+        i = args.index(flag)
+        if i + 1 >= len(args):
+            print(f"{flag} needs a value", file=sys.stderr)
+            return 2
+        try:
+            quality[key] = cast(args[i + 1])
+        except ValueError:
+            print(f"{flag}: {args[i + 1]!r} is not a number", file=sys.stderr)
+            return 2
+        del args[i:i + 2]
+    if quality.get("media", "") and quality["media"] not in MEDIA_COMMAND:
+        print(f"--media must be one of {', '.join(MEDIA_COMMAND)}",
+              file=sys.stderr)
+        return 2
     if "-o" in args:
         i = args.index("-o")
         if i + 1 >= len(args):
@@ -812,9 +919,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         out_path = args[i + 1]
         del args[i:i + 2]
     if not args:
-        print("usage: python -m bench_core.qa_label [-o FILE] "
+        print("usage: python -m bench_core.qa_label [-o FILE] [--ladder] "
+              "[--media direct|transfer] [--darkness 0-30] [--speed 2-6] "
               "<run-record.json>...", file=sys.stderr)
         return 2
+    if ladder:
+        quality.pop("darkness", None)       # the ladder is what sets it
     paths: list[str] = []
     for arg in args:
         matched = sorted(glob.glob(arg))
@@ -828,12 +938,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     chunks = []
     for path in paths:
         with open(path, "r", encoding="utf-8") as handle:
-            chunks.append(render_zpl(json.load(handle)))
+            record = json.load(handle)
+        chunks.append(render_darkness_ladder(record, **quality) if ladder
+                      else render_zpl(record, **quality))
     zpl = "".join(chunks)
     if out_path:
         with open(out_path, "w", encoding="ascii", newline="\n") as handle:
             handle.write(zpl)
-        print(f"{len(paths)} label(s) -> {out_path}", file=sys.stderr)
+        print(f"{zpl.count('^XA')} label(s) -> {out_path}", file=sys.stderr)
     else:
         sys.stdout.write(zpl)
     return 0

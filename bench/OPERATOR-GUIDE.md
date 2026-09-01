@@ -370,6 +370,17 @@ you can fix yourself and carry on. Anything else, tell an engineer.
 won't jam, but it will print labels that are cut off at the edge or lost in white space —
 either way not something to stick on a unit that's shipping.
 
+**Labels come out faint, grey or washed out**
+If the whole label is evenly pale, the usual cause is the wrong kind of roll rather than
+a worn-out printer. Scratch a blank label hard with a fingernail: if it leaves a dark
+grey mark it's *direct thermal* stock and the printer must have **no ribbon** in it. A
+ribbon sitting on top of direct thermal paper insulates it from the heat, and every label
+comes out weak. If the scratch leaves no mark, the roll needs a ribbon — check the ribbon
+isn't near its end and is loaded the right way round.
+
+If the roll and ribbon are right and it's still faint, tell an engineer: darkness and
+speed are bench settings, not printer knobs, and there's a test strip they can run.
+
 **Labels come out as pages of code instead of labels**
 The printer is installed with the wrong driver — it's printing the instructions rather than
 following them. Stop and tell an engineer; it's a one-time setup fix, not something that

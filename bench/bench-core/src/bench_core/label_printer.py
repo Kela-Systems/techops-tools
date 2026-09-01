@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Optional
 
 from bench_core import tcp_port_open
-from bench_core.qa_label import label_content, render_content
+from bench_core.qa_label import MEDIA_COMMAND, label_content, render_content
 
 STATION_FILENAME = ".bench-station.json"
 DEFAULT_PORT = 9100                  # the raw-ZPL port on every network Zebra
@@ -203,6 +203,24 @@ class PrinterSettings:
     port: int = DEFAULT_PORT
     queue: str = ""
     sink: str = ""
+    # Print quality. Unset means "leave the printer as it is", which is what
+    # every station did before these existed — so an unconfigured bench keeps
+    # printing exactly as it does today.
+    media: str = ""               # "direct" | "transfer"
+    darkness: Optional[int] = None
+    speed: Optional[int] = None
+
+    def quality(self) -> dict:
+        """The print-quality keywords for `render_content`, omitting anything
+        this station has not set."""
+        out: dict = {}
+        if self.media:
+            out["media"] = self.media
+        if self.darkness is not None:
+            out["darkness"] = self.darkness
+        if self.speed is not None:
+            out["speed"] = self.speed
+        return out
 
 
 def printer_settings(bench_root: Path) -> PrinterSettings:
@@ -228,10 +246,34 @@ def printer_settings(bench_root: Path) -> PrinterSettings:
     port = DEFAULT_PORT
     with contextlib.suppress(TypeError, ValueError):
         port = int(setting("BENCH_PRINTER_PORT", "port") or DEFAULT_PORT)
+
+    def number(env: str, key: str) -> Optional[int]:
+        """An optional integer setting. A value that is absent and a value that
+        is nonsense both mean "leave the printer alone" — a typo in the station
+        file must not stop labels printing, and a pale label is a great deal
+        easier to notice than a bench that has stopped.
+
+        Deliberately not built on `setting()`: that folds every falsy value to
+        "", and 0 is a real darkness — the lightest one. Read through it and a
+        station asking for the lightest print silently gets the printer's own
+        setting instead.
+        """
+        raw = os.environ.get(env) or block.get(key)
+        if raw is None or raw == "":
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    media = setting("BENCH_PRINTER_MEDIA", "media").lower()
     return PrinterSettings(host=setting("BENCH_PRINTER_HOST", "host"),
                            port=port,
                            queue=setting("BENCH_PRINTER_QUEUE", "queue"),
-                           sink=setting("BENCH_PRINTER_SINK", "sink"))
+                           sink=setting("BENCH_PRINTER_SINK", "sink"),
+                           media=media if media in MEDIA_COMMAND else "",
+                           darkness=number("BENCH_PRINTER_DARKNESS", "darkness"),
+                           speed=number("BENCH_PRINTER_SPEED", "speed"))
 
 
 # ── transports ───────────────────────────────────────────────────────────────
@@ -481,7 +523,7 @@ class LabelPrinter:
             return None
         try:
             content = label_content(entry)
-            zpl = render_content(content)
+            zpl = render_content(content, **self.settings.quality())
         except Exception as e:  # noqa: BLE001 — a bad face must not fail a run
             self.log.exception("Could not build the QA label.")
             block = self._block(printed=False, error=f"label not built: {e}")

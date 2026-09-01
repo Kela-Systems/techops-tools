@@ -37,6 +37,7 @@ from bench_core.qa_label import (
     barcode_y,
     label_content,
     main,
+    render_darkness_ladder,
     pick_face,
     render_zpl,
 )
@@ -567,6 +568,89 @@ def test_the_label_declares_the_58x29_stock(name):
     assert f"^PW{LABEL_W}" in zpl and f"^LL{LABEL_H}" in zpl
 
 
+# ── print quality ────────────────────────────────────────────────────────────
+
+def test_a_station_that_sets_nothing_sends_nothing():
+    """The default has to be "leave the printer alone". Every bench printing
+    today has its quality set on the printer, and a default that overrode that
+    would change what they all produce the moment this shipped."""
+    zpl = render_zpl(record("tsw-static"))
+    assert zpl.startswith("^XA")
+    for command in ("^MT", "~SD", "^PR"):
+        assert command not in zpl
+
+
+def test_the_quality_commands_come_before_the_label():
+    """`~SD` is a control command: inside a format it is not part of it. All
+    three have to land before `^XA` to apply to the label that follows."""
+    zpl = render_zpl(record("tsw-static"), media="direct", darkness=22, speed=3)
+    head = zpl.split("^XA", 1)[0]
+    assert "^MTD" in head and "~SD22" in head and "^PR3" in head
+
+
+def test_thermal_transfer_is_a_different_command():
+    assert "^MTT" in render_zpl(record("tsw-static"), media="transfer")
+
+
+@pytest.mark.parametrize("given,expected", [
+    (0, "~SD0"), (30, "~SD30"),
+    (99, "~SD30"),          # clamped, not passed through
+    (-5, "~SD0"),
+])
+def test_darkness_is_clamped_to_what_the_printer_accepts(given, expected):
+    """A value out of range is a typo in a config file, and ZPL's response to
+    one is undefined. Clamping keeps a fat-fingered 300 printing labels."""
+    assert expected in render_zpl(record("tsw-static"), darkness=given)
+
+
+@pytest.mark.parametrize("given,expected", [(1, "^PR2"), (9, "^PR6")])
+def test_speed_is_clamped_to_what_the_printer_accepts(given, expected):
+    assert expected in render_zpl(record("tsw-static"), speed=given)
+
+
+def test_darkness_zero_is_a_setting_not_an_absence():
+    """0 is the lightest darkness, and `if darkness:` would silently drop it."""
+    assert "~SD0" in render_zpl(record("tsw-static"), darkness=0)
+
+
+def test_quality_does_not_disturb_the_layout():
+    entry = record("magos-apu")
+    plain = render_zpl(entry)
+    tuned = render_zpl(entry, media="direct", darkness=25, speed=2)
+    assert tuned.split("^XA", 1)[1] == plain.split("^XA", 1)[1]
+
+
+# ── the darkness ladder ──────────────────────────────────────────────────────
+
+def test_the_ladder_prints_one_label_per_step():
+    zpl = render_darkness_ladder(record("tsw-static"), steps=(10, 20, 30))
+    assert zpl.count("^XA") == 3
+    assert zpl.count("^XZ") == 3
+    for step in (10, 20, 30):
+        assert f"~SD{step}" in zpl
+
+
+def test_every_rung_says_which_setting_it_is():
+    """A strip of labels that all look slightly different and none of which
+    says what it was printed at is not a test, it is a pile of labels."""
+    zpl = render_darkness_ladder(record("tsw-static"), steps=(17,), speed=4)
+    assert "^FDD17 S4^FS" in zpl
+
+
+def test_the_ladder_prints_the_real_barcode():
+    """Too dark stops a barcode scanning just as surely as too light — the bars
+    bleed together — so the thing being judged has to be the real one."""
+    zpl = render_darkness_ladder(record("speaker"), steps=(20,))
+    assert "^BCN," in zpl
+    assert record("speaker")["serial"] in zpl
+
+
+def test_the_ladder_carries_the_media_setting_through():
+    zpl = render_darkness_ladder(record("tsw-static"), media="direct",
+                                 steps=(20,))
+    assert "^MTD" in zpl
+
+
 # ── missing fields degrade instead of printing a heading over a blank ─────────
 
 def test_an_empty_value_prints_no_heading_at_all():
@@ -640,3 +724,63 @@ def test_o_without_a_filename_is_refused(capsys):
 def test_no_arguments_explains_itself(capsys):
     assert main([]) == 2
     assert "usage:" in capsys.readouterr().err
+
+
+def test_the_cli_can_set_the_quality_for_a_one_off(capsys):
+    """For trying a setting against the printer before writing it into the
+    station file."""
+    assert main(["--darkness", "24", "--speed", "3", "--media", "direct",
+                 str(RECORDS / "tsw-static.json")]) == 0
+    out = capsys.readouterr().out
+    assert "~SD24" in out and "^PR3" in out and "^MTD" in out
+
+
+def test_the_cli_prints_a_ladder(capsys):
+    assert main(["--ladder", str(RECORDS / "tsw-static.json")]) == 0
+    out = capsys.readouterr().out
+    assert out.count("^XA") > 1
+    assert len({line for line in out.splitlines()
+                if line.startswith("~SD")}) == out.count("^XA")
+
+
+def test_the_ladder_reports_labels_not_files(tmp_path, capsys):
+    """One record in, seven labels out — a count of files would tell the
+    operator to expect one label and leave six on the roll."""
+    out = tmp_path / "ladder.zpl"
+    assert main(["--ladder", "-o", str(out),
+                 str(RECORDS / "tsw-static.json")]) == 0
+    written = out.read_text(encoding="ascii").count("^XA")
+    assert f"{written} label(s)" in capsys.readouterr().err
+    assert written > 1
+
+
+@pytest.mark.parametrize("flag", ["--darkness", "--speed", "--media"])
+def test_a_quality_flag_without_a_value_is_refused(capsys, flag):
+    assert main([flag]) == 2
+    assert "needs a value" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag,complaint", [("--darkness", "not a number"),
+                                            ("--speed", "not a number"),
+                                            ("--media", "must be one of")])
+def test_a_quality_flag_that_swallows_the_filename_says_so(capsys, flag,
+                                                           complaint):
+    """`--darkness record.json` takes the record as the value. That is how flag
+    parsing works, but the operator typing it needs to be told, not handed an
+    empty dump."""
+    assert main([flag, str(RECORDS / "tsw-static.json")]) == 2
+    err = capsys.readouterr().err
+    assert complaint in err
+    assert "tsw-static.json" in err or "must be one of" in err
+
+
+def test_a_darkness_that_is_not_a_number_is_refused(capsys):
+    assert main(["--darkness", "dark", str(RECORDS / "tsw-static.json")]) == 2
+    assert "not a number" in capsys.readouterr().err
+
+
+def test_an_unknown_media_type_is_refused(capsys):
+    """`^MT` takes exactly two values and the wrong one is the difference
+    between a readable label and a pale one, so a typo stops here."""
+    assert main(["--media", "thermal", str(RECORDS / "tsw-static.json")]) == 2
+    assert "--media must be one of" in capsys.readouterr().err
