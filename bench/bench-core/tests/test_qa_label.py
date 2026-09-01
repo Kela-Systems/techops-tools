@@ -21,15 +21,20 @@ from pathlib import Path
 import pytest
 
 from bench_core.qa_label import (
+    BAR_EDGE,
     BAR_H,
-    BAR_TEXT_H,
+    BAR_TEXT_DROP,
     FACES,
     FOOT_Y,
     LABEL_H,
     LABEL_W,
     MARGIN,
+    MARGIN_Y,
     MAX_HEAD_DOTS,
+    barcode_length,
     barcode_module_width,
+    barcode_x,
+    barcode_y,
     label_content,
     main,
     pick_face,
@@ -481,10 +486,29 @@ def test_no_field_falls_off_the_media(name):
 def test_nothing_is_printed_against_a_physical_edge(name):
     """The other half of the first hardware report: the header band's edge came
     back shaved. Registration play is normal, so the design keeps clear of all
-    four edges rather than trusting the media to be where it should be."""
-    for x, y in _placed(render_zpl(record(name))):
-        assert x >= MARGIN, f"{name}: field at x={x} is on the edge"
-        assert y >= MARGIN, f"{name}: field at y={y} is on the edge"
+    four edges rather than trusting the media to be where it should be.
+
+    Across the head the clearance is MARGIN for the body and the smaller
+    BAR_EDGE for the barcode, which is the one element that needs the width.
+    """
+    for line in render_zpl(record(name)).splitlines():
+        floor = BAR_EDGE if "^BC" in line else MARGIN
+        for x, y in _placed(line):
+            assert x >= floor, f"{name}: field at x={x} is on the edge"
+            assert y >= MARGIN_Y, f"{name}: field at y={y} is on the edge"
+
+
+@pytest.mark.parametrize("name", ALL_RECORDS)
+def test_the_barcode_is_centred_on_the_label(name):
+    """The module width is chosen greedily, so the barcode's width moves with
+    the serial. Left-aligned, that showed up as an uneven right-hand gap and
+    made the whole label look crooked — and on media that is already sitting a
+    little off under the head, the slack is worth splitting evenly."""
+    serial = record(name)["serial"]
+    left = barcode_x(serial)
+    right = LABEL_W - left - barcode_length(serial)
+    assert abs(left - right) <= 1, f"{name}: {left} left against {right} right"
+    assert left >= BAR_EDGE
 
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
@@ -499,11 +523,23 @@ def test_the_body_never_starts_under_the_barcode(name):
                 f"{name}: body field at y={y} is under the barcode"
 
 
-def test_the_barcode_and_its_text_clear_the_bottom_edge():
-    """The interpretation line is drawn by the printer below the bars, so it is
-    the last thing on the label and the easiest to lose off the end — which is
-    exactly what the first render of this stock did."""
-    assert FOOT_Y + BAR_H + BAR_TEXT_H <= LABEL_H - MARGIN
+@pytest.mark.parametrize("name", ALL_RECORDS)
+def test_every_label_ends_the_same_distance_from_the_bottom(name):
+    """`^BC` sizes its interpretation line from the module width, so a face
+    whose serial earned a wider module used to finish lower down the label than
+    one that did not — the same print sitting at two heights. Anchoring the
+    barcode to the bottom edge is what makes the margin the same on all seven,
+    and equal to the top, which is what stops the label reading as offset when
+    the media is not sitting square."""
+    serial = record(name)["serial"]
+    bottom = barcode_y(serial) + BAR_H + BAR_TEXT_DROP[barcode_module_width(serial)]
+    assert bottom == LABEL_H - MARGIN_Y
+
+
+def test_the_body_clears_the_barcode_however_wide_its_module():
+    """FOOT_Y has to be the highest the bars can ever start, not where they
+    happen to start for one serial."""
+    assert FOOT_Y == min(barcode_y("X" * n) for n in range(4, 30))
 
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
@@ -512,7 +548,7 @@ def test_the_barcode_fits_the_stock(name):
     barcode still looks like a barcode."""
     serial = record(name)["serial"]
     modules = (len(serial) + 3) * 11 + 2
-    assert modules * barcode_module_width(serial) <= LABEL_W - 2 * MARGIN
+    assert modules * barcode_module_width(serial) <= LABEL_W - 2 * BAR_EDGE
 
 
 def test_a_long_serial_narrows_the_barcode_instead_of_overflowing():

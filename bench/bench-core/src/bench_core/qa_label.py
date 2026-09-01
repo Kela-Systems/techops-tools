@@ -76,21 +76,37 @@ DPI = 203
 LABEL_W = 464         # 58 mm across the printhead
 LABEL_H = 232         # 29 mm along the feed
 
-# Nothing is drawn against a physical edge. The first hardware run came back
-# with the header band's edge shaved off, which is ordinary media registration
-# play rather than a bug — so the design keeps clear of all four edges.
-MARGIN = 8
+# Nothing is drawn against a physical edge, and the two axes get different
+# clearances because they go wrong in different ways. Small labels do not sit
+# perfectly straight on the roll, so the media wanders from side to side under
+# the head and the across-head margin has to absorb it. Along the feed the gap
+# sensor keeps registration tight, so less is needed there — which is just as
+# well, because the vertical budget has none to give.
+MARGIN = 14           # across the head, where the media actually wanders
+MARGIN_Y = 10         # along the feed
 # The printhead itself, per Zebra's ZD421 spec sheet. Nothing may exceed it and
 # no stock can raise it.
 MAX_HEAD_DOTS = 832
 
-HEAD_H = 28           # the inverted header band
-# Everything below FOOT_Y belongs to the barcode: BAR_H of bars, then the
-# human-readable line under them. Both have to fit above LABEL_H or the serial
-# is clipped off the bottom of the label.
-FOOT_Y = 168
-BAR_H = 30
-BAR_TEXT_H = 16
+HEAD_H = 26           # the inverted header band
+BAR_H = 28
+# How far below the bars the human-readable line reaches, per `^BY` module
+# width. Measured off renders, because none of it is controllable from here:
+# `^BC` draws that line itself and sizes it from the MODULE WIDTH. `^CF` has no
+# effect on it at all — 10, 16 and 30 render identically — so the line grows
+# whenever a shorter serial earns a wider module, and the label's bottom margin
+# moves with the serial unless something accounts for it. `barcode_y` is that
+# something.
+BAR_TEXT_DROP = {2: 20, 3: 27}
+# The barcode is the one element that needs more width than the body gets. The
+# longest real serial encodes to 444 dots even at the narrowest module the
+# scanner will take, which leaves exactly this much at each end — so it sets
+# the floor, and everything else keeps MARGIN.
+BAR_EDGE = 10
+# Everything below this belongs to the barcode. It is the HIGHEST the bars can
+# start — the widest module, hence the tallest interpretation line — so a body
+# that clears it clears the barcode for every serial.
+FOOT_Y = LABEL_H - MARGIN_Y - BAR_H - max(BAR_TEXT_DROP.values())
 # Width available to the body — the whole label now that no QR column has to be
 # kept clear. The APU face right-aligns its radar addresses to the end of this.
 BODY_W = LABEL_W - 2 * MARGIN
@@ -100,19 +116,19 @@ BODY_W = LABEL_W - 2 * MARGIN
 # header, a hero and two rows above the barcode and nothing else. Every face
 # uses these, so a change here moves all seven together and the geometry tests
 # check the result against the media rather than against these numbers.
-HERO_KEY_Y = 38
-HERO_Y = 52
-ROW1_Y = 90           # the first row under an FS_HERO hero
-ROW1_BIG_Y = 104      # ...and under an FS_HERO_BIG one, which reaches lower
-ROW2_Y = 128
+HERO_KEY_Y = 40
+HERO_Y = 53
+ROW1_Y = 89           # the first row under an FS_HERO hero
+ROW1_BIG_Y = 99       # ...and under an FS_HERO_BIG one, which reaches lower
+ROW2_Y = 127
 
 FS_HEAD = 20
 FS_MODE = 15          # the header's right side, smaller than the family name
-FS_KEY = 13           # the small grey-in-the-mockup field labels
-FS_VAL = 20
+FS_KEY = 12           # the small grey-in-the-mockup field labels
+FS_VAL = 19
 FS_SUB = 22
-FS_HERO = 34          # a hero with two rows under it
-FS_HERO_BIG = 44      # a hero with one row, or none
+FS_HERO = 32          # a hero with two rows under it
+FS_HERO_BIG = 42      # a hero with one row, or none
 
 FACES = ("hostname-imei", "hostname-gateway", "shared-ip", "unit-ip",
          "dhcp-mac", "channel", "pairing")
@@ -244,10 +260,15 @@ def barcode_module_width(value: str) -> int:
     there. That is the practical lower limit for a handheld reader rather than a
     comfortable margin, so a serial materially longer than the speaker's would
     not so much overflow as quietly stop scanning.
+
+    Three is the ceiling even where a very short serial would allow four. A
+    wider module is no help to a scanner that already reads three comfortably,
+    and it drags the interpretation line taller with it (see `BAR_TEXT_DROP`)
+    until the barcode no longer fits under the body.
     """
     modules = barcode_modules(value)
-    usable = LABEL_W - 2 * MARGIN
-    for width in (4, 3, 2):
+    usable = LABEL_W - 2 * BAR_EDGE
+    for width in (3, 2):
         if modules * width <= usable:
             return width
     return 2
@@ -262,6 +283,36 @@ def barcode_modules(value: str) -> int:
     return (len(value) + 3) * 11 + 2
 
 
+def barcode_length(value: str) -> int:
+    """How wide the barcode will come out, in dots."""
+    return barcode_modules(value) * barcode_module_width(value)
+
+
+def barcode_x(value: str) -> int:
+    """Where the barcode starts, so that it sits CENTRED on the label.
+
+    Centred rather than aligned to MARGIN with the body, because the module
+    width is chosen greedily and so the barcode's width jumps around with the
+    length of the serial — left-aligned, a short serial left a visibly heavier
+    gap on the right and the whole label read as crooked. Centring also splits
+    the slack evenly, which is what the media needs when it is sitting a little
+    off under the head.
+    """
+    return max(BAR_EDGE, (LABEL_W - barcode_length(value)) // 2)
+
+
+def barcode_y(value: str) -> int:
+    """Where the bars start, so the label ends MARGIN_Y clear of the bottom.
+
+    Anchored to the bottom rather than to `FOOT_Y`, because the interpretation
+    line's height is set by the module width and so changes with the serial
+    (see `BAR_TEXT_DROP`). Anchoring the top instead is what left a 3-dot gap
+    under the wide-module faces and a 10-dot one under the speaker — the same
+    print sitting at two different heights depending on whose label it was.
+    """
+    return LABEL_H - MARGIN_Y - BAR_H - BAR_TEXT_DROP[barcode_module_width(value)]
+
+
 def _barcode(value: str) -> str:
     """Code 128 of the serial with its human-readable line, along the bottom.
     The DS2278 already on the bench reads it in the warehouse.
@@ -272,11 +323,12 @@ def _barcode(value: str) -> str:
     body = _zpl(value)
     if not body:
         return ""
-    # ^CF sets the font of the interpretation line, which ^BC draws itself.
-    # Left at the printer default it comes out in a bitmapped font at whatever
-    # size the last job left behind.
-    return (f"^CF0,{BAR_TEXT_H}"
-            f"{_fo(MARGIN, FOOT_Y)}"
+    # ^CF is kept even though it demonstrably does nothing to the
+    # interpretation line here: ^CF persists across labels in a printer
+    # session, and this costs one command to not depend on what the last job
+    # left behind.
+    return (f"^CF0,16"
+            f"{_fo(barcode_x(body), barcode_y(body))}"
             f"^BY{barcode_module_width(body)},3,{BAR_H}"
             f"^BCN,{BAR_H},Y,N,N^FD{body}^FS")
 
@@ -718,9 +770,9 @@ def render_content(c: LabelContent) -> str:
         f"^PW{LABEL_W}", f"^LL{LABEL_H}", "^LH0,0",
         # Inset rather than bled to the edge: the first hardware run came back
         # with the top of this band shaved off by registration play.
-        _box(MARGIN, MARGIN, BODY_W, HEAD_H),
-        _text(MARGIN + 5, MARGIN + 4, FS_HEAD, c.family, reverse=True),
-        _text(MARGIN, MARGIN + 7, FS_MODE, c.mode, reverse=True,
+        _box(MARGIN, MARGIN_Y, BODY_W, HEAD_H),
+        _text(MARGIN + 5, MARGIN_Y + 3, FS_HEAD, c.family, reverse=True),
+        _text(MARGIN, MARGIN_Y + 6, FS_MODE, c.mode, reverse=True,
               width=BODY_W - 5, align="R"),
         *_FACE_RENDERERS[c.face](c),
         _barcode(c.serial),

@@ -92,10 +92,51 @@ scattered through the faces, because there is no slack to absorb a face that
 drifts. The tests assert nothing runs off the media, because ZPL clips silently
 rather than scaling, and a clipped barcode still looks like a barcode.
 
-Nothing is drawn against a physical edge. The first hardware run also came back
-with the header band's edge shaved off, which is ordinary media registration
-play rather than a bug, so `MARGIN` keeps a millimetre clear all round and the
-header band is inset rather than bled.
+### Staying centred on media that is not
+
+Nothing is drawn against a physical edge, and every face is printed with the
+**same clearance on all four sides** — 14 dots across the head, 10 along the
+feed. That is not tidiness: small labels do not sit perfectly square on the
+roll, so the media wanders from side to side under the head and any asymmetry
+in the design reads as a crooked print. The two axes differ because they fail
+differently — the gap sensor keeps the feed direction tight, while side-to-side
+is where the wander actually is, and where the vertical budget could least
+afford to give anything up.
+
+Two things had to be handled to get there, both of which look like the design's
+fault and are actually the printer's:
+
+- **The barcode is centred, not left-aligned.** `barcode_module_width` picks the
+  widest module that fits, so the barcode's width jumps with the length of the
+  serial. Left-aligned at `MARGIN`, a short serial left a visibly heavier gap on
+  the right. It is also the one element allowed nearer the edge than `MARGIN`
+  (`BAR_EDGE`, 10 dots): the longest real serial needs 444 of the 464 available
+  and there is nowhere else for it to come from.
+- **The barcode is anchored to the bottom edge, not to `FOOT_Y`.** `^BC` draws
+  its own human-readable line and sizes it from the **module width** — `^CF` has
+  no effect on it whatsoever, which is worth knowing before trying to make it
+  smaller. So the line grows whenever a shorter serial earns a wider module, and
+  with the top anchored the label finished 3 dots from the edge on some faces
+  and 10 on others. `barcode_y` measures back from the bottom instead;
+  `BAR_TEXT_DROP` holds the per-module heights, measured off renders because
+  there is no way to derive them. `FOOT_Y` is then the *highest* the bars can
+  ever start, so a body that clears it clears the barcode for every serial.
+
+Module width is capped at 3 for the same reason: a wider module drags the
+interpretation line taller with it, and a scanner that reads 3 comfortably gains
+nothing from 4.
+
+### A note on hyphens in the preview
+
+Hostnames render in Labelary with conspicuously wide gaps around their hyphens —
+`otd-kela-fob-12` looks like `otd — kela — fob — 12`. Measured, each hyphen takes
+31 dots against a 14-dot average for the other characters in the same string, so
+it is padding rather than a wide glyph, and it is not coming from anything in
+this module: the same string renders identically with and without `^FB`, byte
+for byte. It is the viewer's substitute for Zebra's font 0. **Check a printed
+label before treating it as real** — nothing here has been changed to chase it,
+because the alternatives (a bitmapped font, or an explicit `^A0N` width) both
+look worse on actual hardware.
 
 ### Configuring it
 
