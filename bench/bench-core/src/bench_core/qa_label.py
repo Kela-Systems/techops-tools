@@ -45,6 +45,7 @@ get reviewed without hardware.
 """
 from __future__ import annotations
 
+import glob
 import json
 import sys
 import unicodedata
@@ -688,15 +689,50 @@ def main(argv: Optional[list[str]] = None) -> int:
     The review loop for the faces: paste the output into labelary.com and the
     label renders exactly as the ZD421 will print it, with no printer, no
     device and no bench.
+
+    Wildcards are expanded here rather than left to the shell, because the
+    bench station is Windows and neither cmd nor PowerShell expands one before
+    handing it over — a pattern arrives as a literal filename.
+
+    `-o FILE` writes the ZPL itself instead of relying on a redirect, for the
+    same reason: PowerShell 5.1's `>` produces UTF-16, and a printer fed that
+    prints a page of nothing recognisable. ZPL is ASCII by construction here
+    (see `_ascii`), so the file this writes is the bytes the printer wants.
     """
     args = list(sys.argv[1:] if argv is None else argv)
+    out_path = ""
+    if "-o" in args:
+        i = args.index("-o")
+        if i + 1 >= len(args):
+            print("-o needs a filename", file=sys.stderr)
+            return 2
+        out_path = args[i + 1]
+        del args[i:i + 2]
     if not args:
-        print("usage: python -m bench_core.qa_label <run-record.json>...",
-              file=sys.stderr)
+        print("usage: python -m bench_core.qa_label [-o FILE] "
+              "<run-record.json>...", file=sys.stderr)
         return 2
-    for path in args:
+    paths: list[str] = []
+    for arg in args:
+        matched = sorted(glob.glob(arg))
+        if matched:
+            paths.extend(matched)
+        elif any(ch in arg for ch in "*?["):
+            print(f"{arg}: no files match", file=sys.stderr)
+            return 2
+        else:
+            paths.append(arg)   # not a pattern — let open() name it in the error
+    chunks = []
+    for path in paths:
         with open(path, "r", encoding="utf-8") as handle:
-            sys.stdout.write(render_zpl(json.load(handle)))
+            chunks.append(render_zpl(json.load(handle)))
+    zpl = "".join(chunks)
+    if out_path:
+        with open(out_path, "w", encoding="ascii", newline="\n") as handle:
+            handle.write(zpl)
+        print(f"{len(paths)} label(s) -> {out_path}", file=sys.stderr)
+    else:
+        sys.stdout.write(zpl)
     return 0
 
 

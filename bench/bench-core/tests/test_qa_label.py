@@ -29,6 +29,7 @@ from bench_core.qa_label import (
     QR_X,
     barcode_module_width,
     label_content,
+    main,
     pick_face,
     render_zpl,
 )
@@ -481,3 +482,59 @@ def test_a_record_with_no_device_block_still_renders():
     zpl = render_zpl(entry)
     assert entry["serial"] in zpl
     assert zpl.startswith("^XA")
+
+
+# ── the review CLI ───────────────────────────────────────────────────────────
+# It runs on the bench station, which is Windows, where the shell does NOT
+# expand a wildcard and `>` does not write ASCII. Both of those are the CLI's
+# problem to solve, so both are asserted here.
+
+def test_a_wildcard_is_expanded_by_the_tool_not_the_shell(capsys):
+    """cmd and PowerShell hand a pattern over as a literal filename, so a glob
+    that works on a mac would fail on the only machine that has the printer."""
+    assert main([str(RECORDS / "*.json")]) == 0
+    assert capsys.readouterr().out.count("^XA") == len(ALL_RECORDS)
+
+
+def test_the_records_are_dumped_in_a_stable_order(capsys):
+    """Two runs have to be diffable — the review loop is a visual comparison
+    against the previous output."""
+    main([str(RECORDS / "*.json")])
+    first = capsys.readouterr().out
+    main([str(RECORDS / "*.json")])
+    assert capsys.readouterr().out == first
+
+
+def test_a_pattern_matching_nothing_says_so(capsys):
+    """Rather than reporting a file literally named `*.json` as missing."""
+    assert main([str(RECORDS / "*.xml")]) == 2
+    assert "no files match" in capsys.readouterr().err
+
+
+def test_a_named_file_that_is_missing_still_raises(tmp_path):
+    """Only patterns are the CLI's business; a plain name it cannot find should
+    fail the way it always has, naming the file."""
+    with pytest.raises(FileNotFoundError):
+        main([str(tmp_path / "nope.json")])
+
+
+def test_the_written_file_is_the_bytes_the_printer_wants(tmp_path):
+    """`-o` exists because PowerShell 5.1's `>` writes UTF-16 with a BOM, and a
+    ZD421 fed that prints a page of nothing. Read back as ASCII: a byte over
+    127 anywhere in here would mean a label that prints wrong on the bench and
+    right in every test that renders to a string."""
+    out = tmp_path / "all.zpl"
+    assert main(["-o", str(out), str(RECORDS / "*.json")]) == 0
+    raw = out.read_bytes()
+    assert raw.decode("ascii").count("^XA") == len(ALL_RECORDS)
+    assert not raw.startswith(b"\xff\xfe") and not raw.startswith(b"\xef\xbb\xbf")
+
+
+def test_o_without_a_filename_is_refused(capsys):
+    assert main(["-o"]) == 2
+    assert "needs a filename" in capsys.readouterr().err
+
+
+def test_no_arguments_explains_itself(capsys):
+    assert main([]) == 2
+    assert "usage:" in capsys.readouterr().err

@@ -264,7 +264,19 @@ flagged). To see what the printer will actually do:
 
 Paste the output into <https://labelary.com/viewer.html> set to **8 dpmm** and
 **5.9 × 1.97 in**. There is one sample record per face in
-[`bench-core/tests/label-records/`](../bench-core/tests/label-records/).
+[`bench-core/tests/label-records/`](../bench-core/tests/label-records/), and a
+wildcard dumps all of them at once — expanded by the tool, not the shell, so
+the same command works on the bench station:
+
+```powershell
+.venv\Scripts\python -m bench_core.qa_label -o all.zpl `
+    bench-core\tests\label-records\*.json
+```
+
+Use `-o` rather than `>` on Windows. PowerShell 5.1 redirects as UTF-16 with a
+BOM, and a ZD421 fed that prints a page of nothing recognisable — a confusing
+failure to hit while checking whether the labels themselves are right. `-o`
+writes ASCII, which is all ZPL ever is here.
 
 To exercise the whole print path on a machine with no printer, point it at a
 file:
