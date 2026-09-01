@@ -1,0 +1,34 @@
+{
+  "schema": "bench-run-record/1",
+  "run_id": "8f14e45f-ceea-467a-9c1b-9b7bd4b1c007",
+  "tool": "raythink",
+  "kind": "configure",
+  "timestamp": "2026-08-29T11:58:44.021000+00:00",
+  "time": "11:58:44",
+  "status": "ok",
+  "error": null,
+  "serial": "RC5A012041",
+  "mac": "a0:bd:1d:12:41:07",
+  "model": "Raythink",
+  "firmware": "2.8.1",
+  "duration_s": 104,
+  "verified": true,
+  "verify_detail": null,
+  "verification": [
+    {"item": "found by MAC", "expected": "a DHCP lease", "actual": "192.168.1.140", "ok": true},
+    {"item": "config profile", "expected": "cellular", "actual": "cellular", "ok": true}
+  ],
+  "warnings": [],
+  "steps": [],
+  "log": "",
+  "device": {
+    "hostname": "raythink-dhcp",
+    "profile": "cellular",
+    "ip": "",
+    "ip_mode": "dhcp"
+  },
+  "operator": "Avi",
+  "station_id": "bench-01",
+  "bench_version": "985cb5e",
+  "config_hash": "31108800ab71"
+}

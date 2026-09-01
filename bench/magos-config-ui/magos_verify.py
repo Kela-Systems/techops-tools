@@ -206,6 +206,42 @@ def rf_channel_row(client: MagosClient, expected_channel: str) -> dict:
             "ok": current == variant}
 
 
+def confirmed_channel(rows: list[dict]) -> Optional[str]:
+    """The RF channel the radar itself confirmed it is on, or None.
+
+    Only a green `rf_channel_row` counts, which makes this narrower than it
+    looks. That row goes amber whenever `current_variant` cannot corroborate a
+    read (old firmware, or the variant field simply absent), and it never even
+    asks on a unit with no channel to check against — so this returns None far
+    more often than it returns a channel.
+
+    That is the point. A verify run assigns nothing, so the only channel worth
+    recording on one is a channel the unit corroborated.
+
+    Note what this value is and is not. Because the row is green only when the
+    read equals the expectation, `actual` here always equals `expected` — and
+    `expected` came from the unit's prior configure record (or an operator
+    override) via `resolve_expected`. So the digit is not discovered from the
+    device; the device read is a GATE on printing it. That gate is the whole
+    value: a radar that reports nothing, or reports a different channel, ends up
+    with no channel in its record and an address on its label instead of the
+    configure run's intent restated as though it had been re-read.
+
+    `actual` rather than `expected` on purpose, so this stays truthful if the
+    row ever grows a green case that is not exact equality.
+    """
+    for row in rows:
+        if row.get("item") != "RF channel" or row.get("ok") is not True:
+            continue
+        # "chan1" -> "1". A variant id that is not chanN belongs to a renamed
+        # channel key, and there is no digit to print for it.
+        channel = str(row.get("actual") or "").strip().lower()
+        if channel.startswith("chan"):
+            channel = channel[len("chan"):]
+        return channel if channel.isdigit() else None
+    return None
+
+
 def radar_rows(client: MagosClient, *, settings: dict, expected: dict) -> list[dict]:
     """Every radar row except `reached at` and `prior run`, which belong to the
     caller: one comes from where the unit was found, the other from whether it

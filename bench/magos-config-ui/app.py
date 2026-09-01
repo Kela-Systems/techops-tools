@@ -23,7 +23,7 @@ from bench_core.bench_ui import StepCollector
 from bench_core.run_record import build_run_entry, verification_outcome
 
 from magos_bench import MagosBench
-from magos_verify import recheck_radar_at, verify_radar
+from magos_verify import confirmed_channel, recheck_radar_at, verify_radar
 from magos_configure import (
     CHANNEL_IPS,
     DEFAULT_DNS,
@@ -239,6 +239,7 @@ class RadarBench(MagosBench):
 
     def build_entry(self, target: dict, host: str, result: dict,
                     duration: int) -> dict:
+        channel = confirmed_channel(result.get("verification") or [])
         ident = result["identity"]
         return build_run_entry(
             tool="magos-radar",
@@ -254,7 +255,12 @@ class RadarBench(MagosBench):
             steps=result["steps"],
             log=result["log"],
             device={
+                # `channel` is the pick — the intent a later verify pass checks
+                # this unit against, so it is recorded even when the radar has
+                # no RF channel to apply it to. `rf_channel` is the one the unit
+                # confirmed, and the only one the QA label may print.
                 "channel": target["channel"],
+                **({"rf_channel": channel} if channel else {}),
                 "ip": result["ip"],
                 "from_host": host,
                 "ntp": self.cfg["ntp"],
@@ -266,8 +272,14 @@ class RadarBench(MagosBench):
         """A verify run's record. The `device` block carries what the unit was
         checked AGAINST, recovered from its configure run, so the record stands
         on its own — `channel` is absent because a verify pass never assigns one.
+
+        `rf_channel` is present only when the radar confirmed the channel it is
+        on (see `confirmed_channel`), which is what lets a verify-run QA label
+        print a channel instead of an address. It stays absent for a radar with
+        no RF channel — only the AR-300 line has one.
         """
         ident = result["identity"]
+        channel = confirmed_channel(result["verification"])
         return build_run_entry(
             tool="magos-radar",
             ok=result["ok"],
@@ -282,6 +294,7 @@ class RadarBench(MagosBench):
             steps=result["steps"],
             log=result["log"],
             device={
+                **({"rf_channel": channel} if channel else {}),
                 "ip": result["ip"],
                 "from_host": host,
                 "ntp": self.cfg["ntp"],

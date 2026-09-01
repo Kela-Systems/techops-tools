@@ -1,0 +1,34 @@
+{
+  "schema": "bench-run-record/1",
+  "run_id": "8f14e45f-ceea-467a-9c1b-9b7bd4b1c001",
+  "tool": "otd",
+  "kind": "configure",
+  "timestamp": "2026-08-29T09:14:02.118000+00:00",
+  "time": "09:14:02",
+  "status": "ok",
+  "error": null,
+  "serial": "6006818991",
+  "mac": "20:97:27:4f:c7:97",
+  "model": "OTD500",
+  "firmware": "RUTX_R_00.07.14.1",
+  "duration_s": 214,
+  "verified": true,
+  "verify_detail": null,
+  "verification": [
+    {"item": "hostname", "expected": "otd-kela-fob-12", "actual": "otd-kela-fob-12", "ok": true},
+    {"item": "RMS connected", "expected": "connected", "actual": "connected", "ok": true}
+  ],
+  "warnings": [],
+  "steps": [],
+  "log": "",
+  "device": {
+    "hostname": "otd-kela-fob-12",
+    "site_name": "kela-fob-12",
+    "imei": "864088064068679",
+    "password_source": "scan"
+  },
+  "operator": "Avi",
+  "station_id": "bench-01",
+  "bench_version": "985cb5e",
+  "config_hash": "31108800ab71"
+}

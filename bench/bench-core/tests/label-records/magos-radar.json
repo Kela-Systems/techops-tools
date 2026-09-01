@@ -1,0 +1,36 @@
+{
+  "schema": "bench-run-record/1",
+  "run_id": "8f14e45f-ceea-467a-9c1b-9b7bd4b1c008",
+  "tool": "magos-radar",
+  "kind": "configure",
+  "timestamp": "2026-08-29T12:24:19.663000+00:00",
+  "time": "12:24:19",
+  "status": "ok",
+  "error": null,
+  "serial": "GSRC184420",
+  "mac": "00:50:c2:8a:11:20",
+  "model": "AR-300",
+  "firmware": null,
+  "duration_s": 143,
+  "verified": true,
+  "verify_detail": null,
+  "verification": [
+    {"item": "static IP", "expected": "192.168.88.51", "actual": "192.168.88.51", "ok": true},
+    {"item": "RF channel", "expected": "chan1", "actual": "chan1", "ok": true}
+  ],
+  "warnings": [],
+  "steps": [],
+  "log": "",
+  "device": {
+    "channel": 1,
+    "rf_channel": "1",
+    "ip": "192.168.88.51",
+    "from_host": "192.168.1.10",
+    "ntp": "192.168.88.10",
+    "timezone": "Asia/Jerusalem"
+  },
+  "operator": "Avi",
+  "station_id": "bench-01",
+  "bench_version": "985cb5e",
+  "config_hash": "31108800ab71"
+}

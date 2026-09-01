@@ -51,6 +51,7 @@ from bench_core.bench_ui import (
 from bench_core.central import start_central_uploader
 from bench_core.config_check import config_fingerprint
 from bench_core.history import resolve_expected
+from bench_core.label_printer import make_label_printer
 from bench_core.run_record import KIND_CONFIGURE, KIND_VERIFY
 
 # The Magos device clients log through the "magos" logger; reuse its line format
@@ -112,6 +113,9 @@ class MagosBench:
         self.bench_version = bench_version(base_dir)
         self.station_id = station_id()
         self.operator_store = OperatorStore(base_dir.parent / OPERATOR_FILENAME)
+        # Prints the QA label on a verified-OK run (TEC-352). Station-level,
+        # like the operator name: one printer serves all seven tools.
+        self.label_printer = make_label_printer(base_dir.parent, self.log)
         self.log.info("%s starting — bench version %s, station %s",
                       self.title, self.bench_version, self.station_id)
         self.cfg: dict = dict(default_cfg)
@@ -406,6 +410,7 @@ class MagosBench:
             "config_warnings": [],  # the config file holds no tokens/placeholders
                                     # worth self-checking (unlike the RUTM/OTD tools)
             "password_set": bool(self.cfg.get("password")),
+            "printer": self.label_printer.status(),
             "channel_ips": self.channel_ips,
             "verify_hosts": self.verify_hosts(),
             "verify_supported": self.verify_supported,
@@ -441,6 +446,10 @@ class MagosBench:
 
         entry = self.build_entry(target, host, result, duration)
         entry.update(self.run_stamp())  # who / where / which code (TEC-345)
+        # Before _save_log, which also spools to central, and in the executor
+        # because printing blocks — see the same call in
+        # BenchConfigurator.execute_run (TEC-352). Mutates `entry` in place.
+        await loop.run_in_executor(None, self.label_printer.print_run, entry)
         entry["log_file"] = self._save_log(entry, result["raw"])
 
         self.state["history"].insert(0, entry)
@@ -512,6 +521,8 @@ class MagosBench:
         entry = self.build_verify_entry(host, result, duration)
         entry["kind"] = KIND_VERIFY
         entry.update(self.run_stamp())  # who / where / which code (TEC-345)
+        # Before _save_log, in the executor — as in run_configuration (TEC-352).
+        await loop.run_in_executor(None, self.label_printer.print_run, entry)
         entry["log_file"] = self._save_log(entry, result["raw"])
 
         self.state["history"].insert(0, entry)
