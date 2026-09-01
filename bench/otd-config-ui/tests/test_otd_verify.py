@@ -18,6 +18,7 @@ import requests
 import bench_core
 from bench_core import (
     DEFAULT_NEW_PASSWORD as SHARED,
+    NTP_CLIENT_INTERVAL,
     MutationBlocked,
     TeltonikaClient,
     expected_utc_offset,
@@ -54,7 +55,8 @@ class FakeOtd:
                  rms_status='{"connection_state":"connected"}',
                  esim_profile="profile: 8944...", quota_installed="script boot-hook",
                  quota_cron=None, quota_keep=None,
-                 ntp_servers=(OTD_NTP,), ntp_enabled="1", ntp_interval="3600",
+                 ntp_servers=(OTD_NTP,), ntp_enabled="1",
+                 ntp_interval=str(NTP_CLIENT_INTERVAL),
                  ntp_package=True, dhcp_start="100", dhcp_limit="150",
                  ntp_pid="15296", ntp_started=2000, ntp_written=1000):
         self.commands: list[str] = []

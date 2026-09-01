@@ -346,6 +346,26 @@ Read the message at the top — it usually says which step failed. Click **Dismi
 plugged in, and click **Configure** again to retry. Steps that need internet (firmware, RMS,
 Tailscale) can fail if the SIM/uplink has no signal yet — wait a moment and retry.
 
+**"Device clock is ... days out" (a yellow line, then the run carries on)**
+Nothing to do. Routers with no built-in battery clock come back from the firmware reboot
+thinking it's the day the firmware was built, which stops them downloading anything over
+a secure connection. The tool sets their clock from this computer and continues.
+
+**"The device clock reads ... and it could not be set"**
+The run stopped because the device's clock is wrong and wouldn't take a correction, so it
+can't download Tailscale. Retrying will not help. Tell an engineer.
+
+**"Could not download the opkg package index, so Tailscale cannot be installed"**
+Tailscale is downloaded onto the device during the run, so this step needs more than a
+live uplink. The message names what was missing — usually DNS. Worth one retry; if it
+says the same thing twice, tell an engineer.
+
+**"the feed for this device does not carry the package"**
+Retrying will not help — this device's firmware has no Tailscale package to fetch. It
+usually means the firmware step didn't run. Tell an engineer, and don't try the
+`--force_feeds` command the device suggests: it installs software that isn't supported
+on our units.
+
 **Device disappeared right after "Configured"**
 That's normal. Most devices move to a new `192.168.88.x` address as the last step, so they stop
 answering on the address they shipped with. The green tick means it worked — unplug and move on.

@@ -18,8 +18,8 @@
     "_comment_verify": "The server is on the assembly network and unreachable from this bench, so verification checks the configuration, not a synced clock — see docs/verification-rows.md.",
     "enabled": true,
     "server": "192.168.88.10",
-    "_comment_interval": "Poll seconds. Stock RutOS ships 86400, and the stock servers 2-4 (time2/3/4.google.com) are deleted rather than left below ours — on an offline site each costs a failover timeout before the server that would have worked is tried.",
-    "interval": 3600
+    "_comment_interval": "Poll seconds, and on this fleet it is a RETRY LATENCY rather than an accuracy knob: a unit cannot reach this server from the bench, so its early polls all fail and the interval is how long it stays on the firmware image's build date after it finally reaches one. 60 is the floor the RutOS binary accepts, and polling costs nothing here because the server is on the local network. Do NOT set it lower: the binary silently substitutes 600 for anything it rejects, so asking for 30 gets a ten-times-slower poll (the tools clamp to 60 and warn). Stock RutOS ships 86400, and the stock servers 2-4 (time2/3/4.google.com) are deleted rather than left below ours — on an offline site each costs a failover timeout, which is fixed in the binary and not tunable, before the server that would have worked is tried.",
+    "interval": 60
   },
 
   "wan": {

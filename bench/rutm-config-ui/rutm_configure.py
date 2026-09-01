@@ -219,6 +219,15 @@ def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
     elif mode == "rms":
         log.info("Firmware upgrade deferred to RMS (pending action on first connect).")
 
+    # Right after the firmware block, because the reboot is what breaks the
+    # clock: a RUTM08 has no battery-backed clock, so it comes back seeded from
+    # the firmware image's build date — a real unit came up 110 days in the past.
+    # Everything below that talks TLS from the DEVICE then fails certificate
+    # validation, which is opkg (the Tailscale package) and the on-device RMS
+    # client. It runs unconditionally rather than only after a reboot, since a
+    # unit can also arrive already booted into a fresh image and never synced.
+    _step("clock", client.ensure_clock_sane)
+
     # RMS has two halves: enable the on-device client, then register the unit in
     # the RMS cloud by serial+MAC so it actually appears in the account.
     rms = settings.get("rms", {}) or {}

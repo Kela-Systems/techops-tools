@@ -25,6 +25,7 @@ import pytest
 
 from bench_core import (
     NTP_CLIENT_INTERVAL,
+    NTP_CLIENT_INTERVAL_MIN,
     NTP_CLIENT_PACKAGE,
     MutationBlocked,
     TeltonikaClient,
@@ -41,7 +42,8 @@ class FakeDevice:
     separately, because a device holding one right and one wrong is the state
     this is all written against."""
 
-    def __init__(self, *, servers=(OURS,), enabled="1", interval="3600",
+    def __init__(self, *, servers=(OURS,), enabled="1",
+                 interval=str(NTP_CLIENT_INTERVAL),
                  zone_shown=ZONE, package=True, system_servers=None,
                  system_enabled="1", shape="anonymous"):
         self.commands: list[str] = []
@@ -220,6 +222,52 @@ def test_both_subsystems_are_written():
 
 def test_the_poll_interval_is_written():
     c = client(interval="86400")
+    c.set_ntp_client(OURS, interval=3600)
+    assert c.device.wrote("interval=3600")
+
+
+# ── the poll interval's floor ────────────────────────────────────────────────
+#
+# On this fleet the interval is a RETRY LATENCY, not an accuracy knob: a unit
+# cannot reach its time server from the bench, so its early polls fail and the
+# interval is how long it then sits on the firmware image's build date. Hence
+# the default sits on the floor the binary accepts. The floor itself is the
+# trap — the binary validates 60..2147483647 and SILENTLY substitutes 600 for
+# anything outside it, so a request for 30 buys a poll ten times slower than
+# the default it was trying to beat, with nothing on the device saying so.
+
+def test_the_default_interval_is_the_floor_the_binary_accepts():
+    assert NTP_CLIENT_INTERVAL == NTP_CLIENT_INTERVAL_MIN == 60
+
+
+def test_a_below_floor_request_is_clamped_not_passed_through():
+    c = client()
+    c.set_ntp_client(OURS, interval=30)
+    assert c.device.wrote(f"interval={NTP_CLIENT_INTERVAL_MIN}")
+    assert not c.device.wrote("interval=30"), \
+        "30 would come back as 600 — slower than not asking at all"
+
+
+def test_the_clamp_is_reported_rather_than_applied_quietly(caplog):
+    # A station that asked for 30 and got 60 must be able to find out why from
+    # the run log; a silent clamp is the same class of fault as the silent
+    # substitution it exists to prevent.
+    c = client()
+    with caplog.at_level("WARNING"):
+        c.set_ntp_client(OURS, interval=30)
+    assert "30" in caplog.text and "600" in caplog.text
+
+
+def test_the_floor_itself_is_written_unchanged():
+    c = client()
+    c.set_ntp_client(OURS, interval=NTP_CLIENT_INTERVAL_MIN)
+    assert c.device.wrote(f"interval={NTP_CLIENT_INTERVAL_MIN}")
+
+
+def test_an_interval_above_the_floor_is_left_alone():
+    # The clamp is a floor, not a pin. A site with a reachable server may well
+    # want to poll less often, and that is not a misconfiguration.
+    c = client()
     c.set_ntp_client(OURS, interval=3600)
     assert c.device.wrote("interval=3600")
 

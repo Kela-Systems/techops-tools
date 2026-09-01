@@ -43,6 +43,27 @@ def test_the_time_source_is_set_before_a_firmware_flash(run_pipeline):
         < client.calls.index("upgrade_firmware")
 
 
+def test_the_clock_is_corrected_after_the_reboot_and_before_the_quota_files(run_pipeline):
+    # A device with no battery-backed clock comes back from a firmware reboot
+    # seeded from the image's build date. RutOS usually hides that on an OTD500
+    # by falling back to the modem clock, but silently and only once the modem
+    # has attached — and everything the DEVICE fetches over TLS below this point
+    # (opkg, for the Tailscale package) fails certificate validation until it is
+    # right. The quota-sync files are written after it for a second reason: a
+    # wrong clock dates them months into the past.
+    client = run_pipeline({**SETTINGS, "firmware": {"mode": "local"},
+                           "sim_switch": {"enabled": True}})
+    corrected = client.calls.index("ensure_clock_sane")
+    assert client.calls.index("upgrade_firmware") < corrected
+    assert corrected < client.calls.index("install_quota_sync")
+
+
+def test_the_clock_is_corrected_even_when_no_firmware_step_runs(run_pipeline):
+    # A device can arrive already booted into a fresh image having never reached
+    # a time server, which is the state the reported failure was found in.
+    assert "ensure_clock_sane" in run_pipeline(SETTINGS).calls
+
+
 def test_the_time_source_needs_nothing_online(run_pipeline):
     # An OTD500 on the bench usually has no data connection at all (no outdoor
     # antenna), so a step that waited for one would fail on most units.

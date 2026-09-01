@@ -158,6 +158,28 @@ def test_the_time_source_is_set_before_a_firmware_flash():
         < client.calls.index("upgrade_firmware")
 
 
+def test_the_clock_is_corrected_after_the_reboot_and_before_anything_using_tls():
+    # A RUTM08 has no battery-backed clock, so a firmware reboot leaves it seeded
+    # from the image's build date — a real unit came back 110 days in the past.
+    # Everything below that talks TLS from the DEVICE then fails certificate
+    # validation: opkg reported it as `wget returned 5`, which surfaced as
+    # "Unknown package 'tailscale'". The on-device RMS client is the same class
+    # of victim, which is why this sits above both rather than inside one.
+    client = run_pipeline({**with_network(), "firmware": {"mode": "local"}})
+    corrected = client.calls.index("ensure_clock_sane")
+    assert client.calls.index("upgrade_firmware") < corrected
+    for later in ("enable_rms", "join_tailscale"):
+        assert corrected < client.calls.index(later), later
+
+
+def test_the_clock_is_corrected_even_when_no_firmware_step_runs():
+    # A unit can arrive already booted into a fresh image, having never reached a
+    # time server — which is the state the reported failure was actually found
+    # in. Correcting it only after a flash would miss that unit entirely.
+    assert "ensure_clock_sane" in run_pipeline(
+        {**SETTINGS, "firmware": {"mode": "none"}}).calls
+
+
 def test_the_forward_is_written_before_the_address_it_will_be_reached_on():
     # Both land in the same run, but the forward is the rule and the WAN pin is
     # what makes it reachable — writing the rule first means the router is never

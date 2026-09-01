@@ -91,6 +91,10 @@ ALLOWED_READS = [
     "uci get tailscale.settings.enabled 2>/dev/null",
     "uci -q show sim_switch",
     "date +%z",
+    # Clock READS. They sit one flag away from the `date -s` write below, which
+    # is why both forms are listed on each side.
+    "date -u +%s",
+    "date -u",
     "cat /etc/version 2>/dev/null",
     "cat /proc/sys/kernel/hostname 2>/dev/null",
     "uname -n",
@@ -168,6 +172,13 @@ BLOCKED_WRITES = [
     "rm -f /etc/config/backup",
     "crontab -l | crontab -",
     "opkg install tailscale",
+    # Stepping the clock before an opkg fetch. Every syntax the client tries,
+    # because they differ only in the argument and the flag order is what the
+    # pattern keys on.
+    "date -u -s '@1756712220' >/dev/null 2>&1",
+    "date -u -s '2026-09-01 09:17:00' >/dev/null 2>&1",
+    "date -u -s 202609010917.00 >/dev/null 2>&1",
+    "date -s '@1756712220'",
 ]
 
 

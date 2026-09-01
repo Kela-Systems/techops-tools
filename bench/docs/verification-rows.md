@@ -270,6 +270,25 @@ option surface: `hostname`, `interval`, `freq`, `tmz_sync_enabled` — and
 UCI rather than by command line. `interval` is validated to 60..2147483647 and
 silently falls back to **10 minutes**, not to 86400, when it cannot be read.
 
+That validation range is why `NTP_CLIENT_INTERVAL` now sits on **60**, its floor.
+On this fleet the interval is not an accuracy knob but a *retry latency*: a unit
+cannot reach its time server from the bench, so its early polls all fail, and the
+interval is how long it then sits on the firmware image's build date after it
+finally reaches one (see `ensure_clock_sane`, which is what stops that costing a
+provisioning run). It also buys attempts against the rejection above — 60 tries
+an hour is 60 chances for a sample to pass the cross-checks where there was one.
+Polling costs nothing here because every target is on the local network; the
+OTD500 reaches the same server through the router's UDP 123 forward, so none of
+it crosses the cellular link. `set_ntp_client` **clamps** below-floor requests
+and warns, because the silent substitution above means asking for 30 would buy a
+poll ten times slower than the default it was trying to beat.
+
+The per-server **failover timeout** — the cost the deleted stock servers 2-4 were
+about — is not tunable. It appears nowhere in the binary's option surface
+(`hostname`, `interval`, `freq`, `tmz_sync_enabled`, `force`), and the init script
+passes nothing from the config, so there is no UCI or command-line route to it.
+Keeping the server list to one entry remains the only lever on that cost.
+
 Two things in that binary matter more than the tuning, and both are worth
 checking before anyone touches `force`:
 

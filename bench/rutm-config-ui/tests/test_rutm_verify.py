@@ -21,6 +21,7 @@ import requests
 import bench_core
 from bench_core import (
     DEFAULT_NEW_PASSWORD as SHARED,
+    NTP_CLIENT_INTERVAL,
     MutationBlocked,
     expected_utc_offset,
 )
@@ -49,7 +50,8 @@ class FakeRouter:
                  lan_ip=LAN_IP, ntp="192.168.88.10", polling=None,
                  version="RUTM_R_00.07.20", ts_ip="100.64.0.5", rms_enable="1",
                  rms_status='{"connection_state":"connected"}',
-                 ntp_servers=None, ntp_enabled="1", ntp_interval="3600",
+                 ntp_servers=None, ntp_enabled="1",
+                 ntp_interval=str(NTP_CLIENT_INTERVAL),
                  ntp_package=True, wan=None, redirect=None,
                  wan_zone_networks=("wan", "wan6"),
                  ntp_pid="15296", ntp_started=2000, ntp_written=1000):

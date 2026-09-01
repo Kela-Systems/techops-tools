@@ -176,6 +176,17 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
     elif mode == "rms":
         log.info("Firmware upgrade deferred to RMS (pending action on first connect).")
 
+    # Right after the firmware block, because the reboot is what breaks the
+    # clock: with no battery-backed clock the device comes back seeded from the
+    # firmware image's build date, and everything below that talks TLS from the
+    # DEVICE then fails certificate validation — opkg (the Tailscale package) and
+    # the on-device RMS client. An OTD500 usually escapes this, because RutOS
+    # falls back to the cellular modem clock, but "usually" is not a reason to
+    # provision blind: that fallback is silent and depends on the modem having
+    # attached. It also fixes the file timestamps the quota-sync step below
+    # writes, which a wrong clock would date months into the past.
+    _step("clock", client.ensure_clock_sane)
+
     # The quota-sync files live OUTSIDE /etc/config (/usr/local/bin +
     # /etc/init.d + the rc.d symlink). install_quota_sync adds them to
     # /etc/sysupgrade.conf so a LATER upgrade keeps them, but that can't help a

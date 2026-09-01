@@ -187,9 +187,26 @@ NTP_CLIENT_CONFIG = "/etc/config/ntpclient"
 UCI_NTP_SECTION = "system.ntp"
 UCI_NTP_SERVER = "system.ntp.server"
 UCI_NTP_ENABLED = "system.ntp.enabled"
-# Stock RutOS ships `interval 86400` — one probe per day is not sync, it is a
-# daily chance to notice the clock is wrong.
-NTP_CLIENT_INTERVAL = 3600
+# Poll seconds for the RutOS NTP client. Stock ships 86400 — one probe per day
+# is not sync, it is a daily chance to notice the clock is wrong.
+#
+# Set to the build's validated FLOOR, because on this fleet the interval is not
+# really a sync-accuracy knob, it is a RETRY LATENCY. Every unit is provisioned
+# against a time server it cannot reach from the bench, so its early polls all
+# fail; the interval is then how long a device sits on the firmware image's build
+# date after it finally reaches a server. It also buys attempts against the
+# TEC-846 rejection — samples that do reach the server are discarded by the
+# RFC-4330 cross-checks, so 60 tries an hour is 60 chances for one to pass where
+# there was 1. And it costs nothing in traffic: both targets are on the local
+# network (the OTD500 reaches the same server through the router's UDP 123
+# forward), so no polling crosses the cellular link.
+NTP_CLIENT_INTERVAL = 60
+# The floor is not ours: the binary validates `interval` to 60..2147483647 and
+# SILENTLY substitutes 600 for anything it rejects (docs/verification-rows.md).
+# So a config asking for 30 gets a TEN TIMES SLOWER poll than the default it was
+# trying to beat, with nothing on the device saying so — which is why
+# set_ntp_client clamps rather than passing the request through.
+NTP_CLIENT_INTERVAL_MIN = 60
 # The firewall redirect that carries an upstream OTD500's NTP through the RUTM08
 # (TEC-857). Named, so a re-run updates the rule instead of stacking duplicates.
 NTP_FORWARD_NAME = "kela-ntp"
@@ -1271,6 +1288,9 @@ _MUTATING_COMMANDS = re.compile(
       (?:\s|$)
     | \bsed \s+ -i\b
     | \bln \s+ -s\b
+    # Stepping the clock. Narrow on purpose: `date +%z` and `date -u +%s` are
+    # reads the checks depend on, and only the `-s` form writes.
+    | \bdate \s+ (?:-\S+\s+)* -s\b
     | {_CMD_START} crontab (?:\s|$)
     # Writing into the places device config lives. `2>/dev/null` is not one.
     | >>? \s* (?:/etc/|/tmp/|/proc/|/sys/|/usr/|/root/|/overlay/)
@@ -2172,6 +2192,16 @@ class TeltonikaClient:
         `ntpclient.1.hostname`, but that numbering is a build detail.
         """
         self._refuse_mutation(f"point the NTP client at {server}")
+        # Clamp before writing, never after: a rejected value does not come back
+        # as an error, it comes back as 600 on the next read, and the row would
+        # then report a device polling slower than the config asked for with no
+        # indication of why.
+        if interval < NTP_CLIENT_INTERVAL_MIN:
+            log.warning("Poll interval %ss is below the %ss this build accepts — "
+                        "RutOS would silently substitute 600s, which is slower "
+                        "than asking for nothing. Using %ss.",
+                        interval, NTP_CLIENT_INTERVAL_MIN, NTP_CLIENT_INTERVAL_MIN)
+            interval = NTP_CLIENT_INTERVAL_MIN
         log.info("Pointing the NTP client at %s (interval %ss) ...", server, interval)
         types, options = self._uci_package(NTP_CLIENT_PACKAGE)
         if not types:
@@ -3144,16 +3174,171 @@ class TeltonikaClient:
     HAVE_TS = ("command -v tailscale >/dev/null && command -v tailscaled >/dev/null "
                "&& [ -f /etc/init.d/tailscale ] && echo __HAVE__ || echo __MISS__")
 
+    # How far the device clock may sit from the bench host's before it counts as
+    # unset. An hour is far outside anything a polling client drifts to and far
+    # inside the months-long error an unsynced RutOS device shows, so this never
+    # touches a device that is genuinely keeping time.
+    CLOCK_SKEW_TOLERANCE = 3600
+
+    def device_clock_skew(self) -> Optional[int]:
+        """Device clock minus this machine's, in seconds — None if the device
+        will not report it. The bench host is the reference because it is the one
+        machine in the room that is definitely synced."""
+        out = self.ssh_exec("date -u +%s", check=False).strip()
+        return int(out) - int(time.time()) if out.isdigit() else None
+
+    def ensure_clock_sane(self) -> None:
+        """Step the device clock to this machine's when it is grossly wrong.
+
+        A RutOS unit with no battery-backed clock does not boot "unset": OpenWrt
+        seeds the clock from the newest mtime under /etc, which in practice is
+        the firmware image's build date. So a unit that reboots mid-run — the
+        FOTA step does exactly that — comes back MONTHS in the past, and every
+        HTTPS fetch after it fails certificate validation, because the server's
+        certificate was issued after the date the device thinks it is. `opkg
+        update` reports that as `wget returned 5`, and `opkg install` then reports
+        the missing index as `Unknown package`.
+
+        Nothing on the bench corrects it. The configured time server is on the
+        assembly network and unreachable from here by construction, and an
+        Ethernet-only RUTM08 has no cellular modem clock to fall back on the way
+        an OTD500 does (docs/verification-rows.md).
+
+        Deliberately `date` and not UCI: the NTP configuration this run writes is
+        the SHIPPING state, and editing it to work around a bench condition is
+        how a unit leaves with a time source nobody chose. This also only ever
+        steps the clock towards real time, so it cannot strand a unit running
+        ahead of the server it will later sync against — the one state this
+        build's ntpclient refuses to correct."""
+        skew = self.device_clock_skew()
+        if skew is None or abs(skew) <= self.CLOCK_SKEW_TOLERANCE:
+            return
+        self._refuse_mutation("set the device clock")
+        was = self.ssh_exec("date -u", check=False).strip()
+        log.warning("Device clock is %+d days out (reads '%s') — HTTPS fetches "
+                    "cannot validate certificates until it is corrected.",
+                    round(skew / 86400), was or "?")
+        now = int(time.time())
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now))
+        # BusyBox `date -s` accepts several syntaxes and builds differ on which,
+        # so try them and read the clock back after each rather than trusting an
+        # exit status. Unambiguous form first.
+        for arg in (f"@{now}", stamp, time.strftime("%Y%m%d%H%M.%S", time.gmtime(now))):
+            self.ssh_exec(f"date -u -s {shlex.quote(arg)} >/dev/null 2>&1", check=False)
+            if (skew := self.device_clock_skew()) is not None \
+                    and abs(skew) <= self.CLOCK_SKEW_TOLERANCE:
+                log.info("Device clock stepped to %s UTC.", stamp)
+                return
+        # Only now is the bench's time situation worth explaining: it is the
+        # difference between "retry" and "stop and fetch an engineer".
+        stuck = [s for s in (self.ntp_client_settings().get("servers") or [])
+                 if self._time_server_unreachable(s)]
+        raise SystemExit(
+            f"The device clock reads '{was or 'unknown'}', which is "
+            f"{round(abs(skew or 0) / 86400)} days from this machine's time, and it "
+            "could not be set (no `date -s` syntax this build accepts). Every HTTPS "
+            "fetch on the device — the opkg feed included — fails certificate "
+            "validation until that is fixed."
+            + (" It will not correct itself either: the configured time server(s) "
+               f"{', '.join(stuck)} do not answer from this bench." if stuck else ""))
+
+    def _opkg_feeds(self) -> list[str]:
+        """The feed URLs configured on the device, in order.
+
+        Read off the device rather than constructed, because RutOS feed paths are
+        an opaque per-build hash — a real one is
+        `https://opkg.teltonika-networks.com/e6d1d303.../Packages.gz`. There is
+        nothing in the URL to derive from the model and firmware version, so the
+        device's own `distfeeds.conf` is the only source for it."""
+        conf = self.ssh_exec("cat /etc/opkg/distfeeds.conf 2>/dev/null", check=False)
+        return re.findall(r"https?://\S+", conf)
+
+    def _time_server_unreachable(self, server: str) -> bool:
+        """True when the device cannot reach `server` at the IP layer at all.
+
+        Deliberately a weak probe: NTP is UDP, and this RutOS build's `ntpclient`
+        ignores a positional hostname (docs/verification-rows.md), so there is no
+        way to ask "did THIS server answer". Unreachable at the IP layer is still
+        conclusive in the only direction being claimed — a host that does not
+        answer at all is not serving time."""
+        return self.ssh_exec(
+            f"ping -c1 -W2 {shlex.quote(server)} >/dev/null 2>&1 && echo OK || echo FAIL",
+            check=False).strip().endswith("FAIL")
+
+    def _opkg_index_blocker(self, update_output: str = "") -> str:
+        """Why the feed index could not be fetched, in one line — or "".
+
+        `wait_for_internet` is satisfied by an ICMP ping to a literal address,
+        which proves routing and nothing else. Fetching the index is an HTTPS GET
+        of a NAMED host, so it additionally needs a resolver and a trusted
+        certificate chain. Both read as online to the ping probe, which is why
+        neither is guessable from the run log.
+
+        The clock — the usual reason that chain is rejected — is not checked here
+        because `ensure_clock_sane` has already run and either fixed it or failed
+        the step with its own message. A certificate still being rejected AFTER
+        that points at the device's CA bundle instead, which is why the note below
+        does not name the clock."""
+        notes = []
+        # opkg reports the fetch failure as its downloader's exit status, and 5
+        # is specifically 'certificate verification failed'. Worth reading out of
+        # the output rather than re-probing for, because it is conclusive: the
+        # transport worked and only the trust check failed.
+        if re.search(r"wget returned 5\b", update_output):
+            notes.append("the device rejected the feed's HTTPS certificate "
+                         "(wget returned 5) even with its clock correct — check "
+                         "the ca-bundle / ca-certificates packages")
+        feeds = self._opkg_feeds()
+        host = re.sub(r"^https?://([^/]+).*$", r"\1", feeds[0]) if feeds else ""
+        if host and self.ssh_exec(
+                f"nslookup {shlex.quote(host)} >/dev/null 2>&1 && echo OK || echo FAIL",
+                check=False).strip().endswith("FAIL"):
+            notes.append(f"the device cannot resolve the feed host {host}")
+        return "; ".join(notes)
+
     def ensure_tailscale_installed(self) -> None:
         """Tailscale is an add-on package, absent on a fresh OTD500. Install it via
         opkg (needs internet) and VERIFY the binary + RutOS service wrapper are
-        actually present — raising with the opkg output if not."""
+        actually present — raising with the opkg output if not.
+
+        Each of the three ways this fails gets its own message, because they need
+        different actions and opkg's own output conflates them. `opkg update` used
+        to run with its result discarded, so a feed that never downloaded surfaced
+        as opkg's "Unknown package 'tailscale'" from the install below — which
+        reads as "this package does not exist" and sends the operator looking at
+        the wrong thing entirely."""
         if "__HAVE__" in self.ssh_exec(self.HAVE_TS, check=False):
             log.info("Tailscale already installed.")
             return
         log.info("Installing the Tailscale package (opkg) ...")
-        # opkg pulls over the 4G link — allow well beyond the default bound.
-        self.ssh_exec("opkg update", check=False, exec_timeout=180)
+        # The feed is HTTPS, so the index download fails outright on a device
+        # whose clock is months out — which is the state a unit boots into after
+        # the FOTA reboot. The pipelines already call this right after the
+        # firmware step; repeating it costs one `date` read and keeps the step
+        # correct on its own, including after a reboot in between.
+        self.ensure_clock_sane()
+        # opkg pulls over the uplink — allow well beyond the default bound.
+        upd = self.ssh_exec("opkg update 2>&1; echo __rc=$?", check=False, exec_timeout=180)
+        if "__rc=0" not in upd:
+            why = self._opkg_index_blocker(upd)
+            raise SystemExit(
+                "Could not download the opkg package index, so Tailscale cannot be "
+                "installed" + (f" — {why}" if why else "") + ".\nopkg update said:\n"
+                + upd[-500:])
+        # With a good index in hand, a `tailscale` that still isn't listed means
+        # THIS firmware's Teltonika feed does not carry the package. That is a
+        # different fault from a download that broke halfway, and no retry fixes it.
+        if not self.ssh_exec("opkg list tailscale 2>/dev/null", check=False).strip():
+            fw = self.ssh_exec("cat /etc/version 2>/dev/null", check=False).strip()
+            feeds = self._opkg_feeds()
+            raise SystemExit(
+                "The package index downloaded and does not list 'tailscale', so the "
+                f"feed for this device ({fw or 'no version'}) does not carry the "
+                "package."
+                + (f"\nFeed searched: {feeds[0]}" if feeds else "")
+                + "\nThe feed is chosen per build, so check that the firmware step "
+                "actually ran. Do NOT use opkg's suggested '--force_feeds': it "
+                "installs unsupported OpenWrt builds on a fleet device.")
         out = self.ssh_exec("opkg install tailscale 2>&1", check=False, exec_timeout=300)
         if "__HAVE__" not in self.ssh_exec(self.HAVE_TS, check=False):
             raise SystemExit(
