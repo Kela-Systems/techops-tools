@@ -43,61 +43,59 @@ original was damaged, peeled or never printed, without touching the device.
 
 ## Stock and printer
 
-Zebra ZD421, 203 dpi. The printed area is **15 × 5 cm**, on 10 × 15 cm stock.
+Zebra ZD421, 203 dpi, on **58 × 29 mm** stock — 464 × 232 dots, and the design
+uses all of it.
 
-15 cm is the design's long side because the APU's pairing face — the densest of
-the eight — needs it. More would be the same content with more air, not room
-for more fields.
+**The printhead is 832 dots wide and that is the first thing to check against
+any change of stock.** The head is 104 mm at 203 dpi and the widest media the
+printer accepts is 118 mm. The original design was 15 × 5 cm and declared
+`^PW1199`; the labels came back correct at the left edge and progressively
+absent to the right, the QR missing entirely, because everything past dot 832
+simply had no head over it. No stock could have rescued it. `MAX_HEAD_DOTS` is
+that limit as an assertion, and `test_the_design_fits_the_printhead` is the
+test that would have caught it.
 
-**The 15 cm runs along the feed, not across the printhead, and this is not a
-choice.** The ZD421's head is 104 mm — 832 dots at 203 dpi — and the widest
-media it accepts is 118 mm, so there is no stock on which a 15 cm span across
-the head could print. The first hardware attempt declared `^PW1199` and the
-labels came back correct at the left edge and progressively absent to the
-right, the QR (at design x=975) missing entirely. Every field is therefore
-emitted rotated; see [Rotation](#rotation-onto-the-media) below.
+464 is comfortably inside the head, so this design prints its long axis
+**across** the head with no rotation: design coordinates are printer
+coordinates, and `_fo` is a formatting call rather than a transform. A stock
+whose long axis exceeded 832 would have to rotate, which is the one reason `_fo`
+still exists as its own function.
 
-On 10 × 15 cm stock the design uses the full 15 cm of feed and 5 of the 10 cm
-across the head, so half of each label is blank. 5 × 15 cm stock would print
-the identical label with no waste, and is the media to order when the current
-roll runs out. Nothing in the code needs to change for it — `PRINT_W` describes
-the stock, not the design.
+### What 58 mm costs
 
-The layout constants live at the top of
-[`bench_core/qa_label.py`](../bench-core/src/bench_core/qa_label.py); the tests
-assert nothing runs off either the design or the *media*, because ZPL clips
-silently rather than scaling, and a clipped barcode still looks like a barcode.
+464 × 232 is under a quarter of the area the first design had, and the faces are
+what absorbed the difference. Each carries a header, one hero and **at most two
+supporting fields** above the barcode. Three things were given up:
 
-### Rotation onto the media
+- **The QR.** There is no room for it beside a barcode that already needs up to
+  444 of the 448 usable dots, and the barcode is the one the DS2278 actually
+  reads in the warehouse. `LabelContent` has no QR payload at all now.
+- **The serial as a field.** It was never lost: the Code 128's human-readable
+  line prints it under every face. Dropping the duplicate is what bought each
+  face a second real field, and `test_no_face_prints_the_serial_twice` keeps it
+  that way.
+- **`SITE` on the OTD and RUTM faces.** Costless — the hostname beside it
+  already ends in the site (`otd-kela-fob-12` against `kela-fob-12`).
 
-The faces are written in design coordinates — x along the 1180-dot long axis, y
-down the 400-dot short one, exactly as the mockups were drawn. `_fo` is the
-single place that maps those onto the printer, and every primitive goes through
-it, so no face carries any knowledge of the rotation.
+The barcode is the tightest constraint on this stock. `barcode_module_width`
+picks the widest module that still fits, and the real serials already span its
+range: a Teltonika `6010212527` gets 3 dots per module, a speaker's
+`TM-CS20-000001-XX` drops to 2 — 0.25 mm, the practical floor for a handheld
+reader. A serial materially longer than the speaker's would not overflow so much
+as quietly stop scanning, which is the failure mode to watch for if a new device
+family arrives with longer serials.
 
-Two things it does, both of which cost a wasted round of label stock to
-discover:
+The vertical budget is named at the top of
+[`bench_core/qa_label.py`](../bench-core/src/bench_core/qa_label.py)
+(`HERO_KEY_Y`, `HERO_Y`, `ROW1_Y`, `ROW1_BIG_Y`, `ROW2_Y`, `FOOT_Y`) rather than
+scattered through the faces, because there is no slack to absorb a face that
+drifts. The tests assert nothing runs off the media, because ZPL clips silently
+rather than scaling, and a clipped barcode still looks like a barcode.
 
-- **The design's x becomes the feed direction and its y the position across the
-  head — and then the feed axis is flipped.** A transpose on its own is a
-  reflection rather than a rotation: it prints a label whose text reads
-  correctly but whose layout is mirrored, header on the right and QR on the
-  left. Flipping the feed axis turns it back into a rotation, which is why `_fo`
-  needs each field's *length* and not just its position.
-- **Fields are emitted `B`, not `R`.** The two anchor at the same corner and
-  occupy the same box; they differ only in that `R` prints its glyphs 180°
-  round, which comes out upside down once the label is turned to be read.
-
-Because a proportional font's width cannot be known here, every text field
-declares an explicit `^FB` block and lets the printer place the text inside it.
-That block is the length `_fo` needs. Alignment inside the block is unaffected
-by the rotation — `L` is still the design's left.
-
-Nothing is drawn against a physical edge, on either axis: the first hardware run
-also came back with the header band's edge shaved off, which is ordinary media
-registration play rather than a bug. `HEAD_INSET` and `FEED_INSET` keep a
-millimetre clear all round, and the design gave up 19 dots of its width
-(1199 → 1180) to make room along the feed, where there was none to spare.
+Nothing is drawn against a physical edge. The first hardware run also came back
+with the header band's edge shaved off, which is ordinary media registration
+play rather than a bug, so `MARGIN` keeps a millimetre clear all round and the
+header band is inset rather than bled.
 
 ### Configuring it
 
@@ -195,22 +193,28 @@ by a print.
 printer and a blocking one; `test_raythink_label.py` does the same for the
 octet counter.
 
-## The eight faces
+## The seven faces
 
 The tools do genuinely different things to a device, so the useful largest
-field differs. Each face leads with the identity **that tool actually wrote**:
+field differs. Each face leads with the identity **that tool actually wrote**,
+and carries at most two supporting fields under it — the serial is not among
+them, because the barcode already prints it.
 
-| Tool | Face | Hero | Why |
-| --- | --- | --- | --- |
-| OTD500 | `hostname-imei` | hostname | no unique LAN address is written; IMEI sits beside the site |
-| RUTM08 | `hostname-gateway` | hostname | every RUTM lands on the same LAN address, so it is not an identity |
-| TSW202 | `shared-ip` | mgmt IP | no site and no hostname — the serial is the identity, so it is second-loudest |
-| IP speaker | `shared-ip` | final IP | it arrives on DHCP; the static address is the result worth printing |
-| Raythink | `unit-ip` | IP | the per-unit octet is how ONVIF and the NVR find it |
-| Magos radar (AR-300, channel confirmed) | `channel` | RF channel | the system diagram says "radar 1", not an address |
-| Magos radar (any other) | `shared-ip` | IP | only the AR-300 line has a channel at all |
-| Magos APU | `pairing` | APU + radars | the only unit whose label has to name *other* devices |
-| any of TSW / speaker / Raythink left on DHCP | `dhcp-mac` | the word DHCP | there is no address to print, and the MAC is how it gets found again |
+| Tool | Face | Hero | Also | Why the hero |
+| --- | --- | --- | --- | --- |
+| OTD500 | `hostname-imei` | hostname | IMEI, MAC | no unique LAN address is written |
+| RUTM08 | `hostname-gateway` | hostname | MAC, LAN band | every RUTM lands on the same LAN address, so it is not an identity |
+| TSW202 | `shared-ip` | mgmt IP | MAC | no site and no hostname to lead with |
+| IP speaker | `shared-ip` | final IP | MAC | it arrives on DHCP; the static address is the result worth printing |
+| Raythink | `unit-ip` | IP | HOST, MAC | the per-unit octet is how ONVIF and the NVR find it |
+| Magos radar (AR-300, channel confirmed) | `channel` | RF channel | MODEL, MAC | the system diagram says "radar 1", not an address |
+| Magos radar (any other) | `shared-ip` | IP | MAC | only the AR-300 line has a channel at all |
+| Magos APU | `pairing` | APU + radars | — | the only unit whose label has to name *other* devices |
+| any of TSW / speaker / Raythink left on DHCP | `dhcp-mac` | the MAC | HOST | there is no address to print, and the MAC is how it gets found again |
+
+The DHCP face makes the MAC the hero rather than printing the word DHCP over
+it: the header already says DHCP, and the MAC is the only thing on that label
+worth reading from arm's length.
 
 DHCP is detected from `device.ip_mode == "dhcp"`, falling back to an empty
 `device.ip`. All three of these tools record `ip_mode` since TEC-848, so the
@@ -287,16 +291,16 @@ is easy to miss and worth stating: it changes after the label is stuck on, so
 printing it manufactures a document that is wrong later.
 `test_qa_label.py` asserts every one of these against every face.
 
-### The QR and the barcode
+### The barcode
 
-Both are encoded by the **printer** (`^BQ` and `^BC`), not in Python. The
-design mockups drew QR modules as a visual stand-in, and a placeholder encoder
-would have shipped labels whose codes look right and scan as nothing. Handing
-the payload to printer firmware means the symbol is either real or absent.
+Code 128, carrying the bare serial, which the DS2278 already on the bench reads
+in the warehouse. It is encoded by the **printer** (`^BC`), not in Python: a
+placeholder encoder would have shipped labels whose codes look right and scan
+as nothing, whereas handing the payload to printer firmware means the symbol is
+either real or absent.
 
-QR payload: `KELA|<TYPE>|<serial>|…` — see `label_content` for the per-tool
-tail. Code 128 carries the bare serial, which the DS2278 already on the bench
-reads in the warehouse.
+There is no QR. It did not survive the move to 58 mm stock — see
+[What 58 mm costs](#what-58-mm-costs).
 
 ## Reviewing a face without hardware
 
@@ -310,23 +314,16 @@ flagged). To see what the printer will actually do:
 ```
 
 Paste the output into <https://labelary.com/viewer.html> set to **8 dpmm** and
-**3.94 × 5.91 in** — the media, portrait, because that is what the printer is
-being handed. The label will appear rotated a quarter turn, which is correct:
-it is how it comes off the printer.
+**2.28 × 1.14 in**, which is 58 × 29 mm. Nothing is rotated, so what the viewer
+shows is the reading orientation.
 
-To review it the way it will be read, use the API instead of the viewer and ask
-for the rotation:
+To render every face at once, use the API:
 
 ```bash
-curl -s -X POST --data-binary @all.zpl \
-    -H "Accept: image/png" -H "X-Rotation: 90" \
-    http://api.labelary.com/v1/printers/8dpmm/labels/3.94x5.91/0/ -o label.png
+curl -s -X POST --data-binary @label.zpl -H "Accept: image/png" \
+    http://api.labelary.com/v1/printers/8dpmm/labels/2.28x1.14/0/ -o label.png
 ```
 
-`X-Rotation: 90` is the reading orientation. Any other value is a good way to
-convince yourself the layout is mirrored or upside down when it is not — the
-four combinations of orientation and axis flip all look plausible at the wrong
-one, which is exactly how the rotation above took several attempts to settle.
 The trailing `/0/` is the label index, so `/1/` is the second label in a
 multi-label dump.
 

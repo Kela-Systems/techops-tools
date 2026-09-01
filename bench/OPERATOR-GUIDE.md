@@ -365,6 +365,11 @@ The warning often says exactly what's wrong in brackets — *offline* (usually t
 or the printer being switched off), *out of labels*, *paused*, *jammed*, *open*. Those five
 you can fix yourself and carry on. Anything else, tell an engineer.
 
+**Which roll goes in the printer**
+**58 × 29 mm labels.** That's the only size the layout is built for. A different roll
+won't jam, but it will print labels that are cut off at the edge or lost in white space —
+either way not something to stick on a unit that's shipping.
+
 **Labels come out as pages of code instead of labels**
 The printer is installed with the wrong driver — it's printing the instructions rather than
 following them. Stop and tell an engineer; it's a one-time setup fix, not something that

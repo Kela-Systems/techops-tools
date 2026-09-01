@@ -10,26 +10,28 @@ Named `qa_label` because `device_label.py` already exists and means the
 opposite: that one READS the factory sticker a device arrives with, this one
 WRITES the sticker it leaves with.
 
-Eight faces, one per tool, because the tools do genuinely different things to a
-device and the useful hero field differs (design session 2026-08-29, mocked up
-in `docs/qa-labels.md`). What they share is a family
-language: inverted header, QR on the right, Code 128 of the serial along the
-bottom. The hero is whichever identity that tool actually wrote:
+Seven faces, because the tools do genuinely different things to a device and
+the useful hero field differs (design session 2026-08-29, mocked up in
+`docs/qa-labels.md`). What they share is a family language: inverted header, a
+hero, up to two supporting fields, and Code 128 of the serial along the bottom.
+The hero is whichever identity that tool actually wrote:
 
-    otd            hostname     no unique LAN IP is written; IMEI beside the site
+    otd            hostname     no unique LAN IP is written
     rutm           hostname     every RUTM lands on the same LAN address
-    tsw            ip           no site, no hostname — serial is the identity
+    tsw            ip           no site and no hostname to lead with
     speaker        ip           the FINAL static address (it arrives on DHCP)
     raythink       ip           per-unit octet is how ONVIF/the NVR find it
     magos-radar    channel      the system diagram says "radar 1", not an IP
     magos-apu      APU + pairs  the only face that must name other devices
-    (any of tsw/speaker/raythink left on DHCP)  ->  the word DHCP + the MAC
+    (any of tsw/speaker/raythink left on DHCP)  ->  the MAC
 
-The QR and the barcode are encoded by the printer (`^BQ`, `^BC`), not here.
-That is the point: the design mockups drew QR modules as a visual stand-in, and
-a placeholder encoder would have shipped labels whose codes look right and
-scan as nothing. Handing the payload to printer firmware means the symbol is
-either real or absent.
+No face prints the serial as a field: the barcode's human-readable line already
+does, and on 58 mm stock that duplicate was worth a whole row.
+
+The barcode is encoded by the printer (`^BC`), not here. That is the point: a
+placeholder encoder would have shipped labels whose codes look right and scan
+as nothing. Handing the payload to printer firmware means the symbol is either
+real or absent.
 
 NEVER on a label, however convenient: any password, `password_source`, the
 firmware version, the operator name, the station id, or Tailscale details.
@@ -40,7 +42,7 @@ if any of them appears in rendered output.
 
 Everything here is pure: no printer, no I/O, no clock. `python -m
 bench_core.qa_label <run.json>` dumps the ZPL for a real record to stdout,
-which pasted into labelary.com renders the exact label — how all eight faces
+which pasted into labelary.com renders the exact label — how all seven faces
 get reviewed without hardware.
 """
 from __future__ import annotations
@@ -57,77 +59,60 @@ from bench_core.run_record import parse_run_record
 
 # ── stock and geometry ───────────────────────────────────────────────────────
 #
-# Zebra ZD421, 203 dpi, 15 x 5 cm of printed area (TEC-351). 15 cm is the
-# chosen size: the APU pairing table is the densest face and still fits, and
-# 15 x 10 cm is the same content with more air rather than room for more fields.
+# Zebra ZD421, 203 dpi, 58 x 29 mm labels (TEC-351).
 #
-# The 15 cm axis is the FEED direction, not the printhead. It has to be: the
-# ZD421's head is 104 mm (832 dots) at 203 dpi and the widest media it accepts
-# is 118 mm, so a 15 cm span across the head is not a stock choice that could be
-# revisited — it cannot be printed at all. Every field is therefore emitted
-# rotated, which is what `_fo` and the `B` orientations below are doing. The
-# design coordinates are left exactly as they were drawn and reviewed.
+# The first design was 15 x 5 cm and could not be printed. The ZD421's head is
+# 104 mm — 832 dots at 203 dpi — and the widest media it accepts is 118 mm, so
+# no stock existed on which a 15 cm span across the head would work: the labels
+# came off correct at the left edge and progressively absent to the right, the
+# QR missing entirely. That is the constraint to check first for any future
+# change of stock, and `MAX_HEAD_DOTS` below is it as an assertion.
+#
+# 58 mm is 464 dots, comfortably inside the head, so this design prints the
+# long axis ACROSS the head with no rotation. What it costs is room: 464 x 232
+# is under a quarter of the area the first design had, which is why the faces
+# below carry a hero and at most two supporting fields, and why there is no QR.
 DPI = 203
-# 15 cm of feed is 1200 dots, and the design may not use all of them: ink laid
-# into the first or last dot rows of a label is shaved by normal registration
-# play, which is what the first hardware run showed. 1180 leaves 10 clear at
-# each end — the "free space" the layout was allowed to give up, and cheaper
-# than a re-fit of every face.
-LABEL_W = 1180        # DESIGN width, along the feed
-LABEL_H = 400         # 5 cm — DESIGN height, across the printhead
+LABEL_W = 464         # 58 mm across the printhead
+LABEL_H = 232         # 29 mm along the feed
 
-MARGIN = 14
-HEAD_H = 46           # the inverted header band
+# Nothing is drawn against a physical edge. The first hardware run came back
+# with the header band's edge shaved off, which is ordinary media registration
+# play rather than a bug — so the design keeps clear of all four edges.
+MARGIN = 8
+# The printhead itself, per Zebra's ZD421 spec sheet. Nothing may exceed it and
+# no stock can raise it.
+MAX_HEAD_DOTS = 832
+
+HEAD_H = 28           # the inverted header band
 # Everything below FOOT_Y belongs to the barcode: BAR_H of bars, then the
 # human-readable line under them. Both have to fit above LABEL_H or the serial
 # is clipped off the bottom of the label.
-FOOT_Y = 312
-BAR_H = 42
-BAR_TEXT_H = 20
-QR_X = 975            # the QR column; the body's left column ends before it
-QR_Y = 54
-# The band the QR is allowed to occupy, from QR_Y down to the black LAN strip
-# on the `hostname-gateway` face. The rotation needs a height for every field
-# (see `_fo`) and a QR's real size depends on how much the payload made the
-# printer encode, which is not known here — so the reserved envelope is used
-# instead. A symbol smaller than the band sits at the bottom of it rather than
-# the top, which is why `qr_magnification` bounding the size is what keeps it
-# off the strip either way.
-QR_H = 194
-# Width available to the body. The gap to QR_X is clearance, not decoration:
-# the APU face right-aligns its radar addresses to the end of this and they
-# would otherwise touch the QR's quiet zone.
-BODY_W = QR_X - MARGIN - 34
+FOOT_Y = 168
+BAR_H = 30
+BAR_TEXT_H = 16
+# Width available to the body — the whole label now that no QR column has to be
+# kept clear. The APU face right-aligns its radar addresses to the end of this.
+BODY_W = LABEL_W - 2 * MARGIN
 
-FS_HEAD = 28
-FS_KEY = 18           # the small grey-in-the-mockup field labels
-FS_VAL = 28
-FS_SUB = 40
-FS_HERO = 58
-FS_HERO_BIG = 72
+# The vertical budget, named rather than scattered through the faces, because
+# on this stock there is no slack to absorb a face that drifts: 232 dots hold a
+# header, a hero and two rows above the barcode and nothing else. Every face
+# uses these, so a change here moves all seven together and the geometry tests
+# check the result against the media rather than against these numbers.
+HERO_KEY_Y = 38
+HERO_Y = 52
+ROW1_Y = 90           # the first row under an FS_HERO hero
+ROW1_BIG_Y = 104      # ...and under an FS_HERO_BIG one, which reaches lower
+ROW2_Y = 128
 
-# ── the media, in printer space ──────────────────────────────────────────────
-#
-# Across the head, then along the feed. The stock in use is 10 x 15 cm, so the
-# design's 400-dot height uses half the available width; the rest is blank.
-# Narrower stock (5 x 15 cm) would print the identical label with no waste.
-PRINT_W = 800         # 10 cm across the head
-MEDIA_L = 1200        # 15 cm of feed per label
-# The printhead itself: 104 mm at 203 dpi, per Zebra's ZD421 spec sheet. This
-# is the wall the first hardware attempt hit — the design was 1199 dots across
-# and everything past 832 simply had no head over it, so the labels came out
-# correct on the left and progressively absent to the right. Nothing may exceed
-# it, and no stock can raise it: the widest media the printer accepts is 118 mm.
-MAX_HEAD_DOTS = 832
-# Nothing is drawn against a physical edge, on either axis.
-#
-# Across the head there is room to spare, so this is simply an inset. Along the
-# feed there is almost none — the design is 1180 of the 1200 available — so the
-# design is centred in what is left, which is where the 10 dots at each end come
-# from. Both exist for the same reason: the header band starts at design y=0 and
-# the first hardware run came back with its edge shaved off.
-HEAD_INSET = 8
-FEED_INSET = (MEDIA_L - LABEL_W) // 2
+FS_HEAD = 20
+FS_MODE = 15          # the header's right side, smaller than the family name
+FS_KEY = 13           # the small grey-in-the-mockup field labels
+FS_VAL = 20
+FS_SUB = 22
+FS_HERO = 34          # a hero with two rows under it
+FS_HERO_BIG = 44      # a hero with one row, or none
 
 FACES = ("hostname-imei", "hostname-gateway", "shared-ip", "unit-ip",
          "dhcp-mac", "channel", "pairing")
@@ -177,36 +162,18 @@ def _mac(value) -> str:
 
 # ── ZPL primitives ───────────────────────────────────────────────────────────
 #
-# Every one of these emits its position through `_fo`, so the rotation onto the
-# media lives in exactly one place and the faces below are written in the
-# design's own coordinates.
+# Every one of these emits its position through `_fo`, so placement lives in
+# exactly one place.
 
-def _fo(x: int, y: int, length: int) -> str:
-    """The `^FO` for a field the design places at (x, y), `length` dots wide.
+def _fo(x: int, y: int) -> str:
+    """The `^FO` for a field the design places at (x, y).
 
-    The design's x — its long axis — becomes the printer's feed direction, and
-    the design's y becomes the position across the head. A plain transpose is
-    not enough: a transpose alone is a REFLECTION rather than a rotation, and it
-    prints a label whose text reads correctly but whose layout is mirrored,
-    header on the right and QR on the left. So the feed axis is flipped, which
-    is where `length` comes in — the flip needs to know where the field ENDS,
-    not just where it starts.
-
-    `length` is also why every text field carries an explicit `^FB` block: a
-    proportional font's width is not knowable here, so the block declares the
-    extent instead and lets the printer place the text inside it. Alignment
-    within the block needs no adjustment for the rotation — `L` is still the
-    design's left.
-
-    Fields are emitted `B`. Both `B` and `R` anchor at the same corner and
-    occupy the same box, differing only in that `R` prints its glyphs 180
-    degrees round, upside down once the label is turned the way it is read.
-
-    All of the above was settled on renders rather than derived; the four
-    candidate combinations and the loop that produced them are in
-    docs/qa-labels.md.
+    Design coordinates ARE printer coordinates here: 58 mm fits across the head,
+    so nothing is rotated. Kept as its own function because it is the one place
+    placement happens, and a stock that did not fit the head would have to
+    rotate — see the note on `MAX_HEAD_DOTS`.
     """
-    return f"^FO{y + HEAD_INSET},{LABEL_W - x - length + FEED_INSET}"
+    return f"^FO{x},{y}"
 
 
 def _text(x: int, y: int, size: int, value, *, reverse: bool = False,
@@ -222,10 +189,15 @@ def _text(x: int, y: int, size: int, value, *, reverse: bool = False,
     # x. What it must never be is *narrower* than the text, since `^FB` with a
     # one-line limit truncates rather than shrinking.
     block = LABEL_W - MARGIN - x if width is None else width
-    # Height only, no width: `^A0B,h,w` scales every glyph into a w-wide cell,
-    # which pads the narrow ones — a hostname like `otd-kela-fob-12` prints as
-    # `otd - kela - fob - 12`. Omitting w keeps font 0 proportional.
-    out = f"{_fo(x, y, block)}^A0B,{size}^FB{block},1,0,{align},0"
+    # `^FB` rather than a bare field so a long hostname is bounded by the label
+    # instead of running off it, and so `align` works. One line only: these are
+    # single-value fields and a wrap would push into the row below.
+    #
+    # Height only, no width in `^A0N`: `^A0N,h,w` scales every glyph into a
+    # w-wide cell, which pads the narrow ones — a hostname like
+    # `otd-kela-fob-12` prints as `otd - kela - fob - 12`. Omitting w keeps
+    # font 0 proportional.
+    out = f"{_fo(x, y)}^A0N,{size}^FB{block},1,0,{align},0"
     if reverse:
         out += "^FR"                      # invert: white text on the black band
     return out + f"^FD{body}^FS"
@@ -240,49 +212,23 @@ def _box(x: int, y: int, w: int, h: int) -> str:
     beside it. At `min(w, h)` the border is thick enough to close over itself
     on both axes (2t >= the other side, for any aspect up to 2:1) while
     neither dimension gets inflated.
-
-    `^GB` takes no orientation parameter and so is not rotated by `^FW` either —
-    the swap of `w` and `h` here IS the rotation for a box.
     """
-    return f"{_fo(x, y, w)}^GB{h},{w},{min(w, h)}^FS"
+    return f"{_fo(x, y)}^GB{w},{h},{min(w, h)}^FS"
 
 
 def _rule(x: int, y: int, w: int, thickness: int = 3) -> str:
-    """A hairline the design draws horizontally, which on the media runs along
-    the feed — hence the zero width and `w` as the height."""
-    return f"{_fo(x, y, w)}^GB0,{w},{thickness}^FS"
+    return f"{_fo(x, y)}^GB{w},0,{thickness}^FS"
 
 
-def _kv(x: int, y: int, key: str, value, *, size: int = FS_VAL) -> str:
+def _kv(x: int, y: int, key: str, value, *, size: int = FS_VAL,
+        width: Optional[int] = None) -> str:
     """A field label with its value underneath, the unit the faces are built
     from. Renders nothing at all when the value is empty, so a face does not
     print a heading over a blank."""
     if not _zpl(value):
         return ""
-    return _text(x, y, FS_KEY, key) + _text(x, y + FS_KEY + 4, size, value)
-
-
-def qr_magnification(payload: str) -> int:
-    """Dots per QR module for `payload`.
-
-    Bounded on purpose. The QR sits in the band between the header and the
-    `hostname-gateway` face's black LAN strip at y=248, so a symbol that grew
-    with the payload would silently print over it. 4 keeps the longest real
-    payload (the APU's, with two radar addresses) inside that band, and is
-    still comfortably above the ~3 dots/module a DS2278 needs.
-    """
-    return 5 if len(payload) <= 40 else 4
-
-
-def _qr(payload: str) -> str:
-    # ^FD for ^BQ is "<error correction><input mode>,<data>". Q = 25% recovery,
-    # chosen over the usual M because these labels live on equipment that gets
-    # handled, racked and occasionally scuffed before anyone scans them.
-    #
-    # Left `N` while everything else rotates: a QR is square and reads at any
-    # angle, so rotating it would change nothing a scanner cares about.
-    return (f"{_fo(QR_X, QR_Y, QR_H)}^BQN,2,{qr_magnification(payload)}"
-            f"^FDQA,{_zpl(payload)}^FS")
+    return _text(x, y, FS_KEY, key, width=width) + \
+        _text(x, y + FS_KEY + 3, size, value, width=width)
 
 
 def barcode_module_width(value: str) -> int:
@@ -292,6 +238,12 @@ def barcode_module_width(value: str) -> int:
     `6010212527` against a speaker's `TM-CS20-000001-XX`) and the printer
     clips rather than scales. A clipped Code 128 still looks like a barcode
     and scans as nothing, which is the failure this label exists to prevent.
+
+
+    Two dots — 0.25 mm at 203 dpi — is the floor, and the longest serials land
+    there. That is the practical lower limit for a handheld reader rather than a
+    comfortable margin, so a serial materially longer than the speaker's would
+    not so much overflow as quietly stop scanning.
     """
     modules = barcode_modules(value)
     usable = LABEL_W - 2 * MARGIN
@@ -310,18 +262,13 @@ def barcode_modules(value: str) -> int:
     return (len(value) + 3) * 11 + 2
 
 
-def barcode_length(value: str) -> int:
-    """How far the barcode reaches along the design's x, in dots.
-
-    Needed because the rotation has to know where each field ends (see `_fo`),
-    and this is the one field whose extent depends on its content.
-    """
-    return barcode_modules(value) * barcode_module_width(value)
-
-
 def _barcode(value: str) -> str:
     """Code 128 of the serial with its human-readable line, along the bottom.
-    The DS2278 already on the bench reads it in the warehouse."""
+    The DS2278 already on the bench reads it in the warehouse.
+
+    The interpretation line is why no face prints a separate serial field: the
+    serial is already here, in the one place a reader looks for it.
+    """
     body = _zpl(value)
     if not body:
         return ""
@@ -329,9 +276,9 @@ def _barcode(value: str) -> str:
     # Left at the printer default it comes out in a bitmapped font at whatever
     # size the last job left behind.
     return (f"^CF0,{BAR_TEXT_H}"
-            f"{_fo(MARGIN, FOOT_Y, barcode_length(body))}"
+            f"{_fo(MARGIN, FOOT_Y)}"
             f"^BY{barcode_module_width(body)},3,{BAR_H}"
-            f"^BCB,{BAR_H},Y,N,N^FD{body}^FS")
+            f"^BCN,{BAR_H},Y,N,N^FD{body}^FS")
 
 
 # ── what goes on one label ───────────────────────────────────────────────────
@@ -351,7 +298,10 @@ class LabelContent:
     hero_key: str
     hero: str
     serial: str
-    qr: str
+    # Only what the face prints. On 58 mm the room ran out well before the
+    # available data did, so `fields` is the shortlist that survived rather
+    # than everything the record holds — a field here that no face draws is a
+    # bug, not spare capacity.
     hero_sub: str = ""
     fields: list[tuple[str, str]] = field(default_factory=list)
     pairing: list[tuple[str, str]] = field(default_factory=list)
@@ -444,20 +394,20 @@ def _on_dhcp(entry: dict) -> bool:
 def _dhcp_face(entry: dict, family: str, kind: str, *,
                extra: Optional[list[tuple[str, str]]] = None,
                mode_suffix: str = "") -> LabelContent:
-    """The shared DHCP face: the word DHCP as the hero and the MAC printed
-    large. There is no address to print, and the MAC is how the bench — and
-    later a technician — finds the unit again."""
+    """The shared DHCP face: the MAC as the hero.
+
+    There is no address to print, and the MAC is how the bench — and later a
+    technician — finds the unit again, so it takes the hero slot rather than
+    sitting under the word DHCP. The header already says DHCP.
+    """
     serial = _ascii(entry.get("serial"))
     return LabelContent(
         face="dhcp-mac",
         family=family,
         mode=_ascii("DHCP" + (f" - {mode_suffix}" if mode_suffix else "")),
-        hero_key="ADDRESS", hero="DHCP",
-        fields=([("MAC", _mac(entry.get("mac"))), ("S/N", serial)]
-                + list(extra or [])),
+        hero_key="FIND BY MAC", hero=_mac(entry.get("mac")),
+        fields=list(extra or []),
         serial=serial,
-        qr=f"KELA|{kind}|{serial}|DHCP" + (f"|{mode_suffix.lower()}"
-                                           if mode_suffix else ""),
     )
 
 
@@ -470,10 +420,8 @@ def _content_otd(entry: dict) -> LabelContent:
         face="hostname-imei",
         family="OTD500", mode="CELLULAR",
         hero_key="HOSTNAME", hero=host,
-        fields=[("SITE", _ascii(dev.get("site_name"))), ("IMEI", imei),
-                ("S/N", serial), ("MAC", _mac(entry.get("mac")))],
+        fields=[("IMEI", imei), ("MAC", _mac(entry.get("mac")))],
         serial=serial,
-        qr=f"KELA|OTD500|{serial}|{host}|{imei}",
     )
 
 
@@ -489,10 +437,8 @@ def _content_rutm(entry: dict) -> LabelContent:
         face="hostname-gateway",
         family="RUTM08", mode="STATIC",
         hero_key="HOSTNAME", hero=host, hero_sub=lan,
-        fields=[("SITE", _ascii(dev.get("site_name"))), ("S/N", serial),
-                ("MAC", _mac(entry.get("mac")))],
+        fields=[("MAC", _mac(entry.get("mac")))],
         serial=serial,
-        qr=f"KELA|RUTM08|{serial}|{host}|{lan}",
     )
 
 
@@ -505,9 +451,8 @@ def _content_tsw(entry: dict) -> LabelContent:
         face="shared-ip",
         family="TSW202", mode="STATIC",
         hero_key="MGMT IP", hero=ip,
-        fields=[("SERIAL", serial), ("MAC", _mac(entry.get("mac")))],
+        fields=[("MAC", _mac(entry.get("mac")))],
         serial=serial,
-        qr=f"KELA|TSW202|{serial}|{ip}",
     )
 
 
@@ -520,9 +465,8 @@ def _content_speaker(entry: dict) -> LabelContent:
         face="shared-ip",
         family="IP SPEAKER", mode="STATIC",
         hero_key="IP", hero=ip,
-        fields=[("SERIAL", serial), ("MAC", _mac(entry.get("mac")))],
+        fields=[("MAC", _mac(entry.get("mac")))],
         serial=serial,
-        qr=f"KELA|SPEAKER|{serial}|{ip}",
     )
 
 
@@ -540,11 +484,8 @@ def _content_raythink(entry: dict) -> LabelContent:
         family="RAYTHINK", mode=_ascii(f"STATIC - {profile}" if profile
                                        else "STATIC"),
         hero_key="IP", hero=ip,
-        fields=[("HOST", host), ("S/N", serial),
-                ("MAC", _mac(entry.get("mac")))],
+        fields=[("HOST", host), ("MAC", _mac(entry.get("mac")))],
         serial=serial,
-        qr=f"KELA|RAYTHINK|{serial}|{ip}" + (f"|{profile.lower()}"
-                                             if profile else ""),
     )
 
 
@@ -562,18 +503,16 @@ def _content_magos_radar(entry: dict) -> LabelContent:
             face="shared-ip",
             family="MAGOS RADAR", mode="STATIC",
             hero_key="IP", hero=ip,
-            fields=[("SERIAL", serial), ("MAC", _mac(entry.get("mac")))],
+            fields=[("MAC", _mac(entry.get("mac")))],
             serial=serial,
-            qr=f"KELA|RADAR|{serial}|{ip}",
         )
     return LabelContent(
         face="channel",
         family="MAGOS RADAR", mode="STATIC",
         hero_key="CHANNEL", hero=channel, hero_sub=ip,
-        fields=[("MODEL", _ascii(entry.get("model"))), ("S/N", serial),
+        fields=[("MODEL", _ascii(entry.get("model"))),
                 ("MAC", _mac(entry.get("mac")))],
         serial=serial,
-        qr=f"KELA|RADAR|{serial}|CH{channel}|{ip}",
     )
 
 
@@ -611,21 +550,16 @@ def _content_magos_apu(entry: dict) -> LabelContent:
             face="shared-ip",
             family="MAGOS APU", mode="STATIC",
             hero_key="IP", hero=ip,
-            fields=[("SERIAL", serial), ("MAC", _mac(entry.get("mac")))],
+            fields=[("MAC", _mac(entry.get("mac")))],
             serial=serial,
-            qr=f"KELA|APU|{serial}|{ip}",
         )
-    pair_qr = "".join(f"|r{index}={pair_ip}"
-                      for index, (_, pair_ip) in enumerate(pairs))
     return LabelContent(
         face="pairing",
         family="MAGOS APU", mode="STATIC",
         hero_key="APU", hero=channel, hero_sub=ip,
-        fields=[("S/N", serial), ("MAC", _mac(entry.get("mac")))],
+        fields=[("MAC", _mac(entry.get("mac")))],
         pairing=pairs,
         serial=serial,
-        qr=(f"KELA|APU|{serial}"
-            + (f"|APU{channel}" if channel else "") + f"|{ip}" + pair_qr),
     )
 
 
@@ -655,58 +589,64 @@ def pick_face(entry: dict) -> str:
 
 
 # ── faces ────────────────────────────────────────────────────────────────────
+#
+# None of these prints the serial as a field. It is already on every label, in
+# the barcode's human-readable line — see `_barcode`. On 58 mm that redundancy
+# was worth a whole row, which is what let the faces below keep a second real
+# field instead.
 
 def _face_hostname_imei(c: LabelContent) -> list[str]:
+    # SITE is not printed: the hostname it would sit beside already ends in it
+    # ("otd-kela-fob-12" against "kela-fob-12"), so the row went to the MAC.
     return [
-        _text(MARGIN, 58, FS_KEY, c.hero_key),
-        _text(MARGIN, 80, FS_HERO, c.hero),
-        _kv(MARGIN, 152, "SITE", c.get("SITE")),
-        _kv(MARGIN + 430, 152, "IMEI", c.get("IMEI")),
-        _kv(MARGIN, 228, "S/N", c.get("S/N")),
-        _kv(MARGIN + 430, 228, "MAC", c.get("MAC")),
+        _text(MARGIN, HERO_KEY_Y, FS_KEY, c.hero_key),
+        _text(MARGIN, HERO_Y, FS_HERO, c.hero),
+        _kv(MARGIN, ROW1_Y, "IMEI", c.get("IMEI")),
+        _kv(MARGIN, ROW2_Y, "MAC", c.get("MAC")),
     ]
 
 
 def _face_hostname_gateway(c: LabelContent) -> list[str]:
+    # The inverted LAN band survives the shrink because it is the field an
+    # installer actually types once the box is racked.
+    band = FOOT_Y - ROW2_Y - 8
     return [
-        _text(MARGIN, 58, FS_KEY, c.hero_key),
-        _text(MARGIN, 80, FS_HERO, c.hero),
-        _kv(MARGIN, 152, "SITE", c.get("SITE")),
-        _kv(MARGIN + 330, 152, "S/N", c.get("S/N")),
-        _kv(MARGIN + 650, 152, "MAC", c.get("MAC")),
-        _box(0, 248, LABEL_W, 56),
-        _text(MARGIN, 264, FS_KEY, "LAN", reverse=True),
-        _text(0, 254, FS_SUB, c.hero_sub, reverse=True,
-              width=LABEL_W - MARGIN, align="R"),
+        _text(MARGIN, HERO_KEY_Y, FS_KEY, c.hero_key),
+        _text(MARGIN, HERO_Y, FS_HERO, c.hero),
+        _kv(MARGIN, ROW1_Y, "MAC", c.get("MAC")),
+        _box(MARGIN, ROW2_Y, BODY_W, band),
+        _text(MARGIN + 6, ROW2_Y + 7, FS_KEY, "LAN", reverse=True),
+        _text(MARGIN, ROW2_Y + 3, FS_SUB, c.hero_sub, reverse=True,
+              width=BODY_W - 6, align="R"),
     ]
 
 
 def _face_shared_ip(c: LabelContent) -> list[str]:
     return [
-        _text(MARGIN, 58, FS_KEY, c.hero_key),
-        _text(MARGIN, 76, FS_HERO_BIG, c.hero),
-        _kv(MARGIN, 168, "SERIAL", c.get("SERIAL"), size=FS_SUB),
-        _kv(MARGIN, 248, "MAC", c.get("MAC")),
+        _text(MARGIN, HERO_KEY_Y, FS_KEY, c.hero_key),
+        _text(MARGIN, HERO_Y, FS_HERO_BIG, c.hero),
+        _kv(MARGIN, ROW1_BIG_Y, "MAC", c.get("MAC"), size=FS_SUB),
     ]
 
 
 def _face_unit_ip(c: LabelContent) -> list[str]:
     return [
-        _text(MARGIN, 58, FS_KEY, c.hero_key),
-        _text(MARGIN, 76, FS_HERO_BIG, c.hero),
-        _kv(MARGIN, 182, "HOST", c.get("HOST")),
-        _kv(MARGIN + 330, 182, "S/N", c.get("S/N")),
-        _kv(MARGIN + 650, 182, "MAC", c.get("MAC")),
+        _text(MARGIN, HERO_KEY_Y, FS_KEY, c.hero_key),
+        _text(MARGIN, HERO_Y, FS_HERO, c.hero),
+        _kv(MARGIN, ROW1_Y, "HOST", c.get("HOST")),
+        _kv(MARGIN, ROW2_Y, "MAC", c.get("MAC")),
     ]
 
 
 def _face_dhcp_mac(c: LabelContent) -> list[str]:
+    # The MAC IS the hero here, not a field under one. There is no address to
+    # print, and the MAC is the whole reason the label is worth reading: it is
+    # how the bench, and later a technician, finds the unit on the network.
+    # "DHCP" is not repeated as a hero — the header already says it.
     return [
-        _text(MARGIN, 58, FS_KEY, c.hero_key),
-        _text(MARGIN, 74, 80, c.hero),
-        _kv(MARGIN, 176, "FIND BY MAC", c.get("MAC"), size=44),
-        _kv(MARGIN, 250, "S/N", c.get("S/N")),
-        _kv(MARGIN + 430, 250, "HOST", c.get("HOST")),
+        _text(MARGIN, HERO_KEY_Y, FS_KEY, c.hero_key),
+        _text(MARGIN, HERO_Y, FS_HERO_BIG, c.hero),
+        _kv(MARGIN, ROW1_BIG_Y, "HOST", c.get("HOST")),
     ]
 
 
@@ -714,40 +654,43 @@ def _face_channel(c: LabelContent) -> list[str]:
     # The index block is readable from a few metres, which is the point: the
     # system diagram says "radar 1" and someone standing at the rack has to be
     # able to tell which box that is.
-    right = MARGIN + 180
+    box = 68
+    right = MARGIN + box + 12
     return [
-        _box(MARGIN, 52, 150, 200),
-        _text(MARGIN, 64, 22, "CH", reverse=True, width=150, align="C"),
-        _text(MARGIN, 94, 100, c.hero, reverse=True, width=150, align="C"),
-        _text(right, 58, FS_KEY, "IP"),
-        _text(right, 78, 56, c.hero_sub),
-        _kv(right, 182, "MODEL", c.get("MODEL")),
-        _kv(right + 260, 182, "S/N", c.get("S/N")),
-        _kv(right + 520, 182, "MAC", c.get("MAC")),
+        _box(MARGIN, HERO_KEY_Y, box, box),
+        _text(MARGIN, HERO_KEY_Y + 5, FS_KEY, "CH", reverse=True,
+              width=box, align="C"),
+        _text(MARGIN, HERO_KEY_Y + 19, 44, c.hero, reverse=True,
+              width=box, align="C"),
+        _text(right, HERO_KEY_Y, FS_KEY, "IP"),
+        _text(right, HERO_KEY_Y + 15, FS_HERO, c.hero_sub),
+        _kv(MARGIN, ROW2_Y, "MODEL", c.get("MODEL"), width=120),
+        _kv(MARGIN + 130, ROW2_Y, "MAC", c.get("MAC")),
     ]
 
 
 def _face_pairing(c: LabelContent) -> list[str]:
+    # The radar list is the reason this face exists, so it gets the room and
+    # the MAC does not. Two radars is the cap the APU tool itself allows.
     out = []
     if c.hero:
-        out += [_text(MARGIN, 58, FS_KEY, c.hero_key),
-                _text(MARGIN, 76, 60, c.hero),
-                _text(MARGIN + 170, 58, FS_KEY, "IP"),
-                _text(MARGIN + 170, 78, 44, c.hero_sub)]
+        out += [_text(MARGIN, HERO_KEY_Y, FS_KEY, c.hero_key),
+                _text(MARGIN, HERO_Y, FS_HERO, c.hero),
+                _text(MARGIN + 60, HERO_KEY_Y, FS_KEY, "IP"),
+                _text(MARGIN + 60, HERO_Y, FS_HERO, c.hero_sub)]
     else:
-        out += [_text(MARGIN, 58, FS_KEY, "IP"),
-                _text(MARGIN, 78, 44, c.hero_sub)]
+        out += [_text(MARGIN, HERO_KEY_Y, FS_KEY, "IP"),
+                _text(MARGIN, HERO_Y, FS_HERO, c.hero_sub)]
     if c.pairing:
-        out += [_rule(MARGIN, 148, BODY_W),
-                _text(MARGIN, 154, FS_KEY, "CONTROLS")]
+        out += [_rule(MARGIN, ROW1_Y + 2, BODY_W),
+                _text(MARGIN, ROW1_Y + 6, FS_KEY, "CONTROLS")]
         for index, (radar_id, radar_ip) in enumerate(c.pairing[:2]):
-            y = 176 + index * 30
-            out += [_text(MARGIN + 10, y, FS_VAL, radar_id),
+            y = ROW1_Y + 22 + index * 24
+            out += [_text(MARGIN + 8, y, FS_VAL, radar_id, width=150),
                     _text(MARGIN, y, FS_VAL, radar_ip,
                           width=BODY_W, align="R")]
-        out.append(_rule(MARGIN, 236, BODY_W))
-    out += [_kv(MARGIN, 244, "S/N", c.get("S/N")),
-            _kv(MARGIN + 430, 244, "MAC", c.get("MAC"))]
+    else:
+        out.append(_kv(MARGIN, ROW1_BIG_Y, "MAC", c.get("MAC")))
     return out
 
 
@@ -769,18 +712,17 @@ def render_content(c: LabelContent) -> str:
     parts = [
         "^XA",
         "^CI28",                                  # UTF-8 in, though _ascii folds
-        # Printer space, so the design's axes are swapped here: the width is
-        # across the head and the length is the feed the design's 15 cm runs
-        # along. `^LH0,0` keeps the home position at the corner — the inset that
-        # keeps ink off the edge is `EDGE`, applied per field in `_fo`, so it
-        # cannot be undone by a printer whose home position has been shifted.
-        f"^PW{PRINT_W}", f"^LL{MEDIA_L}", "^LH0,0",
-        _box(0, 0, LABEL_W, HEAD_H),
-        _text(MARGIN, 10, FS_HEAD, c.family, reverse=True),
-        _text(0, 12, 24, c.mode, reverse=True,
-              width=LABEL_W - MARGIN, align="R"),
+        # `^LH0,0` keeps the home position at the label corner, so the margins
+        # the design applies are the margins that print — they cannot be
+        # cancelled out by a printer whose home position was left shifted.
+        f"^PW{LABEL_W}", f"^LL{LABEL_H}", "^LH0,0",
+        # Inset rather than bled to the edge: the first hardware run came back
+        # with the top of this band shaved off by registration play.
+        _box(MARGIN, MARGIN, BODY_W, HEAD_H),
+        _text(MARGIN + 5, MARGIN + 4, FS_HEAD, c.family, reverse=True),
+        _text(MARGIN, MARGIN + 7, FS_MODE, c.mode, reverse=True,
+              width=BODY_W - 5, align="R"),
         *_FACE_RENDERERS[c.face](c),
-        _qr(c.qr),
         _barcode(c.serial),
         "^XZ",
     ]

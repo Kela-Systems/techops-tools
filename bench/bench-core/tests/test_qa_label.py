@@ -21,17 +21,14 @@ from pathlib import Path
 import pytest
 
 from bench_core.qa_label import (
+    BAR_H,
+    BAR_TEXT_H,
     FACES,
-    FEED_INSET,
     FOOT_Y,
-    HEAD_INSET,
     LABEL_H,
     LABEL_W,
     MARGIN,
     MAX_HEAD_DOTS,
-    MEDIA_L,
-    PRINT_W,
-    QR_X,
     barcode_module_width,
     label_content,
     main,
@@ -94,12 +91,14 @@ def test_rutm_prints_the_shared_lan_address_in_its_band():
     assert content.hero_sub == "192.168.88.1"
 
 
-def test_tsw_makes_the_serial_the_second_loudest_line():
+def test_tsw_leans_on_the_barcode_for_its_serial():
     """A switch has no site and no hostname, so the serial is the only thing
-    that tells two of them apart."""
+    that tells two of them apart — and it is on the label once, under the
+    barcode, rather than twice."""
     content = label_content(record("tsw-static"))
     assert content.hero == "192.168.88.2"
-    assert content.get("SERIAL") == "6010620710"
+    assert content.serial == "6010620710"
+    assert render_zpl(record("tsw-static")).count("6010620710") == 1
 
 
 def test_raythink_carries_its_profile_on_the_header():
@@ -125,10 +124,13 @@ def test_apu_names_the_radars_it_controls():
 
 # ── DHCP: no address to print (TEC-848) ──────────────────────────────────────
 
-def test_dhcp_prints_the_word_and_the_mac_not_an_address():
+def test_dhcp_makes_the_mac_the_hero_not_an_address():
+    """There is no address to print, so the MAC takes the hero slot: it is how
+    the unit is found again. The word DHCP is on the header, not repeated as a
+    hero over the field that matters."""
     content = label_content(record("tsw-dhcp"))
-    assert content.hero == "DHCP"
-    assert content.get("MAC") == "20:97:2B:2B:00:F7"
+    assert content.hero == "20:97:2B:2B:00:F7"
+    assert content.mode == "DHCP"
     assert "192.168" not in render_zpl(record("tsw-dhcp"))
 
 
@@ -166,7 +168,7 @@ def test_the_speaker_and_switch_reach_the_dhcp_face_too(name):
     entry["device"]["ip_mode"] = "dhcp"
     content = label_content(entry)
     assert content.face == "dhcp-mac"
-    assert content.hero == "DHCP"
+    assert content.mode.startswith("DHCP")
     assert "192.168" not in render_zpl(entry)
 
 
@@ -192,7 +194,7 @@ def test_a_dhcp_lease_is_never_printed_as_the_address():
     entry = record("speaker")
     entry["device"]["ip_mode"] = "dhcp"
     entry["device"]["ip"] = "192.168.1.57"
-    assert label_content(entry).hero == "DHCP"
+    assert label_content(entry).face == "dhcp-mac"
     assert "192.168.1.57" not in render_zpl(entry)
 
 
@@ -209,7 +211,6 @@ def test_where_the_unit_answered_is_not_where_it_lives(name):
     entry["device"]["reached_at"] = "192.168.1.57"
     content = label_content(entry)
     assert content.face == "dhcp-mac"
-    assert content.hero == "DHCP"
     assert "192.168.1.57" not in render_zpl(entry)
 
 
@@ -303,7 +304,8 @@ def test_the_pick_alone_never_reaches_the_label():
     entry["device"]["rf_channel"] = "1"
     content = label_content(entry)
     assert content.hero == "1"
-    assert "CH1" in content.qr
+    assert content.face == "channel"
+    assert "3" not in content.hero
 
 
 def test_a_manual_ip_apu_keeps_the_radars_it_really_assigned():
@@ -388,24 +390,24 @@ def test_no_face_leaks_the_step_log(name):
 # ── the symbologies are real, and encoded by the printer ─────────────────────
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
-def test_every_face_carries_a_qr_and_a_code128_of_the_serial(name):
+def test_every_face_carries_a_code128_of_the_serial(name):
     entry = record(name)
     zpl = render_zpl(entry)
-    assert "^BQN,2," in zpl, "no QR — the scanner has nothing to match back"
-    # B, not N: the whole label is rotated onto the feed, so an unrotated
-    # barcode would run across the label and off the 832-dot printhead.
-    assert "^BCB," in zpl, "no Code 128 of the serial"
+    assert "^BCN," in zpl, "no Code 128 of the serial"
     assert entry["serial"] in zpl
 
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
-def test_the_qr_payload_is_the_kela_format(name):
-    payload = label_content(record(name)).qr
-    assert payload.startswith("KELA|")
-    assert record(name)["serial"] in payload
+def test_no_face_prints_the_serial_twice(name):
+    """The barcode's interpretation line already carries it. On 58 mm that
+    freed a whole row per face, so a face that also printed an S/N field would
+    be spending room the design does not have on a duplicate."""
+    zpl = render_zpl(record(name))
+    assert zpl.count(record(name)["serial"]) == 1
+    assert "^FDS/N^FS" not in zpl
 
 
-def test_the_qr_payload_never_holds_a_zpl_control_character():
+def test_a_field_never_holds_a_zpl_control_character():
     """`^` and `~` end a ZPL field. A hostname is operator-supplied, so a
     caret in one would truncate the label and run the rest as commands."""
     entry = record("otd")
@@ -447,45 +449,32 @@ def test_every_face_renders_pure_ascii_whatever_the_record_holds(name):
 
 # ── nothing runs off the stock ────────────────────────────────────────────────
 #
-# These assert in PRINTER space, because that is where the first hardware run
-# failed: the design fitted its own 1199-dot width perfectly and was still
-# unprintable, the printhead being 832 dots wide. Design-space coordinates are
-# recovered from the emitted `^FO` by inverting `_fo` — see `_placed`.
+# The first hardware run failed here: the design fitted its own 1199-dot width
+# perfectly and was still unprintable, the printhead being 832 dots wide. On
+# 58 mm stock the design fits across the head and nothing is rotated, so these
+# read the emitted `^FO` directly.
 
 _FO = re.compile(r"\^FO(\d+),(\d+)")
 
 
 def _placed(zpl: str):
-    """Every field in `zpl` as (head, feed, design_y, design_right).
-
-    `_fo` maps design (x, y) with a known length to printer (y + HEAD_INSET,
-    LABEL_W - x - length + FEED_INSET). The length is not recoverable from the
-    ZPL, so neither is the design's x — but its FAR edge is, and that is the
-    edge these tests care about.
-    """
-    for head, feed in _FO.findall(zpl):
-        head, feed = int(head), int(feed)
-        yield head, feed, head - HEAD_INSET, LABEL_W - feed + FEED_INSET
+    """Every field in `zpl` as the (x, y) it prints at."""
+    for x, y in _FO.findall(zpl):
+        yield int(x), int(y)
 
 
 def test_the_design_fits_the_printhead():
     """The bug that reached hardware, as an assertion. No stock can rescue a
     design wider than the head, so this is checked on the constants rather than
     on any one record."""
-    assert LABEL_H + 2 * HEAD_INSET <= MAX_HEAD_DOTS
-    assert LABEL_H + 2 * HEAD_INSET <= PRINT_W
-    assert PRINT_W <= MAX_HEAD_DOTS
-    # and the feed axis has to hold the design plus its inset at both ends
-    assert LABEL_W + 2 * FEED_INSET <= MEDIA_L
+    assert LABEL_W <= MAX_HEAD_DOTS
 
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
 def test_no_field_falls_off_the_media(name):
-    """In printer terms: nothing may sit beyond the head's width or past the
-    end of the label's feed."""
-    for head, feed, _, _ in _placed(render_zpl(record(name))):
-        assert 0 <= head <= PRINT_W, f"{name}: field {head} dots across the head"
-        assert 0 <= feed <= MEDIA_L, f"{name}: field {feed} dots along the feed"
+    for x, y in _placed(render_zpl(record(name))):
+        assert 0 <= x <= LABEL_W, f"{name}: field {x} dots across the head"
+        assert 0 <= y <= LABEL_H, f"{name}: field {y} dots along the feed"
 
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
@@ -493,17 +482,9 @@ def test_nothing_is_printed_against_a_physical_edge(name):
     """The other half of the first hardware report: the header band's edge came
     back shaved. Registration play is normal, so the design keeps clear of all
     four edges rather than trusting the media to be where it should be."""
-    for head, feed, _, _ in _placed(render_zpl(record(name))):
-        assert head >= HEAD_INSET, f"{name}: field {head} is on the head edge"
-        assert feed >= FEED_INSET, f"{name}: field {feed} is on the label edge"
-
-
-@pytest.mark.parametrize("name", ALL_RECORDS)
-def test_no_field_starts_outside_the_label(name):
-    for _, _, design_y, design_right in _placed(render_zpl(record(name))):
-        assert 0 <= design_y <= LABEL_H, f"{name}: field at design y={design_y}"
-        assert 0 <= design_right <= LABEL_W, \
-            f"{name}: field ends at design x={design_right}"
+    for x, y in _placed(render_zpl(record(name))):
+        assert x >= MARGIN, f"{name}: field at x={x} is on the edge"
+        assert y >= MARGIN, f"{name}: field at y={y} is on the edge"
 
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
@@ -513,11 +494,16 @@ def test_the_body_never_starts_under_the_barcode(name):
     for line in render_zpl(record(name)).splitlines():
         if "^BC" in line:                    # the barcode itself lives there
             continue
-        for _, _, design_y, design_right in _placed(line):
-            if design_right >= QR_X:         # the QR column is its own thing
-                continue
-            assert design_y < FOOT_Y, \
-                f"{name}: body field at y={design_y} is under the barcode"
+        for _, y in _placed(line):
+            assert y < FOOT_Y, \
+                f"{name}: body field at y={y} is under the barcode"
+
+
+def test_the_barcode_and_its_text_clear_the_bottom_edge():
+    """The interpretation line is drawn by the printer below the bars, so it is
+    the last thing on the label and the easiest to lose off the end — which is
+    exactly what the first render of this stock did."""
+    assert FOOT_Y + BAR_H + BAR_TEXT_H <= LABEL_H - MARGIN
 
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
@@ -529,18 +515,20 @@ def test_the_barcode_fits_the_stock(name):
     assert modules * barcode_module_width(serial) <= LABEL_W - 2 * MARGIN
 
 
-def test_a_very_long_serial_narrows_the_barcode_instead_of_overflowing():
-    assert barcode_module_width("6010212527") == 4
-    assert barcode_module_width("X" * 40) < 4
+def test_a_long_serial_narrows_the_barcode_instead_of_overflowing():
+    """58 mm is tight enough that the real serials already span the range: a
+    Teltonika gets 3 dots per module, a speaker's longer one drops to 2."""
+    assert barcode_module_width("6010212527") == 3
+    assert barcode_module_width("TM-CS20-000001-XX") == 2
+    assert barcode_module_width("X" * 40) == 2
 
 
 @pytest.mark.parametrize("name", ALL_RECORDS)
-def test_the_label_declares_the_media_not_the_design(name):
-    """`^PW`/`^LL` are printer geometry. Declaring the design's 1199 x 400 here
-    is what told the printer to expect a label it cannot print."""
+def test_the_label_declares_the_58x29_stock(name):
+    """`^PW`/`^LL` are what the printer believes the media to be. Declaring a
+    label wider than the head is what produced the first hardware failure."""
     zpl = render_zpl(record(name))
-    assert f"^PW{PRINT_W}" in zpl and f"^LL{MEDIA_L}" in zpl
-    assert f"^PW{LABEL_W}" not in zpl
+    assert f"^PW{LABEL_W}" in zpl and f"^LL{LABEL_H}" in zpl
 
 
 # ── missing fields degrade instead of printing a heading over a blank ─────────

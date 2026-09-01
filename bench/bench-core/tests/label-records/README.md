@@ -18,7 +18,7 @@ produce UTF-16 the printer cannot read):
     bench-core/tests/label-records/'*.json'
 ```
 
-Paste the ZPL into <https://labelary.com/viewer.html> (8 dpmm, 3.94 x 5.91 in)
+Paste the ZPL into <https://labelary.com/viewer.html> (8 dpmm, 2.28 x 1.14 in)
 to see exactly what the ZD421 prints. It appears a quarter turn round, because
 the design's 15 cm side runs along the feed — the printhead is only 104 mm wide,
 so it cannot be otherwise. `docs/qa-labels.md` shows how to get the render in
