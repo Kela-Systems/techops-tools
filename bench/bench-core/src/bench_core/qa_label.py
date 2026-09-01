@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import glob
 import json
+import re
 import sys
 import unicodedata
 from dataclasses import dataclass, field
@@ -805,12 +806,53 @@ def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, int(value)))
 
 
+# ── how many ─────────────────────────────────────────────────────────────────
+#
+# Two per run: one goes on the unit and one on its box. The unit's label
+# identifies it for the rest of its service life; the box's is what the
+# receiving end reads without unpacking anything, and reprinting it later means
+# finding the run record and a working printer at the same time.
+#
+# `^PQ` rather than sending the format twice. The printer replicates from a
+# single job, so there is no window in which the first label prints and the
+# second does not — either the job is accepted whole or the run reports an
+# unprinted label and the operator is told to write one. Sending the format
+# twice would make a half-labelled unit possible, and a unit that looks
+# labelled but isn't is the failure this module exists to prevent.
+DEFAULT_COPIES = 2
+COPIES_RANGE = (1, 5)
+
+
+def _copies(n: int) -> str:
+    """`^PQ`, or nothing at all when a single label is wanted.
+
+    Omitted rather than sent as `^PQ1` so that asking for one label produces
+    byte-identical ZPL to what the bench emitted before copies existed. A
+    station that wants one label should not be exercising a new code path.
+    """
+    n = _clamp(n, *COPIES_RANGE)
+    return f"^PQ{n}" if n > 1 else ""
+
+
+def label_count(zpl: str) -> int:
+    """How many labels `zpl` actually puts on the floor.
+
+    Not the same as the number of formats once `^PQ` is in play, and the
+    difference matters when the count is being used to check a hardware run
+    against what was expected.
+    """
+    return sum(int(found.group(1)) if (found := re.search(r"\^PQ(\d+)", fmt))
+               else 1
+               for fmt in zpl.split("^XA")[1:])
+
+
 # ── rendering ────────────────────────────────────────────────────────────────
 
 def render_content(c: LabelContent, *, media: str = "",
                    darkness: Optional[int] = None,
-                   speed: Optional[int] = None) -> str:
-    """`c` as one ZPL label."""
+                   speed: Optional[int] = None,
+                   copies: int = DEFAULT_COPIES) -> str:
+    """`c` as one ZPL label format, printed `copies` times."""
     parts = [
         *_quality(media, darkness, speed),
         "^XA",
@@ -827,6 +869,7 @@ def render_content(c: LabelContent, *, media: str = "",
               width=BODY_W - 5, align="R"),
         *_FACE_RENDERERS[c.face](c),
         _barcode(c.serial),
+        _copies(copies),
         "^XZ",
     ]
     return "\n".join(p for p in parts if p) + "\n"
@@ -859,8 +902,10 @@ def render_darkness_ladder(entry: dict, *, media: str = "",
     for darkness in steps:
         content = label_content(entry)
         content.mode = f"D{darkness}" + (f" S{speed}" if speed else "")
+        # One per rung, whatever a run prints. The strip is read by comparing
+        # rungs, and a duplicate of each is a longer strip that says no more.
         out.append(render_content(content, media=media, darkness=darkness,
-                                  speed=speed))
+                                  speed=speed, copies=1))
     return "".join(out)
 
 
@@ -883,7 +928,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     `--ladder` turns one record into a strip of the same label at a range of
     darkness settings, for choosing the value that goes in the station config.
     `--media`, `--darkness` and `--speed` set the print quality of an ordinary
-    dump, for trying a setting before committing it.
+    dump, for trying a setting before committing it. `--copies` overrides how
+    many of each label comes out; a ladder ignores it and prints one per rung.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     out_path = ""
@@ -894,7 +940,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         ladder = True
     for flag, key, cast in (("--media", "media", str),
                             ("--darkness", "darkness", int),
-                            ("--speed", "speed", int)):
+                            ("--speed", "speed", int),
+                            ("--copies", "copies", int)):
         if flag not in args:
             continue
         i = args.index(flag)
@@ -921,10 +968,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not args:
         print("usage: python -m bench_core.qa_label [-o FILE] [--ladder] "
               "[--media direct|transfer] [--darkness 0-30] [--speed 2-6] "
-              "<run-record.json>...", file=sys.stderr)
+              "[--copies 1-5] <run-record.json>...", file=sys.stderr)
         return 2
     if ladder:
         quality.pop("darkness", None)       # the ladder is what sets it
+        quality.pop("copies", None)         # a rung is a rung
     paths: list[str] = []
     for arg in args:
         matched = sorted(glob.glob(arg))
@@ -945,7 +993,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if out_path:
         with open(out_path, "w", encoding="ascii", newline="\n") as handle:
             handle.write(zpl)
-        print(f"{zpl.count('^XA')} label(s) -> {out_path}", file=sys.stderr)
+        print(f"{label_count(zpl)} label(s) -> {out_path}", file=sys.stderr)
     else:
         sys.stdout.write(zpl)
     return 0

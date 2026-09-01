@@ -55,7 +55,8 @@ from pathlib import Path
 from typing import Optional
 
 from bench_core import tcp_port_open
-from bench_core.qa_label import MEDIA_COMMAND, label_content, render_content
+from bench_core.qa_label import (COPIES_RANGE, DEFAULT_COPIES, MEDIA_COMMAND,
+                                 label_content, render_content)
 
 STATION_FILENAME = ".bench-station.json"
 DEFAULT_PORT = 9100                  # the raw-ZPL port on every network Zebra
@@ -209,6 +210,11 @@ class PrinterSettings:
     media: str = ""               # "direct" | "transfer"
     darkness: Optional[int] = None
     speed: Optional[int] = None
+    # How many labels a run produces. Unlike the three above this has a real
+    # default rather than "leave the printer alone", because it is a decision
+    # about the process — a unit and its box each need one — not a property of
+    # the hardware. A station that packs differently can set it.
+    copies: int = DEFAULT_COPIES
 
     def quality(self) -> dict:
         """The print-quality keywords for `render_content`, omitting anything
@@ -267,13 +273,20 @@ def printer_settings(bench_root: Path) -> PrinterSettings:
             return None
 
     media = setting("BENCH_PRINTER_MEDIA", "media").lower()
+    # Clamped here rather than left to the renderer so that `settings.copies`
+    # is the number that will print. A station file asking for 40 labels is a
+    # typo, and the bench should not spend a roll discovering that.
+    copies = number("BENCH_PRINTER_COPIES", "copies")
     return PrinterSettings(host=setting("BENCH_PRINTER_HOST", "host"),
                            port=port,
                            queue=setting("BENCH_PRINTER_QUEUE", "queue"),
                            sink=setting("BENCH_PRINTER_SINK", "sink"),
                            media=media if media in MEDIA_COMMAND else "",
                            darkness=number("BENCH_PRINTER_DARKNESS", "darkness"),
-                           speed=number("BENCH_PRINTER_SPEED", "speed"))
+                           speed=number("BENCH_PRINTER_SPEED", "speed"),
+                           copies=DEFAULT_COPIES if copies is None
+                           else max(COPIES_RANGE[0],
+                                    min(COPIES_RANGE[1], copies)))
 
 
 # ── transports ───────────────────────────────────────────────────────────────
@@ -496,7 +509,11 @@ class LabelPrinter:
     def _block(self, *, printed: bool, face: str = "",
                target: Optional[str] = None,
                error: Optional[str] = None) -> dict:
+        # `copies` is how many labels exist, so it is 0 on every failure path
+        # rather than the number that was intended. Someone reconciling a batch
+        # against a pile of labels wants the count that came out.
         return {"printed": printed, "face": face, "target": target,
+                "copies": self.settings.copies if printed else 0,
                 "error": error, "at": datetime.now(timezone.utc).isoformat()}
 
     def _failed(self, entry: dict, detail: str) -> None:
@@ -523,7 +540,8 @@ class LabelPrinter:
             return None
         try:
             content = label_content(entry)
-            zpl = render_content(content, **self.settings.quality())
+            zpl = render_content(content, copies=self.settings.copies,
+                                 **self.settings.quality())
         except Exception as e:  # noqa: BLE001 — a bad face must not fail a run
             self.log.exception("Could not build the QA label.")
             block = self._block(printed=False, error=f"label not built: {e}")
@@ -569,8 +587,9 @@ class LabelPrinter:
         self._warning = None
         self._last_fault = None
         self._available = True
-        self.log.info("QA label printed for SN %s (%s face) on %s.",
-                      entry.get("serial"), content.face, transport.target)
+        self.log.info("%d QA label(s) printed for SN %s (%s face) on %s.",
+                      self.settings.copies, entry.get("serial"), content.face,
+                      transport.target)
         block = self._block(printed=True, face=content.face,
                             target=transport.target)
         entry["label"] = block

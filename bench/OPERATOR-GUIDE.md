@@ -37,7 +37,7 @@ Every tool works the same way:
 1. Plug **one** device into the bench cable. The page detects it and shows its details.
 2. Fill in what it asks (site name, channel, or IP — see the per-device sections).
 3. Click **Configure** and watch the progress log. Green tick = done.
-4. **A label prints.** Stick it on the device.
+4. **Two labels print.** They're identical. One goes on the device, one on its box.
 5. When it says so, **unplug it** and plug in the next one.
 
 > ⚠️ **Always unplug the finished device before plugging in the next.** Two devices on the
@@ -59,7 +59,7 @@ Every tool works the same way:
 - Leave the black `Start Bench Tools.bat` window open the whole time.
 - One device on the cable at a time.
 - Wait for the green tick before unplugging.
-- **Nothing leaves the bench without a label on it.**
+- **Nothing leaves the bench without a label on it** — and its box gets the second one.
 - If a device is never detected, it's almost always plugged into the **wrong port / network**
 for that device — Magos uses a different network from the Teltonika and camera tools.
 - Each device ends up on a final `192.168.88.x` address. After that it will no longer answer on
@@ -378,7 +378,8 @@ tools keep running; reopen the tab from the dashboard.)
 The device is fine — it passed, and it's configured. Only the printing failed. Check the
 label printer is powered on, has a roll in it, and its cable is seated; the warning clears
 by itself the next time a label prints. Until then, **label the units by hand** — serial and
-address (or `DHCP` and the MAC) on a blank label. If the warning names a serial, that's the
+address (or `DHCP` and the MAC) on a blank label, one for the unit and one for its box, the
+same two you'd have got from the printer. If the warning names a serial, that's the
 one already done and waiting for a label. Tell an engineer if it doesn't come back.
 
 The warning often says exactly what's wrong in brackets — *offline* (usually the USB cable

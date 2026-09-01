@@ -36,6 +36,7 @@ from bench_core.qa_label import (
     barcode_x,
     barcode_y,
     label_content,
+    label_count,
     main,
     render_darkness_ladder,
     pick_face,
@@ -620,6 +621,70 @@ def test_quality_does_not_disturb_the_layout():
     assert tuned.split("^XA", 1)[1] == plain.split("^XA", 1)[1]
 
 
+# ── how many ─────────────────────────────────────────────────────────────────
+
+def test_a_run_prints_one_label_for_the_unit_and_one_for_the_box():
+    assert "^PQ2" in render_zpl(record("tsw-static"))
+
+
+@pytest.mark.parametrize("name", ALL_RECORDS)
+def test_every_face_prints_the_pair(name):
+    """Not a property of one face. A device whose label came out single would
+    ship with nothing on its box, and which device that is would depend on
+    which renderer someone last touched."""
+    assert "^PQ2" in render_zpl(record(name))
+
+
+def test_the_count_is_inside_the_format():
+    """`^PQ` is a format command. Outside `^XA`/`^XZ` it belongs to no label
+    and the printer has nothing to apply it to."""
+    zpl = render_zpl(record("tsw-static"))
+    body = zpl.split("^XA", 1)[1]
+    assert "^PQ2" in body.split("^XZ", 1)[0]
+
+
+def test_one_copy_is_the_zpl_the_bench_sent_before_copies_existed():
+    """`^PQ1` and no `^PQ` print the same single label, but only one of them
+    leaves the emitted ZPL unchanged — and an unchanged format is one fewer
+    thing to have broken for a station that wants a single label."""
+    assert "^PQ" not in render_zpl(record("tsw-static"), copies=1)
+
+
+@pytest.mark.parametrize("given,expected", [
+    (5, "^PQ5"),
+    (40, "^PQ5"),       # a typo in a station file, not a request for a roll
+    (0, ""),            # clamped up to one, which prints no ^PQ at all
+    (-3, ""),
+])
+def test_the_count_is_clamped_to_something_a_bench_meant(given, expected):
+    zpl = render_zpl(record("tsw-static"), copies=given)
+    assert (expected in zpl) if expected else ("^PQ" not in zpl)
+
+
+def test_the_count_does_not_disturb_the_layout():
+    """Everything but the `^PQ` has to be the label that was approved."""
+    entry = record("magos-apu")
+    one = render_zpl(entry, copies=1)
+    pair = render_zpl(entry, copies=2)
+    assert pair.replace("^PQ2\n", "") == one
+
+
+def test_the_count_is_one_command_not_a_second_format():
+    """Sent twice, a dropped connection halfway leaves a unit labelled and its
+    box not. One format that the printer replicates cannot half-succeed."""
+    zpl = render_zpl(record("tsw-static"))
+    assert zpl.count("^XA") == 1 and zpl.count("^XZ") == 1
+
+
+def test_the_label_count_counts_labels_rather_than_formats():
+    """The number the dump reports is the number that comes off the roll —
+    otherwise a hardware run gets checked against the wrong expectation."""
+    assert label_count(render_zpl(record("tsw-static"))) == 2
+    assert label_count(render_zpl(record("tsw-static"), copies=1)) == 1
+    assert label_count(render_zpl(record("otd"), copies=4)
+                       + render_zpl(record("rutm"), copies=1)) == 5
+
+
 # ── the darkness ladder ──────────────────────────────────────────────────────
 
 def test_the_ladder_prints_one_label_per_step():
@@ -628,6 +693,14 @@ def test_the_ladder_prints_one_label_per_step():
     assert zpl.count("^XZ") == 3
     for step in (10, 20, 30):
         assert f"~SD{step}" in zpl
+
+
+def test_the_ladder_prints_one_of_each_rung_not_two():
+    """A run prints a pair; the strip is read by comparing rungs to each other,
+    and a duplicate of every rung is twice the labels saying the same thing."""
+    zpl = render_darkness_ladder(record("tsw-static"), steps=(10, 20, 30))
+    assert "^PQ" not in zpl
+    assert label_count(zpl) == 3
 
 
 def test_every_rung_says_which_setting_it_is():
@@ -754,7 +827,21 @@ def test_the_ladder_reports_labels_not_files(tmp_path, capsys):
     assert written > 1
 
 
-@pytest.mark.parametrize("flag", ["--darkness", "--speed", "--media"])
+def test_the_cli_can_override_the_count(capsys):
+    assert main(["--copies", "1", str(RECORDS / "tsw-static.json")]) == 0
+    assert "^PQ" not in capsys.readouterr().out
+
+
+def test_the_cli_ladder_ignores_the_count(capsys):
+    """`--ladder --copies 2` is a request for two of every rung, which is a
+    longer strip that says exactly what the short one did."""
+    assert main(["--ladder", "--copies", "2",
+                 str(RECORDS / "tsw-static.json")]) == 0
+    assert "^PQ" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("flag", ["--darkness", "--speed", "--media",
+                                  "--copies"])
 def test_a_quality_flag_without_a_value_is_refused(capsys, flag):
     assert main([flag]) == 2
     assert "needs a value" in capsys.readouterr().err
@@ -762,6 +849,7 @@ def test_a_quality_flag_without_a_value_is_refused(capsys, flag):
 
 @pytest.mark.parametrize("flag,complaint", [("--darkness", "not a number"),
                                             ("--speed", "not a number"),
+                                            ("--copies", "not a number"),
                                             ("--media", "must be one of")])
 def test_a_quality_flag_that_swallows_the_filename_says_so(capsys, flag,
                                                            complaint):

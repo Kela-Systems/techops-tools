@@ -672,6 +672,73 @@ def test_an_unconfigured_station_still_prints_exactly_as_before(tmp_path):
     assert written.startswith("^XA")
 
 
+# ── how many labels a run produces ───────────────────────────────────────────
+
+def test_a_station_that_says_nothing_prints_the_pair(tmp_path):
+    """Unlike the quality settings, this one has an opinion by default: a unit
+    and its box both need labelling, and that is true of every bench."""
+    assert printer_settings(tmp_path).copies == 2
+
+
+@pytest.mark.parametrize("configured,expected", [
+    (1, 1), (3, 3), (5, 5),
+    (99, 5),        # clamped before it reaches the printer, not after
+    (0, 1),
+])
+def test_a_station_can_say_how_many_it_wants(tmp_path, configured, expected):
+    (tmp_path / ".bench-station.json").write_text(json.dumps(
+        {"printer": {"copies": configured}}), encoding="utf-8")
+    assert printer_settings(tmp_path).copies == expected
+
+
+def test_a_typo_in_the_count_falls_back_to_the_pair(tmp_path):
+    """Same reasoning as the quality block: a bad value must not be the thing
+    that stops a bench printing."""
+    (tmp_path / ".bench-station.json").write_text(json.dumps(
+        {"printer": {"copies": "two"}}), encoding="utf-8")
+    assert printer_settings(tmp_path).copies == 2
+
+
+def test_the_environment_overrides_the_count(tmp_path, monkeypatch):
+    (tmp_path / ".bench-station.json").write_text(json.dumps(
+        {"printer": {"copies": 2}}), encoding="utf-8")
+    monkeypatch.setenv("BENCH_PRINTER_COPIES", "1")
+    assert printer_settings(tmp_path).copies == 1
+
+
+def test_the_configured_count_reaches_the_printed_label(tmp_path):
+    p = printer(tmp_path, copies=3)
+    p.print_run(record())
+    assert "^PQ3" in Path(p.settings.sink).read_text(encoding="ascii")
+
+
+def test_a_run_sends_one_job_however_many_labels_it_wants(tmp_path):
+    """The pair is the printer replicating one format. Two formats would mean a
+    failure could leave the unit labelled and the box bare, which reads as a
+    finished unit and is exactly the state this must not produce."""
+    p = printer(tmp_path)
+    p.print_run(record())
+    written = Path(p.settings.sink).read_text(encoding="ascii")
+    assert written.count("^XA") == 1
+    assert "^PQ2" in written
+
+
+def test_the_record_says_how_many_labels_exist(tmp_path):
+    entry = record()
+    printer(tmp_path, copies=2).print_run(entry)
+    assert entry["label"]["copies"] == 2
+
+
+def test_a_run_that_printed_nothing_claims_no_labels(tmp_path):
+    """`copies` answers "how many are on the bench", not "how many were meant"
+    — someone reconciling a batch against a pile of labels needs the former."""
+    entry = record()
+    p = LabelPrinter(PrinterSettings(host="", queue="", sink=""))
+    p.print_run(entry)
+    assert entry["label"]["printed"] is False
+    assert entry["label"]["copies"] == 0
+
+
 # ── the transports themselves ────────────────────────────────────────────────
 
 def test_the_tcp_transport_sends_the_raw_zpl():

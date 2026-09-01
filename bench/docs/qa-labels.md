@@ -126,6 +126,43 @@ Module width is capped at 3 for the same reason: a wider module drags the
 interpretation line taller with it, and a scanner that reads 3 comfortably gains
 nothing from 4.
 
+## Two labels per run
+
+A verified run prints **two identical labels**: one goes on the unit, one on its
+box. The unit's label identifies it for the rest of its service life; the box's
+is what the receiving end reads without unpacking anything. Reprinting the
+second one later means finding the run record and a working printer at the same
+time, which is exactly the errand nobody runs.
+
+It is `^PQ2` on a single format, **not the format sent twice**. That distinction
+is the whole reason the count lives here rather than in a loop around
+`transport.send`. A printer replicating from one job either accepts it or does
+not; two jobs can half-succeed, and a socket that drops between them leaves a
+unit labelled and its box bare. A bare box is not a visible failure the way a
+bare unit is — it reads as a finished unit — so the failure mode this avoids is
+the one nobody would catch.
+
+`^PQ` is omitted entirely at one copy, so a station asking for a single label
+emits byte-identical ZPL to what the bench sent before any of this existed.
+
+A station that packs differently can say so, and 1–5 is the accepted range —
+anything outside it is a typo, and the bench should not spend a roll finding
+that out:
+
+```json
+{ "printer": { "copies": 1 } }
+```
+
+`BENCH_PRINTER_COPIES` overrides it per process, and `--copies` does the same
+for a one-off dump. A **ladder ignores both** and prints one per rung: the strip
+is read by comparing rungs to each other, and a duplicate of each is twice the
+labels saying the same thing.
+
+The run record's `label` block carries `copies`, which is how many labels
+*exist* — so it is `0` on every failure path, not the number that was intended.
+Someone reconciling a batch against a physical pile wants the count that came
+out of the printer.
+
 ## Print quality
 
 Three things decide whether a label is readable, none of which touch the
