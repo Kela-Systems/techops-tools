@@ -159,6 +159,51 @@ def test_ntp_creates_the_section_when_it_is_absent():
     assert c.switch.wrote("uci set system.ntp=timeserver")
 
 
+# ── the stock pool the list option does not reach ────────────────────────────
+#
+# A switch off the bench read back `configured 192.168.88.10, time1..4.google.com
+# (enabled=1); ntpd polling 192.168.88.10`: the list option was ours and the live
+# daemon polled ours alone, while the four factory servers sat in a section EACH,
+# which is the shape the WebUI renders and the shape clearing the list misses.
+
+STOCK_POOL = ("system.ntp=timeserver\n"
+              "system.ntp.enabled='1'\n"
+              + "".join(f"system.@ntpserver[{i}]=ntpserver\n"
+                        f"system.@ntpserver[{i}].hostname='time{i + 1}.google.com'\n"
+                        for i in range(4)))
+
+
+def test_the_stock_pool_sections_are_deleted_not_only_the_list():
+    c = client(system_show=STOCK_POOL)
+    c.set_ntp_server(NTP)
+    for i in range(4):
+        assert c.switch.wrote(f"uci delete 'system.@ntpserver[{i}]'")
+
+
+def test_the_stock_pool_is_deleted_back_to_front():
+    # Anonymous sections are addressed by index, so deleting @ntpserver[0] first
+    # renumbers the three still to go and the last delete removes the wrong one.
+    c = client(system_show=STOCK_POOL)
+    c.set_ntp_server(NTP)
+    line = next(cmd for cmd in c.switch.commands if "uci delete 'system.@ntpserver" in cmd)
+    assert [int(i) for i in re.findall(r"@ntpserver\[(\d+)\]", line)] == [3, 2, 1, 0]
+
+
+def test_the_timeserver_section_itself_is_never_deleted():
+    # system.ntp is typed `timeserver`, not `ntpserver`, and holds the list
+    # option written moments earlier — deleting it takes our own server with it.
+    c = client(system_show=STOCK_POOL)
+    c.set_ntp_server(NTP)
+    deleted = re.findall(r"uci delete '([^']+)'", " ".join(c.switch.commands))
+    assert deleted and all(d.startswith("system.@ntpserver[") for d in deleted)
+
+
+def test_a_switch_with_no_stock_pool_is_left_alone():
+    c = client(uci={"system.ntp": "timeserver"})
+    c.set_ntp_server(NTP)
+    assert not c.switch.wrote("uci delete ")
+
+
 # ── the timezone has to reach the CLOCK, not just the config ─────────────────
 #
 # The first real TSW202 committed both `system.system.timezone` and
@@ -505,6 +550,34 @@ def test_the_device_hostname_is_not_mistaken_for_a_time_server():
                 "NTP server")
     assert check["ok"] is True
     assert "TSW202" not in check["actual"]
+
+
+def test_the_device_hostname_is_not_mistaken_for_a_time_server_when_anonymous():
+    # The same option, on the shape a build may render the system section in.
+    # Matching only the named form counted the switch's own name as a server and
+    # failed a row that should pass.
+    show = (f"system.ntp.server='{NTP}'\n"
+            "system.ntp.enabled='1'\n"
+            "system.@system[0].hostname='TSW202'\n")
+    check = row(verify(client(uci=configured_uci(), system_show=show)),
+                "NTP server")
+    assert check["ok"] is True
+    assert "TSW202" not in check["actual"]
+
+
+def test_the_stock_pool_alongside_a_correct_daemon_fails_the_row():
+    # The switch that prompted the write-path fix. The daemon half is GREEN —
+    # ours is the only server being polled — which is what made this look like a
+    # bench-reachability problem when it was a config the write never cleared.
+    show = (f"system.ntp.server='{NTP}'\n"
+            "system.ntp.enabled='1'\n"
+            + "".join(f"system.@ntpserver[{i}].hostname='time{i + 1}.google.com'\n"
+                      for i in range(4)))
+    check = row(verify(client(uci=configured_uci(), system_show=show)),
+                "NTP server")
+    assert check["ok"] is False
+    assert f"ntpd polling {NTP}" in check["actual"]
+    assert "time4.google.com" in check["actual"]
 
 
 # ── no check may carry a password (TEC-349) ──────────────────────────────────

@@ -2097,8 +2097,13 @@ class TeltonikaClient:
                 if not m:
                     continue
                 section, option = m.group(1), m.group(2)
-                # system.system.hostname is the DEVICE name, not a time server.
-                if skip_device_hostname and option == "hostname" and section == "system":
+                # The DEVICE name, not a time server. It lives on the `system`
+                # section, which a build may render named (`system.system`) or
+                # anonymous (`system.@system[0]`) — matching only the first
+                # collected the switch's own hostname as a server and failed a
+                # row that should pass.
+                if skip_device_hostname and option == "hostname" \
+                        and re.fullmatch(r"system|@system\[\d+\]", section):
                     continue
                 # uci renders a list as `opt='a' 'b' 'c'`.
                 for token in m.group(3).split():

@@ -83,11 +83,35 @@ TEC-848 and is recovered from that switch's own configure record.
 | --- | --- | --- |
 | `admin/root password` | As above. | effect-based |
 | `timezone` | The shared `timezone_check` — the row this whole document is about. | effect-based |
-| `NTP server` | Three facts: every server the device has (not just the option we wrote, so a leftover pool entry is found), the enable flag, and the servers the **running** ntpd was started with, off its command line. Since TEC-857 the server scan covers the `ntpclient` package too; a TSW202 has none, so the row is unchanged — the widening was for the routers, which do. | effect-based |
+| `NTP server` | Three facts: every server the device has (not just the option we wrote, so a leftover pool entry is found), the enable flag, and the servers the **running** ntpd was started with, off its command line. Since TEC-857 the server scan covers the `ntpclient` package too; a TSW202 has none, so the row is unchanged — the widening was for the routers, which do. See the note below on what a half-green reading of this row means. | effect-based |
 | `firmware` | `/etc/version` against the firmware floor. | effect-based |
 | `LAN IP` (verify only, static) | `lan_ip_check`, as above. | effect-based |
 | `LAN IP` (verify only, DHCP) | `lan_dhcp_check`: there is no address to hold the switch to, so the answerable question is whether it is configured to ask for one. A leftover static `ipaddr` alongside `proto=dhcp` **fails** — that switch falls back to the bench address when no lease arrives, which is a second device shipped under one record. | effect-based |
 | `LAN IP` (configure only, DHCP) | `move_lan_dhcp` finds the switch again by MAC on the configured subnets and waits for it to answer. | effect-based |
+
+**Reading a half-green `NTP server` row, and why it is never about the bench.**
+A switch off the bench reported `configured 192.168.88.10,
+time1..4.google.com (enabled=1); ntpd polling 192.168.88.10`. That was read as
+the row demanding something the bench cannot supply, since `192.168.88.10` is on
+the assembly network — but **none of this row's three facts leaves the switch**.
+All three are local reads over SSH: a `uci show system` parse, a `uci get` and a
+`ps` grep for the live daemon's `-p` arguments. Unreachability cannot fail it,
+by construction, and a red row here is always a real finding on the device.
+
+The finding that time was a write-path gap. `set_ntp_server` cleared the
+`system.ntp.server` *list*, which is what sysntpd builds its command line from —
+hence the green daemon half — while the factory `time1-4.google.com` live in a
+section **per server**, the shape the WebUI renders. Detection had been widened
+to find those (`configured_ntp_servers` scans every `server`/`hostname` option in
+the package); the write never was, so every switch kept the stock pool. It now
+deletes those sections too, back to front, the way `set_ntp_client` already did
+for the routers under TEC-857. Harmless while the daemon ignores them, but they
+are one Save & Apply or config migration from being live again, and a failover
+timeout each on a site with no internet.
+
+A switch provisioned before that fix still carries them; it is cleared by a
+re-run, or by hand with `while uci -q delete system.@ntpserver[0]; do :; done &&
+uci commit system && /etc/init.d/sysntpd restart`.
 
 ## Provision-ISR IP speaker
 

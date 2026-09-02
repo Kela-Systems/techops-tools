@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shlex
 import sys
 from getpass import getpass
 from pathlib import Path
@@ -55,6 +56,7 @@ from bench_core import (
     DEFAULT_TIMEZONE,
     DEFAULT_USERNAME,
     LOG_LINE_FORMAT,
+    NTP_SERVER_TYPES,
     POSIX_TZ,
     UCI_NTP_ENABLED,
     UCI_NTP_SECTION,
@@ -144,6 +146,18 @@ class TswClient(TeltonikaClient):
         return ""
 
     # --- NTP ----------------------------------------------------------------
+    def _stock_server_sections(self) -> list[str]:
+        """The `system` sections that carry a time server of their own, in
+        `uci show` order.
+
+        Discovered rather than named, for the reason `_ntp_client_sections`
+        discovers the routers': the numbering is a build detail. `system.ntp` is
+        typed `timeserver` and so is never in here — it is the section the list
+        option lives on, not a server in its own right.
+        """
+        types, _ = self._uci_package("system")
+        return [s for t in NTP_SERVER_TYPES for s in self._uci_sections(types, t)]
+
     def set_ntp_server(self, server: str) -> None:
         """Point the switch's NTP client at `server`, as its ONLY time source.
 
@@ -152,16 +166,33 @@ class TswClient(TeltonikaClient):
         switch keeps asking the internet for the time it should be getting from
         the site. The section is created when absent: `set_timezone` writes into
         the same one, but only ever options that already exist.
+
+        Clearing that list is not enough on its own. A TSW202 also keeps the
+        factory `time1-4.google.com` as a section PER SERVER — the shape its
+        WebUI renders, and the shape `configured_ntp_servers` was widened to
+        find — which a write that only touches `system.ntp.server` leaves
+        untouched. A switch off this bench read back `configured 192.168.88.10,
+        time1..4.google.com` while its ntpd polled ours alone: benign only until
+        a Save & Apply or a config migration promotes them back into the live
+        list, and a failover timeout each on a site with no internet. That is
+        what TEC-857 deletes them for on the routers; the switch was missed.
         """
         log.info("Setting the NTP server to %s ...", server)
         self.ssh_exec(
             f"uci -q get {UCI_NTP_SECTION} >/dev/null 2>&1 || "
             f"uci set {UCI_NTP_SECTION}=timeserver")
-        self.ssh_exec(
-            f"uci -q delete {UCI_NTP_SERVER}; "
-            f"uci add_list {self._uci_arg(UCI_NTP_SERVER, server)} && "
-            f"uci set {UCI_NTP_ENABLED}='1' && "
-            f"uci commit system")
+        cmds = [f"uci -q delete {UCI_NTP_SERVER}; "
+                f"uci add_list {self._uci_arg(UCI_NTP_SERVER, server)}"]
+        # Reverse order: anonymous sections are addressed by index, so deleting
+        # from the front renumbers the ones still to go.
+        stock = self._stock_server_sections()
+        if stock:
+            log.info("Deleting %d stock time server section(s) the switch still "
+                     "carries: %s", len(stock), ", ".join(stock))
+        cmds += [f"uci delete {shlex.quote(f'system.{s}')}" for s in reversed(stock)]
+        cmds.append(f"uci set {UCI_NTP_ENABLED}='1'")
+        cmds.append("uci commit system")
+        self.ssh_exec(" && ".join(cmds))
         self.ssh_exec("/etc/init.d/sysntpd restart", check=False)
         log.info("NTP server set.")
 
