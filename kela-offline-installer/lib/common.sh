@@ -129,7 +129,14 @@ write_seed() {
     echo "  sideloaded debs on the seed partition:"
     for deb in "$dest"/*.deb; do echo "    $(basename "$deb")"; done
   else
-    echo "  sideloaded debs: none (expected — the bundle supplies its own)"
+    echo "  sideloaded debs: none"
+  fi
+  # usbguard is a permanent resident of extra-debs/, not a bundle dependency:
+  # first boot installs it and activation enables the USB device policy.
+  if ! ls "$dest"/usbguard_*.deb >/dev/null 2>&1; then
+    echo "  WARNING: no usbguard deb on the seed partition. Boxes built from this"
+    echo "  stick will have NO USB device policy. The debs belong permanently in"
+    echo "  extra-debs/ — see extra-debs/README.md for how to collect the set."
   fi
 }
 

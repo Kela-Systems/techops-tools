@@ -76,11 +76,16 @@ mount ${USB}2 /mnt/seed
 echo 'instance-id: kela-fob' > /mnt/seed/meta-data
 python3 $KIT/lib/render.py user-data.tmpl \
   PASSWORD_HASH="$(openssl passwd -6)" > /mnt/seed/user-data
-cp $KIT/extra-debs/*.deb /mnt/seed/ 2>/dev/null || \
-  echo "no sideloaded debs (normal — the bundle supplies its own)"
+cp $KIT/extra-debs/*.deb /mnt/seed/
+ls /mnt/seed/usbguard_*.deb >/dev/null \
+  || echo "MISSING usbguard debs — required; see extra-debs/README.md"
 python3 -c "import yaml,sys; yaml.safe_load(open('/mnt/seed/user-data'))" \
   && echo "seed parses"
 ```
+
+`extra-debs/` permanently carries `usbguard` and its dependencies (plus any
+bundle-specific sideloads); an empty copy is a broken kit checkout, not a
+normal state.
 
 ## 5. Data partition: exact copy of the folder
 
@@ -142,3 +147,35 @@ Notes:
 - Each activation consumes one CA slot key on the **stick** (by design); the
   external HD is never written to.
 - The stick carries live cluster-CA keys — same custody rules as the HD.
+
+## USBGuard (USB device policy)
+
+Boxes built from this stick run [USBGuard](https://usbguard.github.io/) with a
+strict policy: **only HID devices (keyboards, mice, joysticks/gamepads) and USB
+hubs are allowed; everything else — including USB storage — is blocked**, both
+on hotplug and if already inserted at boot.
+
+How it gets there: the `usbguard` debs ride the seed partition and install at
+first boot with the unit **masked**, so the policy cannot block the FOBDATA
+stick mid-activation. `kela-activate.sh` arms it the moment activation succeeds
+(policy installed, unit enabled — any later boot comes up guarded even after a
+power cut during convergence) and starts it as its very last step, after the
+final log copy to the stick has been synced.
+
+Consequences to know in the field:
+
+- **Replugging a FOB stick into an activated box does not work.** The udev
+  rule that used to restart activation never fires because the stick is not
+  authorized. To read a stick on an activated box:
+  `sudo systemctl stop usbguard`, plug the stick, do the work, unplug,
+  `sudo systemctl start usbguard`. (A one-off alternative:
+  `usbguard list-devices`, then `usbguard allow-device <id>`.)
+- A box whose activation **failed** is left unguarded on purpose — keyboard
+  and stick keep working for debugging, and usbguard stays masked until an
+  activation succeeds.
+- Keyboards that expose non-HID functions (a separate audio interface,
+  a memory-card reader) are blocked by the every-interface-must-be-HID rule;
+  plain keyboards, mice, wireless HID dongles and HID+hub combos work.
+- The policy lives at `/etc/usbguard/rules.conf` on the box, staged from
+  `templates/user-data.tmpl` (`/usr/local/share/kela/usbguard-rules.conf`).
+  Verify with `usbguard list-devices` (blocked devices show `block`).

@@ -132,6 +132,53 @@ diagnose() {
   fi
 }
 
+# USBGuard ships on the seed partition and installs with the other sideloaded
+# debs, but its unit was masked by the install seed: started any earlier, its
+# block-by-default policy would deauthorize the FOBDATA stick this script is
+# reading. Arming is split in two so a power cut during the long convergence
+# wait cannot leave the box unguarded forever (this service never runs again
+# once .firstboot-activated exists):
+#   1. arm_usbguard, right after activation succeeds: policy in place, unit
+#      unmasked and enabled — every boot from the next one is guarded.
+#   2. start_usbguard, at the very end: this boot becomes guarded too, after
+#      the last log write to the stick has been synced.
+# Runs after the CA slot is spent, so nothing in here may fail the script:
+# a box without USB filtering is a warning in the log, a box declared FAILED
+# after a successful activation is a trip back to the bench.
+arm_usbguard() {
+  if ! dpkg -s usbguard >/dev/null 2>&1; then
+    say "WARNING: usbguard is not installed — were its debs missing from the"
+    say "seed partition? The box stays unguarded; USB devices are not filtered."
+    return 0
+  fi
+  if ! install -m 0600 /usr/local/share/kela/usbguard-rules.conf /etc/usbguard/rules.conf; then
+    say "WARNING: could not install the usbguard policy — leaving usbguard"
+    say "masked rather than enabling it with whatever rules it happens to have."
+    return 0
+  fi
+  # Ubuntu package defaults, but the whole policy rests on them, so pin both.
+  sed -i -e 's/^ImplicitPolicyTarget=.*/ImplicitPolicyTarget=block/' \
+         -e 's/^PresentDevicePolicy=.*/PresentDevicePolicy=apply-policy/' \
+         /etc/usbguard/usbguard-daemon.conf 2>/dev/null \
+    || say "WARNING: could not pin usbguard-daemon.conf — package defaults apply"
+  systemctl unmask usbguard.service || true
+  systemctl enable usbguard.service 2>/dev/null || true
+  say "usbguard armed: HID-only policy installed, enabled from the next boot"
+}
+
+start_usbguard() {
+  systemctl is-enabled usbguard.service >/dev/null 2>&1 || return 0
+  umount "$DRIVE" 2>/dev/null || true
+  if systemctl start usbguard.service; then
+    say "usbguard active: only keyboards, mice, joysticks and hubs are allowed."
+    say "The FOB stick is now blocked — replugging it will NOT restart this"
+    say "service. To read it again: systemctl stop usbguard, then replug."
+  else
+    say "WARNING: usbguard failed to start — it is enabled and will be tried"
+    say "again on the next boot. See: systemctl status usbguard"
+  fi
+}
+
 # Whether the box woke on the alarm or a human pressed power is invisible after
 # the fact unless it is worked out here, and "it didn't wake up" is impossible to
 # act on without knowing which of the two failure modes it was: the alarm being
@@ -373,6 +420,11 @@ rm -f "$REPO"
 say "bundle activated, CA slot spent. Waiting for the daemon to converge."
 status "activated on $(hostname) — converging, see $LOG"
 
+# Enabled (not started) now: if power is lost during the convergence wait below,
+# the next boot still comes up guarded. This boot keeps the stick usable until
+# start_usbguard at the end.
+arm_usbguard
+
 # Convergence can legitimately run for the better part of an hour, and the log was
 # copied to the stick only after the verdict — so an operator who pulled the drive
 # while it worked took away no record at all. Save it now and again at the end.
@@ -406,3 +458,7 @@ fi
 
 save_log
 sync
+
+# Deliberately last: starting usbguard deauthorizes the FOB stick, so every
+# write to it (save_log above included) must already be on the medium.
+start_usbguard

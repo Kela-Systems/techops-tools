@@ -21,9 +21,10 @@
 #  Requirements: xorriso (brew install xorriso); everything else is stock
 #  macOS (diskutil, cp, awk, python3).
 #
-#  Optional: put extra .deb files in ./extra-debs/ — they ride the seed
-#  partition and install before Kela activation, covering dependencies missing
-#  from both the base install and the bundle.
+#  ./extra-debs/ rides the seed partition and installs before Kela activation.
+#  It permanently carries usbguard (the USB device policy enabled after
+#  activation) and optionally covers dependencies missing from both the base
+#  install and the bundle. See extra-debs/README.md.
 #
 #  At target power-on the default GRUB entry prompts once for a hostname
 #  (empty = kela-fob), then everything runs hands-off:
