@@ -54,7 +54,9 @@ sudo ./make-usb-macos.sh disk4 "/Volumes/<received drive>"
 **A stick this kit already built**, needing refreshed boot machinery.
 `update-usb-macos.sh` rewrites the GRUB block, the ESP mirror and the seed in
 place and never touches the data partition — the safe choice when the stick holds
-the only copy of the bundle:
+the only copy of the bundle. The seed's sideloaded debs are mirrored from
+`extra-debs/`, so debs from an earlier build are removed rather than left
+alongside the new ones:
 
 ```bash
 sudo ./update-usb-macos.sh
@@ -72,8 +74,8 @@ it detects that mix-up and tells you which command you wanted.
 | `stage-bundle.sh`     | Copy a received drive to local storage and verify it, so that same stick can then be erased and rebuilt. No sudo; reads the drive only.                                                    |
 | `update-usb-macos.sh` | Re-apply the current boot machinery to an already-built stick **in place** (never touches the data partition — safe when the stick holds the only copy).                                   |
 | `templates/`          | The single source of truth: autoinstall seed, GRUB block, and every script the target runs. Edit here, never on a stick.                                                                   |
-| `lib/`                | Rendering and verification helpers, shared by both builders and the runbook. `lib/mkpasswd.sh` generates the password hash on hosts where `openssl passwd -6` is unavailable (i.e. macOS). |
-| `extra-debs/`         | Sideloaded `.deb`s, for the rare bundle whose dependency closure is incomplete. Normally empty — see `extra-debs/README.md`.                                                               |
+| `lib/`                | Rendering and verification helpers, shared by both builders and the runbook. `lib/mkpasswd.sh` generates the password hash on hosts where `openssl passwd -6` is unavailable (i.e. macOS). `lib/collect-extra-debs.py` collects and audits the sideload set. |
+| `extra-debs/`         | Sideloaded `.deb`s, riding the seed partition. Permanently carries `usbguard`; also the escape hatch for an incomplete bundle closure. Never empty — see `extra-debs/README.md`.           |
 | `OFFLINE-RUNBOOK.md`  | The same build, by hand, on an offline Linux box. Uses the same templates.                                                                                                                 |
 
 
@@ -97,12 +99,22 @@ sudo KELA_PASSWORD_HASH="$(./lib/mkpasswd.sh)" ./make-usb-macos.sh disk4 "/path/
   `KELA_PASSWORD_HASH` that is set but not a `$6$` hash is now a hard error
   rather than a silent fall back to the default.
 
-- Dependencies come from the bundle itself; `extra-debs/` is normally empty.
-Preflight prints which case the bundle is in — `apt repo: flat, N packages`
-means first boot resolves dependencies off the drive, `apt repo: none` means
-`02-kela/debs` must be self-contained against a stock Ubuntu 24.04 server
-install. Only if activation later fails on an unmet dependency do you need
-`extra-debs/`.
+- Bundle dependencies come from the bundle itself. Preflight prints which case
+the bundle is in — `apt repo: flat, N packages` means first boot resolves
+dependencies off the drive, `apt repo: none` means `02-kela/debs` must be
+self-contained against a stock Ubuntu 24.04 server install. Only if activation
+later fails on an unmet dependency do you need to add anything to
+`extra-debs/`, which otherwise carries just `usbguard` and its missing
+dependencies.
+- **A sideloaded deb may add a package but must never change the version of one
+the ISO already installs.** First boot installs `extra-debs/` with `dpkg -i`,
+which has no solver: a newer copy of something the base install already has
+half-upgrades that package's family, the siblings keep their
+`Depends: ... (= old version)`, and every `apt` call on the box fails from then
+on. There is no network to repair it with, activation dies at the bundle install
+with exit 100, and the one-shot guard denies it a second try. Preflight enforces
+this against the ISO's own package manifest and aborts the build; collect sets
+with `lib/collect-extra-debs.py` rather than by hand.
 - The disk-selection rule is `size: smallest`. Subiquity's `size` and `ssd`
 matchers never return the install media, so the stick itself is safe, but any
 **other** idle USB/SD card in the box is a candidate — boot with no other

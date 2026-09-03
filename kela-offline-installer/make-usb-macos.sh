@@ -103,6 +103,7 @@ NEED=$(( BOOT_BYTES + SEED_BYTES + SRC_BYTES + 1000000000 ))
   || die "stick is $(human "$DISK_BYTES"); need at least $(human "$NEED") for a $(human "$SRC_BYTES") bundle"
 echo "  ISO $(human "$ISO_BYTES"), bundle $(human "$SRC_BYTES"), stick $(human "$DISK_BYTES") — ok"
 check_bundle "$SRC"
+check_extra_debs "$ISO"
 
 # Before the disk is touched, so a bad KELA_PASSWORD_HASH costs nothing.
 resolve_password
@@ -133,7 +134,7 @@ echo "== esp: bootloader mirror for strict firmware =="
 write_esp_shim "$DISK" /Volumes/EFIBOOT
 
 echo "== seed partition: autoinstall =="
-write_seed /Volumes/CIDATA
+write_seed /Volumes/CIDATA "$ISO"
 
 echo "== data partition: copying FOB drive content (unmodified) =="
 # cp reports failures on macOS junk files (.DS_Store, ._* AppleDouble sidecars)

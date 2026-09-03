@@ -76,6 +76,8 @@ mount ${USB}2 /mnt/seed
 echo 'instance-id: kela-fob' > /mnt/seed/meta-data
 python3 $KIT/lib/render.py user-data.tmpl \
   PASSWORD_HASH="$(openssl passwd -6)" > /mnt/seed/user-data
+python3 $KIT/lib/collect-extra-debs.py --iso "$ISO" --verify $KIT/extra-debs \
+  || { echo "REFUSING to ship extra-debs — see extra-debs/README.md"; false; }
 cp $KIT/extra-debs/*.deb /mnt/seed/
 ls /mnt/seed/usbguard_*.deb >/dev/null \
   || echo "MISSING usbguard debs — required; see extra-debs/README.md"
@@ -86,6 +88,14 @@ python3 -c "import yaml,sys; yaml.safe_load(open('/mnt/seed/user-data'))" \
 `extra-debs/` permanently carries `usbguard` and its dependencies (plus any
 bundle-specific sideloads); an empty copy is a broken kit checkout, not a
 normal state.
+
+The verify step is not optional paranoia. First boot installs these with
+`dpkg -i`, which has no solver: one deb that is *newer* than what the ISO
+installs half-upgrades that package's family, the siblings keep their
+`Depends: ... (= old version)`, and every `apt` call on the box fails from then
+on — unfixable, because the box has no network. That shipped once and stranded a
+box. The check reads the ISO's own package manifest and needs no network, so it
+works here. `make-usb-macos.sh` runs the same check in preflight.
 
 ## 5. Data partition: exact copy of the folder
 

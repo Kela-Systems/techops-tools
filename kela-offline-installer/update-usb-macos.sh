@@ -10,7 +10,11 @@
 #      own entries are restored to manual installs as a fallback
 #    - the ESP bootloader mirror and its hand-off config
 #    - CIDATA/user-data (the autoinstall seed and everything the installed
-#      system runs on first boot). Existing .deb files on CIDATA are kept.
+#      system runs on first boot)
+#    - CIDATA's sideloaded .debs, mirrored from extra-debs/. Debs from an
+#      earlier build are removed, not kept: a stick refreshed to correct a bad
+#      sideload set would otherwise still be carrying the bad debs alongside
+#      the good ones, and first boot installs every .deb it finds.
 #
 #  Usage: plug the stick in (EFIBOOT + CIDATA mount automatically), then:
 #    sudo ./update-usb-macos.sh
@@ -61,8 +65,11 @@ write_grub_block /Volumes/EFIBOOT/boot/grub/grub.cfg
 echo "== esp: bootloader mirror for strict firmware =="
 write_esp_shim "$DISK" /Volumes/EFIBOOT
 
-echo "== seed: rewriting user-data (existing debs on CIDATA are kept) =="
-write_seed /Volumes/CIDATA
+echo "== seed: rewriting user-data and syncing extra-debs/ =="
+# The stick carries the ISO extracted onto EFIBOOT, so the sideloaded debs can
+# be verified against the exact install the box will get, with no ISO file and
+# no network.
+write_seed /Volumes/CIDATA /Volumes/EFIBOOT/casper
 
 echo "== ejecting =="
 sync
