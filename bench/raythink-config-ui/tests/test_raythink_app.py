@@ -12,6 +12,7 @@ from bench_core.bench_ui import VerifyBody      # /api/verify is shared, TEC-348
 from bench_core.run_record import RUN_RECORD_SCHEMA
 
 import raythink_app as mod
+from raythink_base import GEN_REST, GEN_RPC2
 
 cfg = mod.configurator
 
@@ -45,11 +46,17 @@ def clean_state(monkeypatch):
     monkeypatch.setattr(cfg, "_save_log", lambda entry: None)
 
 
-def set_detection(monkeypatch, reachable, mac="aa:bb:cc:dd:ee:03", host=HOST):
+def set_detection(monkeypatch, reachable, mac="aa:bb:cc:dd:ee:03", host=HOST,
+                  generation=GEN_RPC2):
     """Detection sweeps the factory address AND the assigned static range now
     (TEC-348), so it is faked at `_find_camera`: `reachable` False means nothing
-    answered anywhere, True means a camera answered on `host`."""
-    monkeypatch.setattr(cfg, "_find_camera", lambda: host if reachable else None)
+    answered anywhere, True means a camera of `generation` answered on `host`.
+
+    The generation comes back with the address because the sweep establishes
+    both in one probe, and the run needs it — the two camera generations take
+    incompatible config profiles."""
+    monkeypatch.setattr(cfg, "_find_camera",
+                        lambda: (host, generation) if reachable else (None, None))
     monkeypatch.setattr(mod, "read_device_mac", lambda *a, **k: mac)
 
 
@@ -295,6 +302,55 @@ def test_a_camera_on_the_factory_address_is_flagged_as_fresh(monkeypatch):
     poll()
     assert cfg.state["on_factory_ip"] is True
     assert "Pick a profile" in cfg.state["message"]
+
+
+# ── the two camera generations ───────────────────────────────────────────────
+
+def test_the_detected_generation_is_held_in_state(monkeypatch):
+    # Held rather than re-probed per use: detection has already paid for the
+    # answer, and the profile the run may send depends on it.
+    set_detection(monkeypatch, True, generation=GEN_REST)
+    poll()
+    assert cfg.state["generation"] == GEN_REST
+    assert cfg.state["generation_label"] == "newer (REST /v1)"
+    assert "newer" in cfg.state["message"]
+
+    set_detection(monkeypatch, False)
+    poll()
+    assert cfg.state["generation"] is None
+
+
+def test_the_client_is_built_for_the_detected_generation(monkeypatch):
+    from raythink_rest import RaythinkRestClient
+
+    set_detection(monkeypatch, True, generation=GEN_REST)
+    poll()
+    # No probe: open_camera is given the generation state already holds, which
+    # is the point — re-probing would spend a round trip re-learning it.
+    client = cfg.build_client(cfg.cfg, HOST)
+    assert isinstance(client, RaythinkRestClient)
+
+
+def test_a_profile_with_no_file_for_this_camera_is_refused_before_the_run(monkeypatch):
+    # Refused up front rather than three steps in, after the camera has already
+    # had its password changed.
+    set_detection(monkeypatch, True, generation=GEN_REST)
+    poll()
+    monkeypatch.setitem(cfg.cfg, "profiles", {"lan": "profiles/lan.json"})
+    resp, captured = configure(monkeypatch, profile="lan", octet=30)
+    assert "newer" in resp["error"]
+    assert "inputs" not in captured        # the run never started
+
+
+def test_the_run_record_says_which_api_the_camera_was_driven_over(monkeypatch):
+    set_detection(monkeypatch, True, generation=GEN_REST)
+    poll()
+    entry = cfg.build_entry(
+        {**fake_result(), "generation": GEN_REST, "ip": "192.168.88.30",
+         "ip_mode": "static"},
+        {"profile": "lan", "target_ip": "192.168.88.30"},
+        1)
+    assert entry["device"]["generation"] == GEN_REST
 
 
 # ── /api/verify (TEC-348) ────────────────────────────────────────────────────

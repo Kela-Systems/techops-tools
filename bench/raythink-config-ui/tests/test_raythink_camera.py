@@ -1,11 +1,19 @@
-"""Tests for the Raythink camera client's addressing steps (raythink_camera).
+"""Tests for the Raythink camera client's addressing steps, driven through the
+older (RPC2) client.
 
-No hardware/network: RPC2 calls are recorded by a fake `_rpc`, and the
-host-side helpers the addressing steps use (`find_ip_by_mac`,
-`renew_host_dhcp`, `host_iface_for`, `port_open`, `time.sleep`) are stubbed.
+The addressing steps themselves live in `raythink_base` and are shared by both
+camera generations — which is why the host-side helpers they use
+(`find_ip_by_mac`, `renew_host_dhcp`, `host_iface_for`, `arp_table`,
+`time.sleep`) are stubbed on `raythink_base` rather than on the client module.
+What this file exercises through the RPC2 client is the base's logic plus that
+client's read/write of the Network table; `test_raythink_rest.py` drives the
+same base through the other generation's hooks.
+
+No hardware/network: RPC2 calls are recorded by a fake `_rpc`.
 """
 import pytest
 
+import raythink_base as base
 import raythink_camera as mod
 from raythink_camera import RaythinkCameraClient
 
@@ -48,10 +56,10 @@ def client(monkeypatch):
 
     monkeypatch.setattr(cam, "_rpc", fake_rpc)
     # Host-side effects and the retry pacing are not what these tests are about.
-    monkeypatch.setattr(mod, "host_iface_for", lambda ip: "en0")
-    monkeypatch.setattr(mod, "renew_host_dhcp", lambda iface: None)
-    monkeypatch.setattr(mod, "arp_table", dict)
-    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(base, "host_iface_for", lambda ip: "en0")
+    monkeypatch.setattr(base, "renew_host_dhcp", lambda iface: None)
+    monkeypatch.setattr(base, "arp_table", dict)
+    monkeypatch.setattr(base.time, "sleep", lambda s: None)
     return cam
 
 
@@ -63,7 +71,7 @@ def written_iface(cam):
 # ── set_dhcp ────────────────────────────────────────────────────────────────
 
 def test_set_dhcp_enables_dhcp_and_follows_the_lease(client, monkeypatch):
-    monkeypatch.setattr(mod, "find_ip_by_mac",
+    monkeypatch.setattr(base, "find_ip_by_mac",
                         lambda mac, subnets, port: "192.168.88.57")
 
     row = client.set_dhcp(mac=CAMERA_MAC, subnets=["192.168.88.0/24"], wait=30)
@@ -79,7 +87,7 @@ def test_set_dhcp_enables_dhcp_and_follows_the_lease(client, monkeypatch):
 def test_set_dhcp_writes_the_alternate_field_name_too(client, monkeypatch):
     """Firmwares that use EnableDhcp get both fields; ones that don't must not
     grow a field they never had."""
-    monkeypatch.setattr(mod, "find_ip_by_mac", lambda *a, **k: "192.168.88.57")
+    monkeypatch.setattr(base, "find_ip_by_mac", lambda *a, **k: "192.168.88.57")
     client.network["eth0"]["EnableDhcp"] = False
 
     client.set_dhcp(mac=CAMERA_MAC, subnets=["192.168.88.0/24"], wait=30)
@@ -93,7 +101,7 @@ def test_set_dhcp_writes_the_alternate_field_name_too(client, monkeypatch):
 
 def test_set_dhcp_leaves_the_static_fallback_alone(client, monkeypatch):
     """The static address stays as the camera's fallback if no lease arrives."""
-    monkeypatch.setattr(mod, "find_ip_by_mac", lambda *a, **k: "192.168.88.57")
+    monkeypatch.setattr(base, "find_ip_by_mac", lambda *a, **k: "192.168.88.57")
     client.set_dhcp(mac=CAMERA_MAC, subnets=["192.168.88.0/24"], wait=30)
     assert written_iface(client)["IPAddress"]["IPAddress"] == "192.168.1.123"
 
@@ -107,7 +115,7 @@ def test_set_dhcp_keeps_looking_until_the_lease_appears(client, monkeypatch):
         attempts.append(mac)
         return "192.168.88.57" if len(attempts) > 1 else None
 
-    monkeypatch.setattr(mod, "find_ip_by_mac", locate)
+    monkeypatch.setattr(base, "find_ip_by_mac", locate)
 
     row = client.set_dhcp(mac=CAMERA_MAC, subnets=["192.168.88.0/24"], wait=5)
 
@@ -116,7 +124,7 @@ def test_set_dhcp_keeps_looking_until_the_lease_appears(client, monkeypatch):
 
 
 def test_set_dhcp_reports_a_lease_that_never_appears(client, monkeypatch):
-    monkeypatch.setattr(mod, "find_ip_by_mac", lambda *a, **k: None)
+    monkeypatch.setattr(base, "find_ip_by_mac", lambda *a, **k: None)
 
     row = client.set_dhcp(mac=CAMERA_MAC, subnets=["192.168.88.0/24"], wait=0)
 
@@ -130,9 +138,9 @@ def test_set_dhcp_follows_a_camera_that_is_not_serving_yet(client, monkeypatch):
     its web server wasn't up before the window closed. Reporting the failure is
     right; leaving the client pointed at the address the camera LEFT is not —
     verification would then be skipped on an address that is dead by definition."""
-    monkeypatch.setattr(mod, "find_ip_by_mac", lambda *a, **k: None)
-    monkeypatch.setattr(mod, "arp_table",
-                        lambda: {mod.canonical_mac(CAMERA_MAC):
+    monkeypatch.setattr(base, "find_ip_by_mac", lambda *a, **k: None)
+    monkeypatch.setattr(base, "arp_table",
+                        lambda: {base.canonical_mac(CAMERA_MAC):
                                  ["192.168.1.123", "192.168.88.57"]})
 
     row = client.set_dhcp(mac=CAMERA_MAC, subnets=["192.168.88.0/24"], wait=0)
@@ -147,7 +155,7 @@ def test_set_dhcp_follows_a_camera_that_is_not_serving_yet(client, monkeypatch):
 def test_set_dhcp_explains_a_camera_it_never_saw(client, monkeypatch):
     """The other failure mode looks identical from the outside but needs a
     different fix, so the message has to distinguish them."""
-    monkeypatch.setattr(mod, "find_ip_by_mac", lambda *a, **k: None)
+    monkeypatch.setattr(base, "find_ip_by_mac", lambda *a, **k: None)
 
     row = client.set_dhcp(mac=CAMERA_MAC, subnets=["192.168.88.0/24"], wait=0)
 
@@ -159,7 +167,7 @@ def test_set_dhcp_without_a_mac_still_switches_but_fails_the_check(client, monke
     def boom(*a, **k):
         raise AssertionError("nothing to search for without a MAC")
 
-    monkeypatch.setattr(mod, "find_ip_by_mac", boom)
+    monkeypatch.setattr(base, "find_ip_by_mac", boom)
 
     row = client.set_dhcp(mac="", subnets=["192.168.88.0/24"], wait=30)
 
@@ -171,7 +179,7 @@ def test_set_dhcp_without_a_mac_still_switches_but_fails_the_check(client, monke
 def test_set_dhcp_survives_the_dropped_reply(client, monkeypatch):
     """The setConfig reply usually never arrives — the camera drops the link
     applying it. That is the expected path, not a failure."""
-    monkeypatch.setattr(mod, "find_ip_by_mac", lambda *a, **k: "192.168.88.57")
+    monkeypatch.setattr(base, "find_ip_by_mac", lambda *a, **k: "192.168.88.57")
 
     def rpc(method, params=None, **kwargs):
         if method == "configManager.getConfig":

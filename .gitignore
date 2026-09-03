@@ -68,7 +68,12 @@ bench/tsw-config-ui/config/tsw.config.json
 bench/tsw-config-ui/firmware/
 
 # Raythink camera tool — real config (copy from the example).
-# The config/profiles/ exports ship committed (no secrets; needed at runtime).
+# The config/profiles/ exports ship committed, because they are needed at
+# runtime. That is only safe for a SANITIZED export: a raw one from the newer
+# (REST) cameras carries the station password in plaintext under OnvifUser, and
+# both generations carry the reference camera's own address. Run any new export
+# through `raythink_configure.py --sanitize-profile` before committing it —
+# see "Config profiles" in bench/raythink-config-ui/README.md.
 bench/raythink-config-ui/config/raythink.config.json
 
 # The address mode each tool is set to (TEC-848) — station state an operator

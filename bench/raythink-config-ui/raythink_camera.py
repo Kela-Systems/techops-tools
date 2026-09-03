@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
 """
-Raythink thermal-camera device client (Dahua-OEM RPC2 JSON API).
+Raythink thermal-camera device client for the OLDER cameras (Dahua-OEM RPC2
+JSON API).
+
+This is one of the two generations the bench provisions. A camera of this
+generation reports a firmware version like `1.000.General 00.0.T, build:
+2025-04-09`; the newer ones report `B1.2.01.01.15, 2026-05-14` and speak a
+completely different REST API (`raythink_rest.py`). `raythink_client` tells them
+apart and hands the pipeline whichever client fits, so nothing above this file
+knows which it got.
+
+Everything that is not RPC2-specific — the addressing steps, the reachability
+helpers, the verification report — lives in `raythink_base.py`; this file
+supplies the RPC2 half through that base's hooks.
 
 A fresh camera boots on a static 192.168.1.123 with admin/admin and speaks the
 Dahua "RPC2" JSON protocol (the web UI's own stack — see the device's
-js/core/interfaceBase.js). This module is the field client both the pipeline and
-the bench UI build on; the per-device pipeline lives in raythink_configure.py.
+js/core/interfaceBase.js).
 
 Protocol, reverse-engineered from the camera's own scripts:
 
@@ -32,54 +43,34 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import logging
 import os
 import re
-import socket
 import sys
-import time
 from datetime import datetime, timezone
 from typing import Optional
 
 try:
     import requests
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 except ImportError:
     sys.exit("This script needs 'requests'.  Install it with:  pip install requests")
 
-from bench_core import (
+from raythink_base import (
+    DEFAULT_HOST,
+    DEFAULT_INITIAL_PASSWORD,
+    DEFAULT_NEW_PASSWORD,
+    DEFAULT_NTP_SERVER,
+    DEFAULT_SCHEME,
+    DEFAULT_USERNAME,
+    GEN_RPC2,
+    BaseRaythinkClient,
+    CameraError,
     MutationBlocked,
-    arp_table,
-    canonical_mac,
-    find_ip_by_mac,
+    NetworkView,
     format_verification,
-    host_iface_for,
-    install_log_context,
-    renew_host_dhcp,
+    log,
+    sanitize_profile,
     set_log_serial,
 )
-
-# All device-talking steps log through this named logger so the bench UI's
-# StepCollector and rolling file handler pick them up (same pattern as the
-# Teltonika client's "teltonika" logger). The context filter (shared serial +
-# lowercased level) and set_log_serial come from bench_core.
-log = logging.getLogger("raythink")
-install_log_context(log)
-
-
-# --- Raythink factory defaults ----------------------------------------------
-DEFAULT_HOST = "192.168.1.123"
-DEFAULT_USERNAME = "admin"
-DEFAULT_SCHEME = "http"
-DEFAULT_INITIAL_PASSWORD = "admin"
-DEFAULT_NEW_PASSWORD = "Kelafield123!"
-DEFAULT_NTP_SERVER = "192.168.88.10"
-
-# Pacing of the hunt for a camera that was just switched to DHCP (set_dhcp).
-DHCP_SETTLE_SEC = 10        # before looking: let it drop its old address
-DHCP_HOST_RENEW_SEC = 45    # re-renew this PC's own lease while waiting
-DHCP_PROGRESS_SEC = 20      # how often to log that we are still looking
 
 # Every RPC2 method this tool uses that changes the camera (TEC-348). `_rpc`
 # refuses these outright on a read-only client, which covers set_ntp,
@@ -87,6 +78,10 @@ DHCP_PROGRESS_SEC = 20      # how often to log that we are still looking
 # as an explicit list rather than a name pattern because `configManager.getConfig`
 # and `setConfig` differ by three letters and a heuristic that got that wrong
 # would either block reads or let writes through.
+#
+# The REST client gates the same thing far more cheaply — anything that is not a
+# GET is a write — but RPC2 tunnels everything through one POST, so here the
+# list is the only thing that can tell a read from a write.
 MUTATING_RPC_METHODS = frozenset({
     "configManager.setConfig",
     "global.setCurrentTime",
@@ -110,49 +105,22 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-class CameraError(Exception):
-    """A hard, run-aborting device error (login, password, network)."""
+class RaythinkCameraClient(BaseRaythinkClient):
+    """One older Raythink camera over the RPC2 JSON API."""
 
+    generation = GEN_RPC2
 
-class RaythinkCameraClient:
-    """One Raythink camera over the RPC2 JSON API. Stateless between calls apart
-    from the login session; never raises on a transport blip during the IP move
-    (the device is leaving its address by then)."""
-
-    # verify=False is intentional (bench): the camera's RPC2 API is plain HTTP by
-    # default on a direct local link, so there is no TLS chain to validate.
     def __init__(self, host: str = DEFAULT_HOST, username: str = DEFAULT_USERNAME,
                  scheme: str = DEFAULT_SCHEME, verify: bool = False, timeout: int = 15):
-        self.host = host
-        self.username = username
-        self.scheme = scheme
-        self.timeout = timeout
-        self.base = f"{scheme}://{host}"
-        self.s = requests.Session()
-        self.s.verify = verify
+        super().__init__(host=host, username=username, scheme=scheme,
+                         verify=verify, timeout=timeout)
         self.session = 0          # RPC2 session id (int); 0 until first login
         self._id = 0
-        self.password: Optional[str] = None
         self.encryption = "Default"
         self.realm = ""
         self.hash_uppercase = True   # which hex case the device accepted at login
-        # A verify-only run must not be able to change the camera even by
-        # accident (TEC-348). Every write on this device goes through one of a
-        # handful of named RPC methods, so the gate sits in `_rpc` against a
-        # deny-list — a new write method has to be added to it, but a new READ
-        # never breaks.
-        self.read_only = False
-
-    def set_read_only(self) -> None:
-        """Refuse every write from here on. One-way on purpose: nothing in a
-        verify run has a reason to turn it back off."""
-        self.read_only = True
-        log.info("Client is now read-only — any write will be refused.")
 
     # --- transport ----------------------------------------------------------
-    def _port(self) -> int:
-        return 443 if self.scheme == "https" else 80
-
     def _rpc(self, method: str, params=None, *, url: str = "/RPC2",
              session: Optional[int] = None, raise_on_error: bool = True) -> dict:
         """One RPC2 call. Returns the parsed JSON. Raises CameraError when
@@ -258,7 +226,7 @@ class RaythinkCameraClient:
                 self._rpc("global.logout", raise_on_error=False)
             except CameraError:
                 pass
-        self.s.close()
+        super().close()
 
     # --- identity -----------------------------------------------------------
     def _serial_from_realm(self) -> str:
@@ -282,11 +250,7 @@ class RaythinkCameraClient:
 
         mac = "unknown"
         try:
-            net = self._rpc("configManager.getConfig", {"name": "Network"},
-                            raise_on_error=False).get("params", {}).get("table", {}) or {}
-            iface = net.get("DefaultInterface") or "eth0"
-            eth = net.get(iface, {}) if isinstance(net.get(iface), dict) else {}
-            mac = eth.get("PhysicalAddress") or net.get("PhysicalAddress") or "unknown"
+            mac = self.read_network().mac or "unknown"
         except Exception:  # noqa: BLE001 — MAC is best-effort; never fail identity over it
             pass
 
@@ -357,40 +321,6 @@ class RaythinkCameraClient:
         self.relogin([new_password])
         log.info("Password changed.")
 
-    # --- reachability / relogin --------------------------------------------
-    def port_open(self, host: Optional[str] = None) -> bool:
-        try:
-            with socket.create_connection((host or self.host, self._port()), timeout=3):
-                return True
-        except OSError:
-            return False
-
-    def wait_reachable(self, timeout: int = 180, host: Optional[str] = None) -> bool:
-        """Block until host:port answers (used after an import that may reboot)."""
-        target = host or self.host
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self.port_open(target):
-                return True
-            time.sleep(3)
-        return False
-
-    def relogin(self, candidates: list[str], settle: int = 0) -> None:
-        """Re-establish a session, trying each candidate password in turn. Used
-        after a password change or a config import that may reset the session.
-        Raises CameraError only if none work."""
-        if settle:
-            time.sleep(settle)
-        last = None
-        for pw in [p for p in candidates if p]:
-            try:
-                self.login(pw)
-                return
-            except CameraError as e:
-                last = e
-                continue
-        raise CameraError(f"Could not re-login after the previous step: {last}")
-
     # --- config import ------------------------------------------------------
     @staticmethod
     def _normalize_tables(data) -> dict:
@@ -423,6 +353,12 @@ class RaythinkCameraClient:
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         tables = self._normalize_tables(data)
+        # Defence in depth: the same guarantee the newer cameras get. A profile
+        # carrying an address would move the camera here, mid-pipeline, instead
+        # of at the end where the run can follow it.
+        tables, notes = sanitize_profile(tables, secrets=(self.password or "",))
+        for note in notes:
+            log.info("import: %s.", note)
         if not tables:
             raise CameraError(f"Config file {json_path} has no config tables to import.")
         log.info("Importing %d config table(s) from %s ...", len(tables), json_path)
@@ -457,6 +393,11 @@ class RaythinkCameraClient:
         self._rpc("configManager.setConfig", {"name": "NTP", "table": table, "options": []})
         log.info("NTP set.")
 
+    def read_ntp(self) -> dict:
+        table = self._rpc("configManager.getConfig", {"name": "NTP"}).get(
+            "params", {}).get("table", {}) or {}
+        return {"address": table.get("Address", ""), "enable": bool(table.get("Enable"))}
+
     def sync_time_to_pc(self) -> None:
         """Set the camera clock to this PC's current local time — the web UI's
         Setup > System > General > Date & Time 'Sync to PC' button. Dahua RPC is
@@ -475,7 +416,7 @@ class RaythinkCameraClient:
                               f"{err.get('code')} {err.get('message', '')}".strip())
         log.info("Camera clock set to %s.", now)
 
-    # --- addressing (LAST: drops the connection) ----------------------------
+    # --- addressing hooks ---------------------------------------------------
     def _network_table(self) -> tuple[dict, dict]:
         """The device's Network config table and the default interface's section
         inside it — both mutable, ready to hand back to setConfig. The interface
@@ -500,163 +441,48 @@ class RaythinkCameraClient:
         if "EnableDhcp" in eth:
             eth["EnableDhcp"] = enabled
 
-    def _apply_network(self, table: dict, what: str) -> None:
-        """Write the Network table back. The reply may never arrive — the address
-        changes mid-request — so a transport error means 'the move started', not
-        a failure."""
-        try:
-            self._rpc("configManager.setConfig",
-                      {"name": "Network", "table": table, "options": []},
-                      raise_on_error=False)
-        except CameraError as e:
-            log.info("Connection dropped applying %s (expected): %s", what, e)
-
-    def set_static_ip(self, ip: str, netmask: str, gateway: str, wait: int = 120) -> dict:
-        """Move the camera to a static IP. We are talking to it over that very
-        interface, so the change drops the connection by design: we read-modify-
-        write the Network table, fire setConfig, then confirm the device answers
-        on the NEW address (renewing the host's DHCP lease so the laptop can
-        follow). Returns a verification-style check; never raises after the write
-        (the device is moving whether we can still see it or not)."""
+    def read_network(self) -> NetworkView:
         table, eth = self._network_table()
-
-        # Two known schemas: a nested IPAddress object, or flat fields. Support
-        # both by writing whichever the device already uses.
-        self._set_dhcp_flags(eth, False)
-        if isinstance(eth.get("IPAddress"), dict):
-            addr = eth["IPAddress"]
-            # nested keys also vary: IPAddress vs Address
-            if "Address" in addr and "IPAddress" not in addr:
-                addr["Address"] = ip
-            else:
-                addr["IPAddress"] = ip
-            addr["SubnetMask"] = netmask
-            addr["DefaultGateway"] = gateway
+        addr = eth.get("IPAddress")
+        if isinstance(addr, dict):
+            # Nested schema; the inner key varies too (IPAddress vs Address).
+            ip = addr.get("IPAddress") or addr.get("Address") or ""
+            netmask = addr.get("SubnetMask", "")
+            gateway = addr.get("DefaultGateway", "")
         else:
-            eth["IPAddress"] = ip
-            eth["SubnetMask"] = netmask
-            eth["DefaultGateway"] = gateway
+            ip = addr or ""
+            netmask = eth.get("SubnetMask", "")
+            gateway = eth.get("DefaultGateway", "")
+        return NetworkView(
+            iface=table.get("DefaultInterface") or "eth0",
+            ip=ip, netmask=netmask, gateway=gateway,
+            dhcp=bool(eth.get("DhcpEnable", eth.get("EnableDhcp"))),
+            mac=eth.get("PhysicalAddress") or table.get("PhysicalAddress") or "",
+        )
 
-        iface_host = host_iface_for(self.host)  # resolve while still reachable
-        log.info("Moving the camera from %s to %s — the connection will drop ...",
-                 self.host, ip)
-        self._apply_network(table, "the IP")
-
-        # Follow the device to its new address.
-        self.host = ip
-        self.base = f"{self.scheme}://{ip}"
-        deadline = time.time() + wait
-        time.sleep(5)
-        renew_host_dhcp(iface_host)
-        renewed_again = False
-        while time.time() < deadline:
-            if self.port_open(ip):
-                log.info("Camera is answering on %s.", ip)
-                return {"item": "static IP", "expected": ip,
-                        "actual": f"answering on {ip}", "ok": True}
-            if not renewed_again and time.time() > deadline - wait / 2:
-                renew_host_dhcp(iface_host)
-                renewed_again = True
-            time.sleep(3)
-        log.warning("Camera did not answer on %s within %ds — it may still be fine; "
-                    "check the laptop has an address in that subnet.", ip, wait)
-        return {"item": "static IP", "expected": ip,
-                "actual": f"no answer on {ip} after {wait}s (laptop subnet?)", "ok": False}
-
-    def set_dhcp(self, *, mac: str, subnets: list[str], wait: int = 300) -> dict:
-        """Switch the camera to DHCP — the alternative last step to
-        set_static_ip, for a site where the camera is meant to take its address
-        from the local DHCP server rather than a bench-assigned one.
-
-        Same shape as the static move (read-modify-write the Network table, fire
-        setConfig, expect the connection to drop), with one difference that
-        drives everything else: we don't know where the camera reappears. So
-        instead of following it to an address we chose, we sweep `subnets` for
-        its `mac` until it turns up, then repoint the client at whatever it got.
-        The static IP/mask/gateway fields are left untouched on purpose — the
-        camera falls back to them if no lease ever arrives, which is a more
-        useful failure than an unreachable camera with no address at all.
-
-        `wait` has to cover the camera rebooting, requesting a lease AND
-        starting its web server, which is a lot longer than a static move where
-        only the address changes. The wait is not silent — progress is logged, so
-        an operator watching the step log can see it is still looking.
-
-        Returns a verification-style check; never raises after the write."""
+    def apply_network(self, *, dhcp: bool, ip: str = "", netmask: str = "",
+                      gateway: str = "") -> None:
         table, eth = self._network_table()
-        self._set_dhcp_flags(eth, True)
-
-        left_behind = self.host
-        iface_host = host_iface_for(self.host)  # resolve while still reachable
-        log.info("Switching the camera at %s to DHCP — the connection will drop ...",
-                 self.host)
-        self._apply_network(table, "DHCP")
-
-        row = {"item": "DHCP lease", "expected": "an address from the DHCP server"}
-        if not mac:
-            # Without a MAC there is nothing stable to search for: the camera is
-            # on DHCP now, but this run can't say where or verify anything on it.
-            log.error("No MAC known for this camera — cannot find it again after "
-                      "the switch to DHCP.")
-            return {**row, "actual": "switched to DHCP, but no MAC was known to "
-                                     "find the camera again", "ok": False}
-
-        log.info("Looking for the camera by MAC %s on %s (up to %ds — it has to "
-                 "reboot, take a lease and start serving) ...",
-                 mac, ", ".join(subnets) or "(no subnets configured)", wait)
-        # Let it actually leave first: probed too early it can still be answering
-        # on the address it is about to drop, which would look like "found it".
-        time.sleep(DHCP_SETTLE_SEC)
-        renew_host_dhcp(iface_host)
-
-        deadline = time.time() + wait
-        next_renew = time.time() + DHCP_HOST_RENEW_SEC
-        next_note = time.time() + DHCP_PROGRESS_SEC
-        while time.time() < deadline:
-            found = find_ip_by_mac(mac, subnets, port=self._port())
-            if found:
-                log.info("Camera is answering on %s.", found)
-                self.host = found
-                self.base = f"{self.scheme}://{found}"
-                return {**row, "actual": f"answering on {found}", "ok": True}
-            now = time.time()
-            if now >= next_renew:
-                # The laptop may need a lease on the camera's new subnet before
-                # it can see the camera there at all, so keep asking.
-                renew_host_dhcp(iface_host)
-                next_renew = now + DHCP_HOST_RENEW_SEC
-            if now >= next_note:
-                seen_at = arp_table().get(canonical_mac(mac), [])
-                log.info("...still looking for the camera (%ds left)%s",
-                         int(deadline - now),
-                         f"; its MAC is cached at {', '.join(seen_at)} but nothing "
-                         f"answers there yet" if seen_at else "")
-                next_note = now + DHCP_PROGRESS_SEC
-            time.sleep(3)
-
-        # Out of time. Say precisely what the bench could and couldn't see — the
-        # two failures need different fixes and look identical from the outside.
-        seen_at = [ip for ip in arp_table().get(canonical_mac(mac), [])
-                   if ip != left_behind]
-        if seen_at:
-            log.warning("Camera's MAC %s is cached at %s but it never answered on "
-                        "port %d within %ds.", mac, ", ".join(seen_at), self._port(), wait)
-            # Point at it anyway: it is where the camera is, so verification gets
-            # one more chance (it may have come up in the last few seconds) and
-            # the operator gets an address to go and look at instead of a dead
-            # end on the address the camera left.
-            self.host = seen_at[0]
-            self.base = f"{self.scheme}://{seen_at[0]}"
-            return {**row, "actual": f"took {', '.join(seen_at)} but never answered "
-                                     f"on port {self._port()} within {wait}s",
-                    "ok": False}
-        log.warning("Never saw MAC %s on %s within %ds — the camera is on DHCP, but "
-                    "nothing could be verified on it.", mac, ", ".join(subnets), wait)
-        return {**row, "actual": f"no sign of MAC {mac} on {', '.join(subnets)} within "
-                                 f"{wait}s — is there a DHCP server on those subnets, "
-                                 f"and does this PC hold an address on the one the "
-                                 f"camera landed on? (a device is only findable by MAC "
-                                 f"on a subnet this PC is itself on)", "ok": False}
+        self._set_dhcp_flags(eth, dhcp)
+        if not dhcp:
+            # Two known schemas: a nested IPAddress object, or flat fields.
+            # Support both by writing whichever the device already uses.
+            if isinstance(eth.get("IPAddress"), dict):
+                addr = eth["IPAddress"]
+                # nested keys also vary: IPAddress vs Address
+                if "Address" in addr and "IPAddress" not in addr:
+                    addr["Address"] = ip
+                else:
+                    addr["IPAddress"] = ip
+                addr["SubnetMask"] = netmask
+                addr["DefaultGateway"] = gateway
+            else:
+                eth["IPAddress"] = ip
+                eth["SubnetMask"] = netmask
+                eth["DefaultGateway"] = gateway
+        self._rpc("configManager.setConfig",
+                  {"name": "Network", "table": table, "options": []},
+                  raise_on_error=False)
 
     # --- ONVIF (a SEPARATE credential store from the system user) -----------
     # IMPORTANT: ONVIF keeps its own credential, distinct from the system/web
@@ -666,6 +492,9 @@ class RaythinkCameraClient:
     # change the ONVIF password. Verified on a live unit: a normally-provisioned
     # camera still had ONVIF admin/admin after its web password became the target.
     # We therefore set it explicitly over the standard ONVIF SetUser op.
+    #
+    # The newer cameras expose the same thing as two plain JSON calls; this SOAP
+    # block exists only because the RPC2 generation has no such endpoint.
     _ONVIF_WSSE = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
     _ONVIF_WSU = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"
     _ONVIF_T_DIGEST = ("http://docs.oasis-open.org/wss/2004/01/"
@@ -721,6 +550,10 @@ class RaythinkCameraClient:
             return False, "ONVIF rejected the credentials (NotAuthorized)", []
         return False, f"unexpected ONVIF reply (HTTP {code}): {text[:120]}", []
 
+    def onvif_check(self, password: str) -> tuple[bool, str]:
+        ok, detail, _users = self.onvif_get_users(password)
+        return ok, detail
+
     def set_onvif_password(self, new_password: str, current_candidates: list[str]) -> None:
         """Set the ONVIF 'admin' user's password to new_password via the standard
         ONVIF SetUser op (the web UI's Setup > System > Account > ONVIF User).
@@ -758,91 +591,12 @@ class RaythinkCameraClient:
             raise CameraError(f"ONVIF password did not take after SetUser: {detail}")
         log.info("ONVIF password set (%s).", detail)
 
-    # --- verification -------------------------------------------------------
-    def verify_configuration(self, *, new_password: str, ntp_server: str,
-                             ip: str = "", netmask: str = "", gateway: str = "",
-                             dhcp: bool = False,
-                             profile_name: str = "", imported: Optional[dict] = None,
-                             check_onvif: bool = True) -> list[dict]:
-        """Re-read the settings we changed and confirm they took. Runs AFTER the
-        addressing change, so it talks to the device on its new address (we are
-        already re-pointed there). Returns {item, expected, actual, ok} rows.
 
-        With `dhcp`, the address checks confirm the camera is on DHCP and holds a
-        lease; the mask and gateway are reported but not asserted (the DHCP
-        server chose them, so there is nothing of ours to compare against) —
-        `ip`/`netmask`/`gateway` are then unused."""
-        checks: list[dict] = []
-
-        def add(item, expected, actual, ok):
-            checks.append({"item": item, "expected": expected, "actual": actual, "ok": ok})
-
-        # Password: we are authenticated on new_password (we re-logged-in under
-        # it). Neither side of this row may carry an actual password — these rows
-        # go to bench-central verbatim, and `actual` on a failure would be the
-        # password the camera is still on (TEC-349).
-        on_target = self.password == new_password
-        add("admin password", "the shared password",
-            "in use" if on_target else "NOT set — the camera is still on another "
-                                       "password",
-            on_target)
-
-        # ONVIF user: a separate credential we set explicitly; confirm it answers
-        # an authenticated ONVIF call with admin/new_password.
-        if check_onvif:
-            ok, detail, _users = self.onvif_get_users(new_password)
-            add(f"ONVIF login ({self.username})", "the shared password", detail, ok)
-
-        if profile_name:
-            applied = len((imported or {}).get("applied", []))
-            skipped = len((imported or {}).get("skipped", []))
-            add("config profile", profile_name,
-                f"{profile_name}: {applied} table(s) applied" + (f", {skipped} skipped" if skipped else ""),
-                applied > 0)
-
-        try:
-            ntp = self._rpc("configManager.getConfig", {"name": "NTP"}).get(
-                "params", {}).get("table", {}) or {}
-            got = ntp.get("Address", "")
-            add("NTP server", ntp_server, f"{got} (enable={ntp.get('Enable')})",
-                got == ntp_server and bool(ntp.get("Enable")))
-        except CameraError as e:
-            add("NTP server", ntp_server, f"read failed: {e}", False)
-
-        try:
-            net = self._rpc("configManager.getConfig", {"name": "Network"}).get(
-                "params", {}).get("table", {}) or {}
-            iface = net.get("DefaultInterface") or "eth0"
-            eth = net.get(iface, {}) if isinstance(net.get(iface), dict) else {}
-            addr = eth.get("IPAddress")
-            if isinstance(addr, dict):
-                got_ip = addr.get("IPAddress") or addr.get("Address") or ""
-                got_mask = addr.get("SubnetMask", "")
-                got_gw = addr.get("DefaultGateway", "")
-            else:
-                got_ip = addr or ""
-                got_mask = eth.get("SubnetMask", "")
-                got_gw = eth.get("DefaultGateway", "")
-            got_dhcp = eth.get("DhcpEnable", eth.get("EnableDhcp"))
-            if dhcp:
-                add("DHCP", "enabled, with a lease",
-                    f"{got_ip or 'no address'} (dhcp={got_dhcp})",
-                    bool(got_dhcp) and bool(got_ip))
-                add("subnet mask", "(from DHCP)", got_mask or "?", None)
-                add("gateway", "(from DHCP)", got_gw or "?", None)
-            else:
-                # DHCP has to be OFF as well as the address being right: a lease
-                # that happens to match the assignment today is not the static
-                # assignment, and the next lease need not match.
-                add("static IP", ip, f"{got_ip} (dhcp={got_dhcp})",
-                    got_ip == ip and not got_dhcp)
-                add("subnet mask", netmask, got_mask or "?", got_mask == netmask)
-                add("gateway", gateway, got_gw or "?", got_gw == gateway)
-        except CameraError as e:
-            add("DHCP" if dhcp else "static IP", "enabled, with a lease" if dhcp else ip,
-                f"read failed: {e}", False)
-
-        return checks
-
-
-# format_verification is re-exported above from bench_core (identical report).
+# Re-exported so the pipeline, the UI and the tests keep importing the shared
+# names from here, as they did when this file was the only client.
+__all__ = [
+    "DEFAULT_HOST", "DEFAULT_INITIAL_PASSWORD", "DEFAULT_NEW_PASSWORD",
+    "DEFAULT_NTP_SERVER", "DEFAULT_SCHEME", "DEFAULT_USERNAME",
+    "MUTATING_RPC_METHODS", "CameraError", "MutationBlocked", "NetworkView",
+    "RaythinkCameraClient", "format_verification", "log", "set_log_serial",
+]

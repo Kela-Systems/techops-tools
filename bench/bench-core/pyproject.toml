@@ -9,6 +9,12 @@ requires-python = ">=3.10"
 dependencies = [
     "requests~=2.32",
     "paramiko~=4.0",
+    # The newer Raythink cameras encrypt the login password with AES-128-CBC
+    # under a fixed key before sending it (raythink_rest.py). Already installed
+    # as one of paramiko's own dependencies, but named here too: a transitive
+    # dependency is not a promise, and paramiko dropping it would break a tool
+    # that has nothing to do with SSH.
+    "cryptography>=42",
     # Windows ships no system tz database, and zoneinfo has nothing to fall back
     # on there. expected_utc_offset() needs it to say what "Asia/Jerusalem"
     # means right now, and the bench stations are Windows.
