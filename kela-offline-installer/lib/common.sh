@@ -105,8 +105,13 @@ check_bundle() {
 # `dir` is the directory whose .debs get checked: extra-debs/ during preflight,
 # and the seed partition after the copy, because the partition is what actually
 # ships and may be carrying debs from an earlier build.
+# `bundle` is optional and adds the cross-check against 02-kela: first boot runs
+# two package installs, the seed partition's `dpkg -i` and then the bundle's
+# `apt-get install`, and checking the sideloads against the ISO alone says
+# nothing about whether the second one still resolves on top of them.
 check_extra_debs() {
-  local baseline="$1" dir="${2:-$KITDIR/extra-debs}" flag="--baseline"
+  local baseline="$1" dir="${2:-$KITDIR/extra-debs}" bundle="${3:-}"
+  local flag="--baseline"
   if ! ls "$dir"/*.deb >/dev/null 2>&1; then
     echo "  no sideloaded debs in $dir — boxes get NO USB device policy"
     return 0
@@ -116,11 +121,13 @@ check_extra_debs() {
     echo "  WARNING: no $baseline, cannot verify sideloaded debs against the install"
     return 0
   fi
+  local -a bundle_arg=()
+  [ -n "$bundle" ] && [ -d "$bundle" ] && bundle_arg=(--bundle "$bundle")
   # Captured rather than piped: the exit status is the whole point, and in a
   # pipeline it would be sed's.
   local out rc=0
   out=$(python3 "$LIBDIR/collect-extra-debs.py" "$flag" "$baseline" \
-          --verify "$dir" 2>&1) || rc=$?
+          --verify "$dir" "${bundle_arg[@]+"${bundle_arg[@]}"}" 2>&1) || rc=$?
   printf '%s\n' "$out" | sed 's/^/  /'
   [ "$rc" -eq 0 ] || die "the sideloaded debs in $dir would break apt on every box
   built from this stick. Recollect the set with:
@@ -149,7 +156,7 @@ print(plistlib.loads(raw).get("ParentWholeDisk") or "" if raw.strip() else "")
 # Render the autoinstall seed onto a mounted CIDATA partition, and carry any
 # extra .deb files that the bundle's own dependency closure is missing.
 write_seed() {
-  local dest="$1" baseline="${2:-}"
+  local dest="$1" baseline="${2:-}" bundle="${3:-}"
   [ -d "$dest" ] || die "seed partition not mounted at $dest"
   [ -n "$PASSWORD_HASH" ] || die "resolve_password must run before write_seed"
   echo "  kela password from: $PASSWORD_SOURCE"
@@ -205,7 +212,7 @@ write_seed() {
   # An `if`, not a `&&` tail: a false test as the last statement would return
   # non-zero and abort the caller under `set -e`.
   if [ -n "$baseline" ]; then
-    check_extra_debs "$baseline" "$dest"
+    check_extra_debs "$baseline" "$dest" "$bundle"
   fi
 }
 

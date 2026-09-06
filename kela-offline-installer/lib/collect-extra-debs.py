@@ -323,7 +323,7 @@ def source_of(pkg):
     return pkg.get("Source", pkg["Package"]).split()[0]
 
 
-def resolve(targets, installed, index, provides):
+def resolve(targets, installed, index, provides, source="the archive"):
     """Select the packages that must be shipped, and say which are upgrades."""
     selected = {}
     problems = []
@@ -342,7 +342,7 @@ def resolve(targets, installed, index, provides):
         if pkg is None:
             candidates = sorted(provides.get(name, ()))
             if not candidates:
-                problems.append("no package named %s in the archive" % name)
+                problems.append("no package named %s in %s" % (name, source))
                 continue
             pkg = index[candidates[0]]
             name = pkg["Package"]
@@ -355,15 +355,30 @@ def resolve(targets, installed, index, provides):
             if dep_met(alts, version_in_play, provides):
                 continue
             # Rule 1: only reach for the archive when the installed version
-            # cannot satisfy the constraint at all.
+            # cannot satisfy the constraint at all. Among the alternatives,
+            # take one whose available version actually meets the constraint —
+            # picking merely by name lands on a candidate that is too old and
+            # reports a missing dependency further down instead of here.
             pick = None
-            for dep_name, _, _ in alts:
-                if dep_name in index or dep_name in provides:
+            for dep_name, op, want in alts:
+                cand = index.get(dep_name)
+                if cand is not None and satisfies(cand["Version"], op, want):
                     pick = dep_name
                     break
             if pick is None:
-                problems.append("%s depends on %s, which is not in the archive"
-                                % (name, " | ".join(a[0] for a in alts)))
+                for dep_name, op, want in alts:
+                    for provider, provided in sorted(provides.get(dep_name, {}).items()):
+                        if op is None or (provided is not None
+                                          and satisfies(provided, op, want)):
+                            pick = provider
+                            break
+                    if pick:
+                        break
+            if pick is None:
+                problems.append("%s depends on %s, which %s cannot satisfy"
+                                % (name, " | ".join(
+                                    a[0] + (" (%s %s)" % (a[1], a[2]) if a[1] else "")
+                                    for a in alts), source))
                 continue
             queue.append(pick)
 
@@ -430,6 +445,172 @@ def deb_control(path):
     return None
 
 
+def read_deb_dir(directory):
+    """{package: control stanza} for the readable .debs in a directory.
+
+    `._name` files are macOS AppleDouble stubs, written whenever a file with
+    extended attributes is copied onto FAT — which the seed partition is. They
+    match *.deb without being packages. The builders sweep them, but a stick
+    touched on any other Mac grows them back, so skip them here too.
+    """
+    found, unreadable = {}, []
+    for name in sorted(os.listdir(directory)):
+        if not name.endswith(".deb") or name.startswith("._"):
+            continue
+        ctrl = deb_control(os.path.join(directory, name))
+        if ctrl is None:
+            unreadable.append(name)
+        else:
+            found[ctrl["Package"]] = ctrl
+    return found, unreadable
+
+
+def read_flat_repo(path):
+    """Parse a flat apt repo's Packages index, newest version of each name."""
+    index = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for pkg in parse_stanzas(f.read()):
+            have = index.get(pkg["Package"])
+            if have is None or dpkg_cmp(pkg["Version"], have["Version"]) > 0:
+                index[pkg["Package"]] = pkg
+    return index
+
+
+def check_conflicts(records, state):
+    """Conflicts/Breaks declared by `records` that `state` actually trips."""
+    problems = []
+    for name, rec in sorted(records.items()):
+        for field in ("Conflicts", "Breaks"):
+            for alts in parse_relations(rec.get(field, "")):
+                for dep, op, want in alts:
+                    if dep == name:
+                        continue
+                    have = state.get(dep)
+                    if have is not None and satisfies(have, op, want):
+                        problems.append(
+                            "%s %s %s%s, which the box will have at %s"
+                            % (name, field.lower(), dep,
+                               (" (%s %s)" % (op, want)) if op else "", have))
+    return problems
+
+
+def stranded_siblings(upgrades, installed, index):
+    """Installed packages an upgrade in this set would likely strand.
+
+    `check_lockstep` reads the sibling relation off a Source field, which works
+    against the full Ubuntu index but not here: the bundle's flat repo carries a
+    few hundred packages and casper's manifest carries names and versions only —
+    no Source, no Depends. Shared version is a sound stand-in, because one
+    source's binaries are built and versioned together and a full Ubuntu version
+    string like 4.0.1really4.0.1-0ubuntu0.24.04.5 does not collide by accident.
+
+    This is the polkit break in general form: libpolkit-gobject-1-0 moved while
+    polkitd, pinned to the old version by `Depends: (= ...)`, stayed — and apt
+    then refused every transaction on the box.
+    """
+    stranded = {}
+    for name, (old, new) in sorted(upgrades.items()):
+        for other, version in sorted(installed.items()):
+            if other == name or version != old:
+                continue
+            # If the repo carries the sibling at the new version, apt can move
+            # it too, and will as soon as a dependency asks.
+            alongside = index.get(other)
+            if alongside is not None and dpkg_cmp(alongside["Version"], new) == 0:
+                continue
+            stranded.setdefault(name, []).append(other)
+    return stranded
+
+
+def check_bundle_debs(bundle, installed, shipped):
+    """Cross-check the sideload set against the Kela bundle it ships beside.
+
+    Two package installs happen on first boot, in this order: `dpkg -i` of the
+    seed partition's debs, then `apt-get install` of 02-kela/debs resolved
+    against 02-kela/apt. Verifying the sideloads against the ISO alone says
+    nothing about the second, so a bundle that wants a different version of
+    something the sideload just pinned would only surface on the box — after
+    Ubuntu has installed perfectly well and with the one-shot guard already set.
+
+    Fatal here means the bundle install cannot succeed. The `apt-get install`
+    that runs it exits 100 on any of these, which is where activation died.
+    """
+    problems, notes = [], []
+    debs_dir = os.path.join(bundle, "debs")
+    index_path = os.path.join(bundle, "apt", "Packages")
+
+    bundle_debs, unreadable = ({}, [])
+    if os.path.isdir(debs_dir):
+        bundle_debs, unreadable = read_deb_dir(debs_dir)
+    # Fatal, not skippable: an unreadable deb here is one the bundle install
+    # will choke on, and skipping it would turn the cross-check green by
+    # quietly dropping the very package it was asked about.
+    problems.extend("02-kela/debs/%s is not a readable .deb — a truncated copy "
+                    "will fail the bundle install on the box" % name
+                    for name in unreadable)
+    if not bundle_debs:
+        if not unreadable:
+            notes.append("no debs under 02-kela/debs — activate.sh installs Kela itself")
+        return problems, notes
+
+    repo = read_flat_repo(index_path) if os.path.exists(index_path) else {}
+    notes.append("bundle: %s" % ", ".join(
+        "%s %s" % (n, c["Version"]) for n, c in sorted(bundle_debs.items())))
+    notes.append("bundle apt repo: %s"
+                 % ("%d packages" % len(repo) if repo else "none — the debs are on their own"))
+
+    # The state the bundle install starts from: the ISO plus the sideloads,
+    # because the seed partition is installed first.
+    state = dict(installed)
+    for name, ctrl in shipped.items():
+        state[name] = ctrl["Version"]
+
+    # A sideload and the bundle repo both carrying one package is not fatal —
+    # apt resolves properly — but it means apt may move a version the sideload
+    # just placed, so it is worth naming.
+    for name in sorted(set(shipped) & set(repo)):
+        cmp_ = dpkg_cmp(repo[name]["Version"], shipped[name]["Version"])
+        if cmp_ != 0:
+            notes.append(
+                "both sets carry %s: sideload %s, bundle repo %s — apt may %s it "
+                "during the bundle install"
+                % (name, shipped[name]["Version"], repo[name]["Version"],
+                   "upgrade" if cmp_ > 0 else "downgrade"))
+
+    available = dict(repo)
+    available.update(bundle_debs)
+    provides = build_provides(available)
+    selected, upgrades, unmet = resolve(
+        sorted(bundle_debs), state, available, provides,
+        source="the bundle's own repo (02-kela/apt) plus the base install")
+    problems.extend(unmet)
+
+    pulled = sorted(n for n in selected if n not in bundle_debs)
+    notes.append("apt pulls %d package(s) off the drive: %s"
+                 % (len(pulled), ", ".join(pulled) if pulled else "none"))
+    if upgrades:
+        notes.append("the bundle install would change %d installed package(s): %s"
+                     % (len(upgrades), ", ".join(
+                         "%s %s->%s" % (n, o, v) for n, (o, v) in sorted(upgrades.items()))))
+        for name, siblings in sorted(
+                stranded_siblings(upgrades, state, available).items()):
+            old, new = upgrades[name]
+            problems.append(
+                "the bundle install moves %s %s -> %s, but %s stay(s) at %s and the "
+                "bundle repo has no %s build of them. Same-version packages are "
+                "siblings from one source; if any is pinned to the old version, apt "
+                "refuses the whole transaction and the box is stuck."
+                % (name, old, new, ", ".join(siblings), old, new))
+
+    final = dict(state)
+    for name, ctrl in selected.items():
+        final[name] = ctrl["Version"]
+    everything = dict(shipped)
+    everything.update(selected)
+    problems.extend(check_conflicts(everything, final))
+    return problems, notes
+
+
 def verify(directory, installed):
     """Check a sideload directory is safe to `dpkg -i` on top of `installed`.
 
@@ -438,25 +619,12 @@ def verify(directory, installed):
     Hold that and a partial upgrade is impossible, which is what the polkit
     break was.
     """
-    # `._name` files are macOS AppleDouble stubs, written whenever a file with
-    # extended attributes is copied onto FAT — which the seed partition is. They
-    # match *.deb without being packages. The builders sweep them, but a stick
-    # touched on any other Mac grows them back, so skip them here too rather
-    # than dying on one.
-    debs = sorted(f for f in os.listdir(directory)
-                  if f.endswith(".deb") and not f.startswith("._"))
-    if not debs:
-        return ["no .deb files in %s" % directory]
+    shipped, unreadable = read_deb_dir(directory)
+    if not shipped and not unreadable:
+        return ["no .deb files in %s" % directory], {}
 
-    problems = []
-    shipped = {}
-    for f in debs:
-        ctrl = deb_control(os.path.join(directory, f))
-        if ctrl is None:
-            problems.append("%s is not a readable .deb — truncated copy, or not "
-                            "a package at all" % f)
-            continue
-        shipped[ctrl["Package"]] = ctrl
+    problems = ["%s is not a readable .deb — truncated copy, or not a package "
+                "at all" % f for f in unreadable]
 
     state = dict(installed)
     for name, ctrl in shipped.items():
@@ -495,7 +663,7 @@ def verify(directory, installed):
             problems.append(
                 "%s depends on %s — not satisfied by the ISO's install nor by "
                 "anything in this directory" % (name, shown))
-    return problems
+    return problems, shipped
 
 
 def main():
@@ -515,6 +683,9 @@ def main():
     ap.add_argument("--verify", metavar="DIR",
                     help="check the .debs already in DIR instead of resolving; "
                          "reads the debs themselves and needs no network")
+    ap.add_argument("--bundle", metavar="DIR",
+                    help="with --verify, also cross-check against the Kela bundle "
+                         "(the 02-kela directory, or its parent)")
     args = ap.parse_args()
     targets = args.packages or ["usbguard"]
 
@@ -533,7 +704,21 @@ def main():
 
     if args.verify:
         print("verifying %s against that baseline" % args.verify)
-        problems = verify(args.verify, installed)
+        problems, shipped = verify(args.verify, installed)
+        checked_bundle = False
+        if args.bundle:
+            bundle = args.bundle
+            if os.path.isdir(os.path.join(bundle, "02-kela")):
+                bundle = os.path.join(bundle, "02-kela")
+            if os.path.isdir(bundle):
+                print("cross-checking against the bundle at %s" % bundle)
+                extra, notes = check_bundle_debs(bundle, installed, shipped)
+                for note in notes:
+                    print("  %s" % note)
+                problems.extend(extra)
+                checked_bundle = True
+            else:
+                print("  note: no bundle at %s — skipping the cross-check" % bundle)
         if problems:
             print("\nFAILED:")
             for p in problems:
@@ -541,6 +726,9 @@ def main():
             return 1
         print("\nOK: every dependency is satisfied and nothing in the base "
               "install changes version.")
+        if checked_bundle:
+            print("OK: the bundle install resolves on top of it, with no version "
+                  "collisions and no conflicts.")
         return 0
 
     print("reading archive indices (cache: %s)" % args.cache)

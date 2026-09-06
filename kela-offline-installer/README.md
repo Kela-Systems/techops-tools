@@ -114,7 +114,9 @@ half-upgrades that package's family, the siblings keep their
 on. There is no network to repair it with, activation dies at the bundle install
 with exit 100, and the one-shot guard denies it a second try. Preflight enforces
 this against the ISO's own package manifest and aborts the build; collect sets
-with `lib/collect-extra-debs.py` rather than by hand.
+with `lib/collect-extra-debs.py` rather than by hand. Preflight also cross-checks
+the bundle against the sideloads, since `apt-get install` of `02-kela/debs` runs
+straight after the `dpkg -i` and has to resolve on top of whatever it left.
 - The disk-selection rule is `size: smallest`. Subiquity's `size` and `ssd`
 matchers never return the install media, so the stick itself is safe, but any
 **other** idle USB/SD card in the box is a candidate — boot with no other

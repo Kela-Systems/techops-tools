@@ -68,8 +68,9 @@ write_esp_shim "$DISK" /Volumes/EFIBOOT
 echo "== seed: rewriting user-data and syncing extra-debs/ =="
 # The stick carries the ISO extracted onto EFIBOOT, so the sideloaded debs can
 # be verified against the exact install the box will get, with no ISO file and
-# no network.
-write_seed /Volumes/CIDATA /Volumes/EFIBOOT/casper
+# no network. The bundle on the data partition is read for the cross-check only
+# and never written; if it is not mounted the cross-check is skipped, not failed.
+write_seed /Volumes/CIDATA /Volumes/EFIBOOT/casper /Volumes/FOBDATA/02-kela
 
 echo "== ejecting =="
 sync

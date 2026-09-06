@@ -77,6 +77,7 @@ echo 'instance-id: kela-fob' > /mnt/seed/meta-data
 python3 $KIT/lib/render.py user-data.tmpl \
   PASSWORD_HASH="$(openssl passwd -6)" > /mnt/seed/user-data
 python3 $KIT/lib/collect-extra-debs.py --iso "$ISO" --verify $KIT/extra-debs \
+  --bundle "$SRC/02-kela" \
   || { echo "REFUSING to ship extra-debs — see extra-debs/README.md"; false; }
 cp $KIT/extra-debs/*.deb /mnt/seed/
 ls /mnt/seed/usbguard_*.deb >/dev/null \

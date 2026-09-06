@@ -46,6 +46,27 @@ python3 ../lib/collect-extra-debs.py --iso "/path/to/....iso" --verify .
 `make-usb-macos.sh` runs that same check during preflight and aborts the build
 if it fails, so a bad set cannot reach a stick.
 
+### Also check against the bundle
+
+The debs here are only half of what first boot installs. `kela-activate.sh`
+runs two package transactions in order: `dpkg -i` of this directory, then
+`apt-get install` of `02-kela/debs` resolved against the bundle's own
+`02-kela/apt` repo. Verifying against the ISO says nothing about the second
+one, so add `--bundle` to check that the bundle still resolves *on top of* the
+sideloads:
+
+```sh
+python3 ../lib/collect-extra-debs.py --baseline /Volumes/EFIBOOT/casper \
+  --verify . --bundle /path/to/bundle/02-kela
+```
+
+That reports a bundle package the sideloads make unsatisfiable, a
+`Conflicts`/`Breaks` between the two sets, an unreadable deb in the bundle, and
+an upgrade that would strand a same-source sibling. Both builders pass
+`--bundle` automatically. `--baseline` accepts a built stick's `EFIBOOT/casper`
+directory as well as an ISO, so a stick already in hand can be checked as it
+is — which is the useful thing to do before walking one to a box.
+
 ### Do not use the old container recipe
 
 `apt-get install --download-only usbguard` inside `ubuntu:24.04` is how the
