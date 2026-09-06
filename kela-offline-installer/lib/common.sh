@@ -157,6 +157,17 @@ write_seed() {
   python3 "$LIBDIR/render.py" user-data.tmpl "PASSWORD_HASH=$PASSWORD_HASH" \
     >"$dest/user-data" || die "rendering user-data failed"
 
+  # CIDATA is FAT and cannot hold extended attributes, so a plain `cp` from a
+  # macOS filesystem leaves an AppleDouble stub named `._<file>` beside every
+  # deb. Those stubs are not packages, and they match `*.deb`: first boot's
+  # `dpkg -i "$SEED"/*.deb` picks them up and errors on each one. Copy with -X
+  # so they are never created, and sweep any left by an earlier build.
+  local junk
+  for junk in "$dest"/._*; do
+    [ -e "$junk" ] || continue
+    rm -f "$junk"
+  done
+
   # Mirror extra-debs/, do not merge into it. Keeping whatever a previous build
   # left behind meant a refreshed stick shipped the union of both sets: the
   # correction landed next to the debs it was correcting, and first boot's
@@ -174,7 +185,7 @@ write_seed() {
   done
   [ "$keep" -eq 0 ] || echo "  $keep deb(s) already current on the seed partition"
   if ls "$KITDIR"/extra-debs/*.deb >/dev/null 2>&1; then
-    cp "$KITDIR"/extra-debs/*.deb "$dest/"
+    cp -X "$KITDIR"/extra-debs/*.deb "$dest/"
   fi
 
   if ls "$dest"/*.deb >/dev/null 2>&1; then

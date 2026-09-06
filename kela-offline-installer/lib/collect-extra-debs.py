@@ -402,10 +402,17 @@ def check_lockstep(selected, upgrades, installed, index):
 # Linux runbook has none.
 
 def deb_control(path):
-    """Extract a .deb's control stanza. dpkg-deb on Linux, bsdtar on macOS."""
+    """A .deb's control stanza, or None if the file is not a readable package.
+
+    None rather than an exit: the caller turns it into one reported problem
+    among others, which is more use than aborting the whole audit on the first
+    odd file in the directory.
+    """
     if shutil.which("dpkg-deb"):
         out = subprocess.run(["dpkg-deb", "-f", path],
-                             check=True, stdout=subprocess.PIPE)
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
         return next(parse_stanzas(out.stdout.decode("utf-8", "replace") + "\n\n"))
     tar = shutil.which("bsdtar") or shutil.which("tar")
     if not tar:
@@ -420,7 +427,7 @@ def deb_control(path):
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             if ctrl.returncode == 0 and ctrl.stdout:
                 return next(parse_stanzas(ctrl.stdout.decode("utf-8", "replace") + "\n\n"))
-    sys.exit("could not read a control file out of %s" % path)
+    return None
 
 
 def verify(directory, installed):
@@ -431,16 +438,26 @@ def verify(directory, installed):
     Hold that and a partial upgrade is impossible, which is what the polkit
     break was.
     """
-    debs = sorted(f for f in os.listdir(directory) if f.endswith(".deb"))
+    # `._name` files are macOS AppleDouble stubs, written whenever a file with
+    # extended attributes is copied onto FAT — which the seed partition is. They
+    # match *.deb without being packages. The builders sweep them, but a stick
+    # touched on any other Mac grows them back, so skip them here too rather
+    # than dying on one.
+    debs = sorted(f for f in os.listdir(directory)
+                  if f.endswith(".deb") and not f.startswith("._"))
     if not debs:
         return ["no .deb files in %s" % directory]
 
+    problems = []
     shipped = {}
     for f in debs:
         ctrl = deb_control(os.path.join(directory, f))
+        if ctrl is None:
+            problems.append("%s is not a readable .deb — truncated copy, or not "
+                            "a package at all" % f)
+            continue
         shipped[ctrl["Package"]] = ctrl
 
-    problems = []
     state = dict(installed)
     for name, ctrl in shipped.items():
         if name in installed:
