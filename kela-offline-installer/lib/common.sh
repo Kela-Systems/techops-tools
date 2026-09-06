@@ -68,7 +68,22 @@ check_bundle() {
   [ -d "$k" ] || die "no 02-kela directory under $src — is this a Kela bundle?"
   [ -f "$k/activate.sh" ] || die "$k/activate.sh missing — nothing to activate"
 
-  restore_nullglob=$(shopt -p nullglob)
+  # A bundle whose activate.sh hardcodes --keep-slot-key keeps the slot key on
+  # every box it activates, and no CIDATA marker can opt out of that. Say so at
+  # build time: a stick going to a site is supposed to spend its slot, and this
+  # is the difference between a spent drive and one that still mints clusters.
+  if grep -q -- '--keep-slot-key' "$k/activate.sh" 2>/dev/null; then
+    echo "  slot keys: activate.sh passes --keep-slot-key unconditionally, so every"
+    echo "    box activated from this bundle LEAVES its cluster-CA key on the drive"
+    echo "    and the kela-keep-slot-key marker cannot opt out. Treat any stick"
+    echo "    built from it as holding live cluster-CA material after an install."
+  fi
+
+  # `shopt -p` exits 1 when the option is unset, which is the default, and the
+  # non-zero status of a command substitution propagates to the assignment — so
+  # under the builders' `set -e` this aborted the whole preflight before it
+  # printed anything. It is a query, not a test.
+  restore_nullglob=$(shopt -p nullglob) || true
   shopt -s nullglob
   local debs=("$k"/debs/*.deb) indexes=("$k"/apt/Packages*) suites=() d
   echo "  bundle debs: ${#debs[@]}"
@@ -93,6 +108,47 @@ check_bundle() {
   eval "$restore_nullglob"
 }
 
+# extra-debs/ rides the seed partition and first boot installs it with `dpkg -i`,
+# which will cheerfully half-upgrade the base system. A set collected the obvious
+# way — `apt-get install --download-only usbguard` in an `ubuntu:24.04` container
+# — did exactly that: it shipped a newer libpolkit-gobject-1-0 without polkit's
+# other binaries, whose `Depends: ... (= old version)` then could not be met, and
+# every apt call on the box failed from that point on. The box has no network to
+# repair itself with, so this has to be caught here.
+# `baseline` is either the ISO file (make-usb-macos.sh has one) or a casper
+# directory (update-usb-macos.sh has the ISO already extracted onto EFIBOOT).
+# `dir` is the directory whose .debs get checked: extra-debs/ during preflight,
+# and the seed partition after the copy, because the partition is what actually
+# ships and may be carrying debs from an earlier build.
+# `bundle` is optional and adds the cross-check against 02-kela: first boot runs
+# two package installs, the seed partition's `dpkg -i` and then the bundle's
+# `apt-get install`, and checking the sideloads against the ISO alone says
+# nothing about whether the second one still resolves on top of them.
+check_extra_debs() {
+  local baseline="$1" dir="${2:-$KITDIR/extra-debs}" bundle="${3:-}"
+  local flag="--baseline"
+  if ! ls "$dir"/*.deb >/dev/null 2>&1; then
+    echo "  no sideloaded debs in $dir — boxes get NO USB device policy"
+    return 0
+  fi
+  [ -f "$baseline" ] && flag="--iso"
+  if [ ! -e "$baseline" ]; then
+    echo "  WARNING: no $baseline, cannot verify sideloaded debs against the install"
+    return 0
+  fi
+  local -a bundle_arg=()
+  [ -n "$bundle" ] && [ -d "$bundle" ] && bundle_arg=(--bundle "$bundle")
+  # Captured rather than piped: the exit status is the whole point, and in a
+  # pipeline it would be sed's.
+  local out rc=0
+  out=$(python3 "$LIBDIR/collect-extra-debs.py" "$flag" "$baseline" \
+          --verify "$dir" "${bundle_arg[@]+"${bundle_arg[@]}"}" 2>&1) || rc=$?
+  printf '%s\n' "$out" | sed 's/^/  /'
+  [ "$rc" -eq 0 ] || die "the sideloaded debs in $dir would break apt on every box
+  built from this stick. Recollect the set with:
+      python3 $LIBDIR/collect-extra-debs.py usbguard --iso <ubuntu ISO> --out '$KITDIR/extra-debs'"
+}
+
 # Whole-disk identifier (e.g. disk4) backing any path, empty if it is not on a
 # diskutil-managed volume. Goes via df because diskutil only accepts mount points
 # and device nodes, not arbitrary paths, and the device node from df is the one
@@ -115,21 +171,63 @@ print(plistlib.loads(raw).get("ParentWholeDisk") or "" if raw.strip() else "")
 # Render the autoinstall seed onto a mounted CIDATA partition, and carry any
 # extra .deb files that the bundle's own dependency closure is missing.
 write_seed() {
-  local dest="$1"
+  local dest="$1" baseline="${2:-}" bundle="${3:-}"
   [ -d "$dest" ] || die "seed partition not mounted at $dest"
   [ -n "$PASSWORD_HASH" ] || die "resolve_password must run before write_seed"
   echo "  kela password from: $PASSWORD_SOURCE"
   echo 'instance-id: kela-fob' >"$dest/meta-data"
   python3 "$LIBDIR/render.py" user-data.tmpl "PASSWORD_HASH=$PASSWORD_HASH" \
     >"$dest/user-data" || die "rendering user-data failed"
+
+  # CIDATA is FAT and cannot hold extended attributes, so a plain `cp` from a
+  # macOS filesystem leaves an AppleDouble stub named `._<file>` beside every
+  # deb. Those stubs are not packages, and they match `*.deb`: first boot's
+  # `dpkg -i "$SEED"/*.deb` picks them up and errors on each one. Copy with -X
+  # so they are never created, and sweep any left by an earlier build.
+  local junk
+  for junk in "$dest"/._*; do
+    [ -e "$junk" ] || continue
+    rm -f "$junk"
+  done
+
+  # Mirror extra-debs/, do not merge into it. Keeping whatever a previous build
+  # left behind meant a refreshed stick shipped the union of both sets: the
+  # correction landed next to the debs it was correcting, and first boot's
+  # `dpkg -i *.deb` installed the lot. That is how a stick "updated" to fix a
+  # half-upgraded polkit would still have carried the deb that caused it.
+  local deb keep=0
+  for deb in "$dest"/*.deb; do
+    [ -e "$deb" ] || continue
+    if [ -e "$KITDIR/extra-debs/$(basename "$deb")" ]; then
+      keep=$((keep + 1))
+    else
+      echo "  removing stale deb from the seed partition: $(basename "$deb")"
+      rm -f "$deb"
+    fi
+  done
+  [ "$keep" -eq 0 ] || echo "  $keep deb(s) already current on the seed partition"
   if ls "$KITDIR"/extra-debs/*.deb >/dev/null 2>&1; then
-    cp "$KITDIR"/extra-debs/*.deb "$dest/"
+    cp -X "$KITDIR"/extra-debs/*.deb "$dest/"
   fi
+
   if ls "$dest"/*.deb >/dev/null 2>&1; then
     echo "  sideloaded debs on the seed partition:"
     for deb in "$dest"/*.deb; do echo "    $(basename "$deb")"; done
   else
-    echo "  sideloaded debs: none (expected — the bundle supplies its own)"
+    echo "  sideloaded debs: none"
+  fi
+  # usbguard is a permanent resident of extra-debs/, not a bundle dependency:
+  # first boot installs it and activation enables the USB device policy.
+  if ! ls "$dest"/usbguard_*.deb >/dev/null 2>&1; then
+    echo "  WARNING: no usbguard deb on the seed partition. Boxes built from this"
+    echo "  stick will have NO USB device policy. The debs belong permanently in"
+    echo "  extra-debs/ — see extra-debs/README.md for how to collect the set."
+  fi
+  # The partition, not the kit directory: this is the set the box will install.
+  # An `if`, not a `&&` tail: a false test as the last statement would return
+  # non-zero and abort the caller under `set -e`.
+  if [ -n "$baseline" ]; then
+    check_extra_debs "$baseline" "$dest" "$bundle"
   fi
 }
 

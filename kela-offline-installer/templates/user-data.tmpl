@@ -73,10 +73,31 @@ autoinstall:
         permissions: "0755"
         content: |
           @@INCLUDE:kela-activate.sh@@
+      # USBGuard policy, staged OUTSIDE /etc/usbguard so dpkg's conffile
+      # handling never fights it. kela-activate.sh copies it into place and
+      # enables the daemon only after activation succeeds — usbguard blocking
+      # the FOBDATA mass-storage stick mid-activation would strand the box.
+      - path: /usr/local/share/kela/usbguard-rules.conf
+        permissions: "0600"
+        content: |
+          # Hubs — devices connect through them.
+          allow with-interface equals { 09:00:* }
+          # Devices whose every interface is HID (class 03): keyboards, mice,
+          # joysticks/gamepads, composite keyboard+mouse receivers, and HID+hub
+          # combos. Joysticks have no distinct USB class; a class-level HID
+          # allow is the only off-the-shelf way to cover all of them.
+          allow with-interface match-all { 03:*:* 09:00:* }
+          # Everything else (mass storage, network, audio, ...) falls to the
+          # daemon's ImplicitPolicyTarget=block.
     runcmd:
       - mv /etc/apt/sources.list.d/ubuntu.sources /root/ubuntu.sources.bak || true
       - sysctl --system || true
       - systemctl daemon-reload
       - udevadm control --reload || true
+      # The usbguard deb (sideloaded on CIDATA) starts its service on install
+      # with a block-by-default policy, which would deauthorize the FOBDATA
+      # stick mid-activation. Masked here, before kela-firstboot can install
+      # it; kela-activate.sh unmasks and enables it after activation succeeds.
+      - systemctl mask usbguard.service
       - systemctl enable --now kela-dummy-net.service
       - systemctl enable --now kela-firstboot.service

@@ -21,9 +21,10 @@
 #  Requirements: xorriso (brew install xorriso); everything else is stock
 #  macOS (diskutil, cp, awk, python3).
 #
-#  Optional: put extra .deb files in ./extra-debs/ — they ride the seed
-#  partition and install before Kela activation, covering dependencies missing
-#  from both the base install and the bundle.
+#  ./extra-debs/ rides the seed partition and installs before Kela activation.
+#  It permanently carries usbguard (the USB device policy enabled after
+#  activation) and optionally covers dependencies missing from both the base
+#  install and the bundle. See extra-debs/README.md.
 #
 #  At target power-on the default GRUB entry prompts once for a hostname
 #  (empty = kela-fob), then everything runs hands-off:
@@ -102,6 +103,7 @@ NEED=$(( BOOT_BYTES + SEED_BYTES + SRC_BYTES + 1000000000 ))
   || die "stick is $(human "$DISK_BYTES"); need at least $(human "$NEED") for a $(human "$SRC_BYTES") bundle"
 echo "  ISO $(human "$ISO_BYTES"), bundle $(human "$SRC_BYTES"), stick $(human "$DISK_BYTES") — ok"
 check_bundle "$SRC"
+check_extra_debs "$ISO" "$KITDIR/extra-debs" "$SRC/02-kela"
 
 # Before the disk is touched, so a bad KELA_PASSWORD_HASH costs nothing.
 resolve_password
@@ -132,7 +134,7 @@ echo "== esp: bootloader mirror for strict firmware =="
 write_esp_shim "$DISK" /Volumes/EFIBOOT
 
 echo "== seed partition: autoinstall =="
-write_seed /Volumes/CIDATA
+write_seed /Volumes/CIDATA "$ISO" "$SRC/02-kela"
 
 echo "== data partition: copying FOB drive content (unmodified) =="
 # cp reports failures on macOS junk files (.DS_Store, ._* AppleDouble sidecars)
@@ -162,7 +164,7 @@ one-time boot menu rather than by reordering the boot devices.
 
 The default entry asks for a hostname, then WIPES the smallest internal disk and
 installs Ubuntu. The box POWERS ITSELF OFF on purpose and an RTC alarm cold-starts
-it about five minutes later. Leave the stick in. Pressing the power button
+it a minute or two later. Leave the stick in. Pressing the power button
 once the screen has gone dark is always safe and skips the wait — either way the
 box boots the system it just installed, not the installer, and runs Kela
 activation.

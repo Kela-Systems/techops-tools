@@ -6,12 +6,14 @@
 #
 # The awkward part is that the window is measured from here while the box powers
 # off an unknown time later, and an alarm that fires before that is consumed for
-# nothing. No run has actually been seen to lose that race: of two runs at 300s one
-# woke itself 74s after its alarm, and the one reported as "didn't wake" was
-# powered on by hand 69s before its alarm was even due. But the margin cannot be
-# measured from the installed system (see the note in kela-activate.sh), and a
-# window long enough to cover an unknown worst case makes every good run wait for
-# the worst case too.
+# nothing. No run has actually been seen to lose that race: across seven logged
+# installs the five left to the alarm all woke themselves, 71-80s after it, and
+# both runs once reported as "didn't wake" turn out to have been powered on by
+# hand before their alarm was even due. The two of those give the only handle on
+# the margin — pressing power proves the box was already off — because it cannot
+# be measured directly from the installed system (see the note in
+# kela-activate.sh), and a window long enough to cover an unknown worst case
+# makes every good run wait for the worst case too.
 #
 # So the alarm is refreshed on a loop rather than guessed at once. Each pass pushes
 # it WINDOW seconds out; when the installer finally powers off the loop dies with
@@ -28,7 +30,23 @@
 # presses power — same outcome, minus the automation. Either way the GRUB
 # re-imaging guard sends the cold boot into the installed system rather than back
 # into the installer.
-WINDOW=300
+#
+# Seven logged runs bound the only quantity that constrains WINDOW — the gap from
+# the last re-arm to the box reaching S5 — at ~75s. The two runs someone powered
+# on early carry that bound, because pressing the button proves the box was
+# already off. The derivation has one unknown, since the logged delta is
+# (L-A)+boot and L-A is a multiple of REFRESH, but shifting it moves the last
+# re-arm and the S5 bound together: the gap between them lands at 66-75s either
+# way and the unmeasured boot time drops out. 150 clears that with 2x margin and
+# the alarm lands 75-100s after poweroff rather than 225-250s.
+#
+# REFRESH stays at 60 because the bound above was measured at 60 and the
+# derivation depends on it. Shrinking it does tighten how stale the standing
+# alarm can be, but it replaces a measured gap with the loop-death-to-S5 tail,
+# which nothing here measures — and because dark time is WINDOW minus the gap, a
+# smaller REFRESH makes the box wait longer, not less. Both terms move the wrong
+# way for an unproven gain.
+WINDOW=150
 REFRESH=60
 
 mkdir -p /target/var/lib/kela

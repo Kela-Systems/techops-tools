@@ -132,6 +132,53 @@ diagnose() {
   fi
 }
 
+# USBGuard ships on the seed partition and installs with the other sideloaded
+# debs, but its unit was masked by the install seed: started any earlier, its
+# block-by-default policy would deauthorize the FOBDATA stick this script is
+# reading. Arming is split in two so a power cut during the long convergence
+# wait cannot leave the box unguarded forever (this service never runs again
+# once .firstboot-activated exists):
+#   1. arm_usbguard, right after activation succeeds: policy in place, unit
+#      unmasked and enabled — every boot from the next one is guarded.
+#   2. start_usbguard, at the very end: this boot becomes guarded too, after
+#      the last log write to the stick has been synced.
+# Runs after the CA slot is spent, so nothing in here may fail the script:
+# a box without USB filtering is a warning in the log, a box declared FAILED
+# after a successful activation is a trip back to the bench.
+arm_usbguard() {
+  if ! dpkg -s usbguard >/dev/null 2>&1; then
+    say "WARNING: usbguard is not installed — were its debs missing from the"
+    say "seed partition? The box stays unguarded; USB devices are not filtered."
+    return 0
+  fi
+  if ! install -m 0600 /usr/local/share/kela/usbguard-rules.conf /etc/usbguard/rules.conf; then
+    say "WARNING: could not install the usbguard policy — leaving usbguard"
+    say "masked rather than enabling it with whatever rules it happens to have."
+    return 0
+  fi
+  # Ubuntu package defaults, but the whole policy rests on them, so pin both.
+  sed -i -e 's/^ImplicitPolicyTarget=.*/ImplicitPolicyTarget=block/' \
+         -e 's/^PresentDevicePolicy=.*/PresentDevicePolicy=apply-policy/' \
+         /etc/usbguard/usbguard-daemon.conf 2>/dev/null \
+    || say "WARNING: could not pin usbguard-daemon.conf — package defaults apply"
+  systemctl unmask usbguard.service || true
+  systemctl enable usbguard.service 2>/dev/null || true
+  say "usbguard armed: HID-only policy installed, enabled from the next boot"
+}
+
+start_usbguard() {
+  systemctl is-enabled usbguard.service >/dev/null 2>&1 || return 0
+  umount "$DRIVE" 2>/dev/null || true
+  if systemctl start usbguard.service; then
+    say "usbguard active: only keyboards, mice, joysticks and hubs are allowed."
+    say "The FOB stick is now blocked — replugging it will NOT restart this"
+    say "service. To read it again: systemctl stop usbguard, then replug."
+  else
+    say "WARNING: usbguard failed to start — it is enabled and will be tried"
+    say "again on the next boot. See: systemctl status usbguard"
+  fi
+}
+
 # Whether the box woke on the alarm or a human pressed power is invisible after
 # the fact unless it is worked out here, and "it didn't wake up" is impossible to
 # act on without knowing which of the two failure modes it was: the alarm being
@@ -291,10 +338,30 @@ wait_for_convergence() {
 # "Leave the consumed slot's key on the drive (e.g. a read-only medium). The drive
 # then still holds a usable cluster-CA key" — so a stick used this way stays
 # sensitive, and two boxes activated from one slot share a cluster CA.
+#
+# The bundle may already pass the flag itself. v2.7.0-rc.5 ends activate.sh with
+#   exec kela-node-controller activate "$dir" --keep-slot-key "$@"
+# so appending our own gives the binary two, and it exits 2 on "the argument
+# '--keep-slot-key' cannot be used multiple times" before the slot is touched.
+# Read the bundle's script instead of assuming it forwards nothing.
+#
+# The reverse case matters more, and is checked against the slot count after
+# activation rather than here: a bundle that hardcodes the flag keeps the slot
+# key whether or not this stick asked it to, so the marker's absence no longer
+# means the slot gets spent.
+BUNDLE_KEEPS_SLOT=0
+if grep -q -- '--keep-slot-key' "$DRIVE/02-kela/activate.sh" 2>/dev/null; then
+  BUNDLE_KEEPS_SLOT=1
+fi
+
 if [ "$KEEP_SLOT" = 1 ]; then
   # Ask the binary rather than assume: an unrecognised argument would fail
   # activation outright, and the one-shot guard would then strand the box.
-  if kela-node-controller activate --help 2>&1 | grep -q -- '--keep-slot-key'; then
+  if [ "$BUNDLE_KEEPS_SLOT" = 1 ]; then
+    say "CIDATA/kela-keep-slot-key present, and the bundle's own activate.sh already"
+    say "passes --keep-slot-key. Not passing it twice — the binary rejects that."
+    say "The slot key stays on the drive, which keeps a usable cluster-CA key."
+  elif kela-node-controller activate --help 2>&1 | grep -q -- '--keep-slot-key'; then
     say "CIDATA/kela-keep-slot-key present: activating with --keep-slot-key, so the"
     say "slot key stays on the drive. The drive keeps a usable cluster-CA key."
   else
@@ -329,7 +396,7 @@ SINCE=$(date '+%Y-%m-%d %H:%M:%S')
 # array is an unbound-variable error under set -u before bash 4.4, and this script
 # must not depend on the target's bash being new enough to forgive that.
 rc=0
-if [ "$KEEP_SLOT" = 1 ]; then
+if [ "$KEEP_SLOT" = 1 ] && [ "$BUNDLE_KEEPS_SLOT" = 0 ]; then
   sh ./activate.sh --keep-slot-key || rc=$?
 else
   sh ./activate.sh || rc=$?
@@ -364,6 +431,20 @@ fi
 if [ "$KEEP_SLOT" = 1 ] && [ "$SLOTS_AFTER" -lt "$SLOTS_BEFORE" ]; then
   say "WARNING: --keep-slot-key was accepted but a slot key was destroyed anyway."
   say "Treat the flag as ineffective on this release and budget slots accordingly."
+elif [ "$KEEP_SLOT" = 0 ] && [ "$SLOTS_AFTER" = "$SLOTS_BEFORE" ]; then
+  # No marker means this stick was meant to spend its slot, and the count says it
+  # did not. Reported, never fatal: activation succeeded and the daemon is already
+  # converging, so failing here would send a working box back to the bench over a
+  # custody problem that a human has to resolve on the drive either way.
+  say "WARNING: there is no keep-slot-key marker on CIDATA, so this stick was meant"
+  say "to spend its slot — but the count is unchanged at $SLOTS_AFTER. The drive still"
+  say "holds a usable cluster-CA key for this cluster."
+  if [ "$BUNDLE_KEEPS_SLOT" = 1 ]; then
+    say "Cause: this bundle's activate.sh passes --keep-slot-key unconditionally, so"
+    say "the marker cannot opt out of it."
+  fi
+  say "Treat the drive as being as sensitive as the original FOB drive: another box"
+  say "activated from it would share this cluster's CA."
 fi
 
 # Our own list only. See the REPO comment: kela-offline.list is the controller's.
@@ -372,6 +453,11 @@ rm -f "$REPO"
 : >"$STATE/.firstboot-activated"
 say "bundle activated, CA slot spent. Waiting for the daemon to converge."
 status "activated on $(hostname) — converging, see $LOG"
+
+# Enabled (not started) now: if power is lost during the convergence wait below,
+# the next boot still comes up guarded. This boot keeps the stick usable until
+# start_usbguard at the end.
+arm_usbguard
 
 # Convergence can legitimately run for the better part of an hour, and the log was
 # copied to the stick only after the verdict — so an operator who pulled the drive
@@ -406,3 +492,7 @@ fi
 
 save_log
 sync
+
+# Deliberately last: starting usbguard deauthorizes the FOB stick, so every
+# write to it (save_log above included) must already be on the medium.
+start_usbguard

@@ -5,7 +5,7 @@ Build a USB stick that takes a bare amd64 box to a converged Kela system with
 
 boot stick → GRUB asks hostname (Enter = `kela-fob`) → wipes the **smallest**
 internal disk → installs Ubuntu Server 24.04 → powers off and cold-starts itself
-about five minutes later → first boot installs the bundle debs and runs Kela
+a minute or two later → first boot installs the bundle debs and runs Kela
 activation → daemon converges.
 
 **Operator note:** leave the stick in. The box shuts down on purpose (see below)
@@ -54,7 +54,9 @@ sudo ./make-usb-macos.sh disk4 "/Volumes/<received drive>"
 **A stick this kit already built**, needing refreshed boot machinery.
 `update-usb-macos.sh` rewrites the GRUB block, the ESP mirror and the seed in
 place and never touches the data partition — the safe choice when the stick holds
-the only copy of the bundle:
+the only copy of the bundle. The seed's sideloaded debs are mirrored from
+`extra-debs/`, so debs from an earlier build are removed rather than left
+alongside the new ones:
 
 ```bash
 sudo ./update-usb-macos.sh
@@ -72,8 +74,8 @@ it detects that mix-up and tells you which command you wanted.
 | `stage-bundle.sh`     | Copy a received drive to local storage and verify it, so that same stick can then be erased and rebuilt. No sudo; reads the drive only.                                                    |
 | `update-usb-macos.sh` | Re-apply the current boot machinery to an already-built stick **in place** (never touches the data partition — safe when the stick holds the only copy).                                   |
 | `templates/`          | The single source of truth: autoinstall seed, GRUB block, and every script the target runs. Edit here, never on a stick.                                                                   |
-| `lib/`                | Rendering and verification helpers, shared by both builders and the runbook. `lib/mkpasswd.sh` generates the password hash on hosts where `openssl passwd -6` is unavailable (i.e. macOS). |
-| `extra-debs/`         | Sideloaded `.deb`s, for the rare bundle whose dependency closure is incomplete. Normally empty — see `extra-debs/README.md`.                                                               |
+| `lib/`                | Rendering and verification helpers, shared by both builders and the runbook. `lib/mkpasswd.sh` generates the password hash on hosts where `openssl passwd -6` is unavailable (i.e. macOS). `lib/collect-extra-debs.py` collects and audits the sideload set. |
+| `extra-debs/`         | Sideloaded `.deb`s, riding the seed partition. Permanently carries `usbguard`; also the escape hatch for an incomplete bundle closure. Never empty — see `extra-debs/README.md`.           |
 | `OFFLINE-RUNBOOK.md`  | The same build, by hand, on an offline Linux box. Uses the same templates.                                                                                                                 |
 
 
@@ -97,18 +99,36 @@ sudo KELA_PASSWORD_HASH="$(./lib/mkpasswd.sh)" ./make-usb-macos.sh disk4 "/path/
   `KELA_PASSWORD_HASH` that is set but not a `$6$` hash is now a hard error
   rather than a silent fall back to the default.
 
-- Dependencies come from the bundle itself; `extra-debs/` is normally empty.
-Preflight prints which case the bundle is in — `apt repo: flat, N packages`
-means first boot resolves dependencies off the drive, `apt repo: none` means
-`02-kela/debs` must be self-contained against a stock Ubuntu 24.04 server
-install. Only if activation later fails on an unmet dependency do you need
-`extra-debs/`.
+- Bundle dependencies come from the bundle itself. Preflight prints which case
+the bundle is in — `apt repo: flat, N packages` means first boot resolves
+dependencies off the drive, `apt repo: none` means `02-kela/debs` must be
+self-contained against a stock Ubuntu 24.04 server install. Only if activation
+later fails on an unmet dependency do you need to add anything to
+`extra-debs/`, which otherwise carries just `usbguard` and its missing
+dependencies.
+- **A sideloaded deb may add a package but must never change the version of one
+the ISO already installs.** First boot installs `extra-debs/` with `dpkg -i`,
+which has no solver: a newer copy of something the base install already has
+half-upgrades that package's family, the siblings keep their
+`Depends: ... (= old version)`, and every `apt` call on the box fails from then
+on. There is no network to repair it with, activation dies at the bundle install
+with exit 100, and the one-shot guard denies it a second try. Preflight enforces
+this against the ISO's own package manifest and aborts the build; collect sets
+with `lib/collect-extra-debs.py` rather than by hand. Preflight also cross-checks
+the bundle against the sideloads, since `apt-get install` of `02-kela/debs` runs
+straight after the `dpkg -i` and has to resolve on top of whatever it left.
 - The disk-selection rule is `size: smallest`. Subiquity's `size` and `ssd`
 matchers never return the install media, so the stick itself is safe, but any
 **other** idle USB/SD card in the box is a candidate — boot with no other
 removable media attached, or pin the disk by serial for known hardware.
 - The stick carries live cluster-CA slot keys: same custody rules as the
-original FOB drive. Each activation consumes one slot key on the stick.
+original FOB drive. An activation normally consumes one slot key on the stick,
+but **the bundle decides**, not this kit: `v2.7.0-rc.5`'s `02-kela/activate.sh`
+passes `--keep-slot-key` unconditionally, so every box it activates leaves the
+key on the drive and the `kela-keep-slot-key` marker cannot opt out. Preflight
+prints which behaviour a bundle has, and `kela-activate.sh` warns when the slot
+count does not move the way the marker asked. Check the count on any stick
+before treating it as spent.
 
 
 
@@ -204,18 +224,26 @@ physically replugged.
 That alarm is *refreshed*, not set once. The window is measured from the
 late-command while the box powers off an unknown time later, and an alarm that
 fires before that is consumed for nothing. So `late-rtcwake.sh` leaves an orphaned
-loop pushing the alarm +300 s every 60 s, which dies with the poweroff — the box
-then wakes about five minutes after the *real* shutdown however long finalisation
+loop pushing the alarm +150 s every 60 s, which dies with the poweroff — the box
+then wakes a minute or two after the *real* shutdown however long finalisation
 took, and the duration stops being something anyone has to know. If that loop is
 killed early the single alarm still stands, so the worst case is the fixed window
 it replaced, never less. `/var/lib/kela/rtc-armed` records which one you got.
 
-**Wait the full five minutes before deciding it failed.** Both wake failures
-reported so far were misreadings. This hardware honours the alarm: one run woke
-itself 74 s after it. The run reported as "didn't wake" had been powered on by hand
-69 s *before* its alarm was due, so the alarm never got the chance. Pressing power
-early is safe and skips the wait, but it also destroys the evidence — the log can
-tell you the button was pressed early (`rtc-armed` versus boot time) and does.
+The window is 150 s because seven logged runs bound the gap between the last
+re-arm and the box reaching S5 at about 75 s, which is the only quantity the
+window has to beat — so 150 carries 2× margin and the box sits dark for 75–100 s
+instead of 225–250 s. The 60 s refresh interval is part of that measurement, so
+changing it invalidates the bound rather than improving it.
+
+**Give it three minutes before deciding it failed** — 75–100 s of alarm plus
+71–80 s of POST and boot. Every wake failure reported so far has been a
+misreading. This hardware honours the alarm: of seven logged installs, all five
+left to it woke themselves, 71–80 s after the alarm. The two reported as "didn't
+wake" had both been powered on by hand *before* their alarm was due, so it never
+got the chance. Pressing power early is safe and skips the wait, but it also
+destroys the evidence — the log can tell you the button was pressed early
+(`rtc-armed` versus boot time) and does.
 
 What the log cannot tell you is why a box that genuinely never wakes did not:
 subiquity snapshots `/var/log/installer` into the target *before* the late-command
