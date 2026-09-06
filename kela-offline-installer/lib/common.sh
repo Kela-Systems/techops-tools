@@ -68,7 +68,22 @@ check_bundle() {
   [ -d "$k" ] || die "no 02-kela directory under $src — is this a Kela bundle?"
   [ -f "$k/activate.sh" ] || die "$k/activate.sh missing — nothing to activate"
 
-  restore_nullglob=$(shopt -p nullglob)
+  # A bundle whose activate.sh hardcodes --keep-slot-key keeps the slot key on
+  # every box it activates, and no CIDATA marker can opt out of that. Say so at
+  # build time: a stick going to a site is supposed to spend its slot, and this
+  # is the difference between a spent drive and one that still mints clusters.
+  if grep -q -- '--keep-slot-key' "$k/activate.sh" 2>/dev/null; then
+    echo "  slot keys: activate.sh passes --keep-slot-key unconditionally, so every"
+    echo "    box activated from this bundle LEAVES its cluster-CA key on the drive"
+    echo "    and the kela-keep-slot-key marker cannot opt out. Treat any stick"
+    echo "    built from it as holding live cluster-CA material after an install."
+  fi
+
+  # `shopt -p` exits 1 when the option is unset, which is the default, and the
+  # non-zero status of a command substitution propagates to the assignment — so
+  # under the builders' `set -e` this aborted the whole preflight before it
+  # printed anything. It is a query, not a test.
+  restore_nullglob=$(shopt -p nullglob) || true
   shopt -s nullglob
   local debs=("$k"/debs/*.deb) indexes=("$k"/apt/Packages*) suites=() d
   echo "  bundle debs: ${#debs[@]}"

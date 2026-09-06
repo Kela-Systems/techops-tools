@@ -122,7 +122,13 @@ matchers never return the install media, so the stick itself is safe, but any
 **other** idle USB/SD card in the box is a candidate — boot with no other
 removable media attached, or pin the disk by serial for known hardware.
 - The stick carries live cluster-CA slot keys: same custody rules as the
-original FOB drive. Each activation consumes one slot key on the stick.
+original FOB drive. An activation normally consumes one slot key on the stick,
+but **the bundle decides**, not this kit: `v2.7.0-rc.5`'s `02-kela/activate.sh`
+passes `--keep-slot-key` unconditionally, so every box it activates leaves the
+key on the drive and the `kela-keep-slot-key` marker cannot opt out. Preflight
+prints which behaviour a bundle has, and `kela-activate.sh` warns when the slot
+count does not move the way the marker asked. Check the count on any stick
+before treating it as spent.
 
 
 

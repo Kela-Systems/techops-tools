@@ -338,10 +338,30 @@ wait_for_convergence() {
 # "Leave the consumed slot's key on the drive (e.g. a read-only medium). The drive
 # then still holds a usable cluster-CA key" — so a stick used this way stays
 # sensitive, and two boxes activated from one slot share a cluster CA.
+#
+# The bundle may already pass the flag itself. v2.7.0-rc.5 ends activate.sh with
+#   exec kela-node-controller activate "$dir" --keep-slot-key "$@"
+# so appending our own gives the binary two, and it exits 2 on "the argument
+# '--keep-slot-key' cannot be used multiple times" before the slot is touched.
+# Read the bundle's script instead of assuming it forwards nothing.
+#
+# The reverse case matters more, and is checked against the slot count after
+# activation rather than here: a bundle that hardcodes the flag keeps the slot
+# key whether or not this stick asked it to, so the marker's absence no longer
+# means the slot gets spent.
+BUNDLE_KEEPS_SLOT=0
+if grep -q -- '--keep-slot-key' "$DRIVE/02-kela/activate.sh" 2>/dev/null; then
+  BUNDLE_KEEPS_SLOT=1
+fi
+
 if [ "$KEEP_SLOT" = 1 ]; then
   # Ask the binary rather than assume: an unrecognised argument would fail
   # activation outright, and the one-shot guard would then strand the box.
-  if kela-node-controller activate --help 2>&1 | grep -q -- '--keep-slot-key'; then
+  if [ "$BUNDLE_KEEPS_SLOT" = 1 ]; then
+    say "CIDATA/kela-keep-slot-key present, and the bundle's own activate.sh already"
+    say "passes --keep-slot-key. Not passing it twice — the binary rejects that."
+    say "The slot key stays on the drive, which keeps a usable cluster-CA key."
+  elif kela-node-controller activate --help 2>&1 | grep -q -- '--keep-slot-key'; then
     say "CIDATA/kela-keep-slot-key present: activating with --keep-slot-key, so the"
     say "slot key stays on the drive. The drive keeps a usable cluster-CA key."
   else
@@ -376,7 +396,7 @@ SINCE=$(date '+%Y-%m-%d %H:%M:%S')
 # array is an unbound-variable error under set -u before bash 4.4, and this script
 # must not depend on the target's bash being new enough to forgive that.
 rc=0
-if [ "$KEEP_SLOT" = 1 ]; then
+if [ "$KEEP_SLOT" = 1 ] && [ "$BUNDLE_KEEPS_SLOT" = 0 ]; then
   sh ./activate.sh --keep-slot-key || rc=$?
 else
   sh ./activate.sh || rc=$?
@@ -411,6 +431,20 @@ fi
 if [ "$KEEP_SLOT" = 1 ] && [ "$SLOTS_AFTER" -lt "$SLOTS_BEFORE" ]; then
   say "WARNING: --keep-slot-key was accepted but a slot key was destroyed anyway."
   say "Treat the flag as ineffective on this release and budget slots accordingly."
+elif [ "$KEEP_SLOT" = 0 ] && [ "$SLOTS_AFTER" = "$SLOTS_BEFORE" ]; then
+  # No marker means this stick was meant to spend its slot, and the count says it
+  # did not. Reported, never fatal: activation succeeded and the daemon is already
+  # converging, so failing here would send a working box back to the bench over a
+  # custody problem that a human has to resolve on the drive either way.
+  say "WARNING: there is no keep-slot-key marker on CIDATA, so this stick was meant"
+  say "to spend its slot — but the count is unchanged at $SLOTS_AFTER. The drive still"
+  say "holds a usable cluster-CA key for this cluster."
+  if [ "$BUNDLE_KEEPS_SLOT" = 1 ]; then
+    say "Cause: this bundle's activate.sh passes --keep-slot-key unconditionally, so"
+    say "the marker cannot opt out of it."
+  fi
+  say "Treat the drive as being as sensitive as the original FOB drive: another box"
+  say "activated from it would share this cluster's CA."
 fi
 
 # Our own list only. See the REPO comment: kela-offline.list is the controller's.
