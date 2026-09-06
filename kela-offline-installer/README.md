@@ -5,7 +5,7 @@ Build a USB stick that takes a bare amd64 box to a converged Kela system with
 
 boot stick → GRUB asks hostname (Enter = `kela-fob`) → wipes the **smallest**
 internal disk → installs Ubuntu Server 24.04 → powers off and cold-starts itself
-about five minutes later → first boot installs the bundle debs and runs Kela
+a minute or two later → first boot installs the bundle debs and runs Kela
 activation → daemon converges.
 
 **Operator note:** leave the stick in. The box shuts down on purpose (see below)
@@ -224,18 +224,26 @@ physically replugged.
 That alarm is *refreshed*, not set once. The window is measured from the
 late-command while the box powers off an unknown time later, and an alarm that
 fires before that is consumed for nothing. So `late-rtcwake.sh` leaves an orphaned
-loop pushing the alarm +300 s every 60 s, which dies with the poweroff — the box
-then wakes about five minutes after the *real* shutdown however long finalisation
+loop pushing the alarm +150 s every 60 s, which dies with the poweroff — the box
+then wakes a minute or two after the *real* shutdown however long finalisation
 took, and the duration stops being something anyone has to know. If that loop is
 killed early the single alarm still stands, so the worst case is the fixed window
 it replaced, never less. `/var/lib/kela/rtc-armed` records which one you got.
 
-**Wait the full five minutes before deciding it failed.** Both wake failures
-reported so far were misreadings. This hardware honours the alarm: one run woke
-itself 74 s after it. The run reported as "didn't wake" had been powered on by hand
-69 s *before* its alarm was due, so the alarm never got the chance. Pressing power
-early is safe and skips the wait, but it also destroys the evidence — the log can
-tell you the button was pressed early (`rtc-armed` versus boot time) and does.
+The window is 150 s because seven logged runs bound the gap between the last
+re-arm and the box reaching S5 at about 75 s, which is the only quantity the
+window has to beat — so 150 carries 2× margin and the box sits dark for 75–100 s
+instead of 225–250 s. The 60 s refresh interval is part of that measurement, so
+changing it invalidates the bound rather than improving it.
+
+**Give it three minutes before deciding it failed** — 75–100 s of alarm plus
+71–80 s of POST and boot. Every wake failure reported so far has been a
+misreading. This hardware honours the alarm: of seven logged installs, all five
+left to it woke themselves, 71–80 s after the alarm. The two reported as "didn't
+wake" had both been powered on by hand *before* their alarm was due, so it never
+got the chance. Pressing power early is safe and skips the wait, but it also
+destroys the evidence — the log can tell you the button was pressed early
+(`rtc-armed` versus boot time) and does.
 
 What the log cannot tell you is why a box that genuinely never wakes did not:
 subiquity snapshots `/var/log/installer` into the target *before* the late-command

@@ -136,8 +136,8 @@ one-time boot menu rather than by reordering the boot devices. The default entry
 asks for a hostname, then **wipes the smallest internal disk with no further
 prompt** and installs Ubuntu.
 
-The box then **powers itself off** and an RTC alarm cold-starts it within about
-five minutes, because a cold start is what reliably re-enumerates the USB stick.
+The box then **powers itself off** and an RTC alarm cold-starts it within a
+minute or two, because a cold start is what reliably re-enumerates the USB stick.
 Leave the stick in. Pressing the power button once the screen has gone dark is
 always safe and skips the wait; the first-boot log records which happened. Either
 way the box boots the system it just installed, not the installer, and runs Kela
