@@ -54,8 +54,8 @@ except ImportError:
 try:
     from cryptography.hazmat.primitives import padding as _padding
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-except ImportError:
-    sys.exit("This script needs 'cryptography'.  Install it with:  pip install cryptography")
+except ImportError:  # reported at use time — see encrypt_password
+    _padding = Cipher = algorithms = modes = None
 
 from raythink_base import (
     DEFAULT_HOST,
@@ -92,7 +92,19 @@ LEGACY_MARKER_SECTIONS = ("VideoInOptions", "Encode", "VideoWidget", "UserGlobal
 def encrypt_password(password: str) -> str:
     """The wire form of a password: AES-128-CBC (key = IV = _AES_KEY), PKCS7,
     base64. Used for the login password and for both fields of the password
-    change. The caller URL-encodes it — these all travel as query parameters."""
+    change. The caller URL-encodes it — these all travel as query parameters.
+
+    A missing `cryptography` is reported HERE rather than at import. This module
+    is imported lazily, by `open_camera`, only once a newer camera is on the
+    bench — so an import-time `sys.exit` would take down the bench UI's worker
+    mid-run instead of failing the step with something an operator can read.
+    """
+    if Cipher is None:
+        raise CameraError(
+            "The newer Raythink cameras need the 'cryptography' package to "
+            "encrypt the login password, and it is not installed in this "
+            "environment. Reinstall the bench dependencies "
+            "(pip install -e ./bench-core) — it is a declared dependency.")
     padder = _padding.PKCS7(128).padder()
     padded = padder.update(password.encode("utf-8")) + padder.finalize()
     enc = Cipher(algorithms.AES(_AES_KEY), modes.CBC(_AES_IV)).encryptor()
@@ -130,6 +142,19 @@ class RaythinkRestClient(BaseRaythinkClient):
         return self._raw(method, path, params=params, body=body, files=files,
                          raise_on_error=raise_on_error)
 
+    @staticmethod
+    def _safe(path: str) -> str:
+        """`path` with its query string dropped, for error messages and logs.
+
+        This API puts credentials in the QUERY STRING — the login password, and
+        both passwords of a change. They are AES-encrypted, but under a fixed key
+        that ships in the camera's own web bundle, so a ciphertext in a log is a
+        password in a log. Error text from here reaches the rolling log, the
+        per-camera JSON and potentially a verification row (TEC-349), so the
+        query never travels with it.
+        """
+        return path.split("?", 1)[0]
+
     def _raw(self, method: str, path: str, *, params: Optional[dict] = None,
              body: Optional[dict] = None, files=None, raise_on_error: bool = True):
         """The call itself, with no read-only gate and no token refresh — used by
@@ -142,20 +167,21 @@ class RaythinkRestClient(BaseRaythinkClient):
         elif body is not None:
             headers["Content-Type"] = "application/json"
             kwargs["data"] = json.dumps(body)
+        where = f"{method} {self._safe(path)}"
         try:
             r = self.s.request(method, self.base + path, **kwargs)
         except requests.exceptions.RequestException as e:
-            raise CameraError(f"{method} {path}: connection failed ({e})")
+            raise CameraError(f"{where}: connection failed ({e})")
         try:
             env = r.json()
         except ValueError:
-            raise CameraError(f"{method} {path}: non-JSON reply (HTTP {r.status_code}): "
+            raise CameraError(f"{where}: non-JSON reply (HTTP {r.status_code}): "
                               f"{r.text[:160]}")
         self._token_used = time.monotonic()
         code = env.get("Code")
         if raise_on_error and code != 200:
             detail = env.get("Detail") or env.get("Message") or ""
-            raise CameraError(f"{method} {path} failed: {code} {detail}".strip())
+            raise CameraError(f"{where} failed: {code} {detail}".strip())
         return env.get("Data") if code == 200 else None
 
     def _keep_token_alive(self) -> None:
@@ -175,8 +201,7 @@ class RaythinkRestClient(BaseRaythinkClient):
             data = self._raw("PUT", "/v1/token", body={}, raise_on_error=False)
         except CameraError:
             return  # the next real call will fail with a better message
-        if isinstance(data, dict) and data.get("Token"):
-            self.token = data["Token"]
+        self.token = self._token_from(data) or self.token
 
     # --- auth ---------------------------------------------------------------
     def login(self, password: str) -> None:
@@ -186,18 +211,43 @@ class RaythinkRestClient(BaseRaythinkClient):
         base64 (so it can contain '+' and '=') — hence the explicit `quote` with
         an empty safe list rather than letting requests build the query, which
         would leave '+' to be read as a space.
+
+        Errors are deliberately NOT swallowed here. A rejected login raises out
+        of `_raw` carrying the device's own Code and Detail, because "login
+        failed" with no reason is the one failure a bench operator cannot act
+        on — wrong password, locked account and unsupported firmware all look
+        identical from here otherwise. `relogin` still catches it to try the
+        next candidate password, so nothing downstream changes.
         """
         self.token = ""
         qs = (f"username={quote(self.username, safe='')}"
               f"&password={quote(encrypt_password(password), safe='')}")
-        data = self._raw("POST", f"/v1/token?{qs}", raise_on_error=False)
-        token = data.get("Token") if isinstance(data, dict) else None
+        data = self._raw("POST", f"/v1/token?{qs}")
+        token = self._token_from(data)
         if not token:
-            raise CameraError(f"Login failed for user '{self.username}' "
-                              "(the device returned no token).")
+            raise CameraError(
+                f"Login as '{self.username}' was accepted but the device "
+                f"returned no token (Data was {type(data).__name__}).")
         self.token = token
         self.password = password
         log.info("Logged in as '%s' (REST /v1, token acquired).", self.username)
+
+    @staticmethod
+    def _token_from(data) -> str:
+        """The token out of an envelope's `Data`, whichever shape it arrives in.
+
+        The vendor doc documents a `{Token, NoOperationTimeout}` object for the
+        keepalive but leaves `Data` untyped for the login itself, and the clock
+        endpoint returns the replacement token as a BARE STRING. So the device
+        demonstrably uses both shapes for the same value, and which one the login
+        uses is not written down anywhere. Accepting either costs one isinstance
+        and removes a failure that would look like a wrong password.
+        """
+        if isinstance(data, str):
+            return data
+        if isinstance(data, dict):
+            return data.get("Token") or ""
+        return ""
 
     def close(self) -> None:
         if self.token:
@@ -339,8 +389,7 @@ class RaythinkRestClient(BaseRaythinkClient):
                              body={"Year": now.year, "Month": now.month, "Day": now.day,
                                    "Hour": now.hour, "Minute": now.minute,
                                    "Second": now.second})
-        if isinstance(data, str) and data:
-            self.token = data
+        self.token = self._token_from(data) or self.token
         log.info("Camera clock set to %s.", now.strftime("%Y-%m-%d %H:%M:%S"))
 
     # --- addressing hooks ---------------------------------------------------

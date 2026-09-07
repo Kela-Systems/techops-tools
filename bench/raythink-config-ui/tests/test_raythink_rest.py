@@ -197,6 +197,17 @@ def test_the_encoding_reproduces_a_real_ciphertext():
     assert encrypt_password(SHARED) == "jSJyRmOZI8IS+IlXDpUh9g=="
 
 
+def test_a_missing_crypto_library_fails_the_step_not_the_process(monkeypatch):
+    # This module is imported lazily, once a newer camera is on the bench, so an
+    # import-time sys.exit would take down the bench UI's worker mid-run rather
+    # than failing the step with something an operator can act on.
+    import raythink_rest
+    monkeypatch.setattr(raythink_rest, "Cipher", None)
+    with pytest.raises(CameraError) as e:
+        encrypt_password("anything")
+    assert "cryptography" in str(e.value)
+
+
 def test_the_encoding_is_deterministic():
     # Fixed key AND fixed IV, so the same password always produces the same
     # ciphertext. Worth pinning because it is also why this is obfuscation
@@ -223,6 +234,79 @@ def test_a_wrong_password_fails_and_leaves_the_client_unauthenticated(cam):
         c.login("not-it")
     assert c.token == ""
     assert c.password is None
+
+
+def test_a_rejected_login_reports_the_devices_own_reason(cam):
+    # "Provisioning failed on login" with no reason is the one failure a bench
+    # operator cannot act on: wrong password, locked account and unsupported
+    # firmware all look identical without the device's Code and Detail.
+    c = cam()
+    with pytest.raises(CameraError) as e:
+        c.login("not-it")
+    assert "401" in str(e.value)
+    assert "wrong password" in str(e.value)
+
+
+def test_a_login_error_never_carries_the_credential(cam):
+    # This API puts the password in the QUERY STRING, AES-encrypted under a key
+    # that ships in the camera's own web bundle — so a ciphertext in a log is a
+    # password in a log, and error text from here reaches the rolling log and
+    # the per-camera JSON (TEC-349).
+    c = cam()
+    with pytest.raises(CameraError) as e:
+        c.login("not-it")
+    assert "password=" not in str(e.value)
+    assert encrypt_password("not-it") not in str(e.value)
+
+
+def test_a_password_change_error_never_carries_either_credential(cam):
+    c = cam(password=FACTORY_PW)
+    c.login(FACTORY_PW)
+    # Wrong "old" password: the device refuses, and the message must not echo
+    # back the two ciphertexts the request carried.
+    c.device.password = "something-else"
+    with pytest.raises(CameraError) as e:
+        c.modify_password(SHARED, FACTORY_PW)
+    for secret in (SHARED, FACTORY_PW):
+        assert encrypt_password(secret) not in str(e.value)
+    assert "newpwd" not in str(e.value) and "oldpwd" not in str(e.value)
+
+
+def test_a_login_whose_token_arrives_as_a_bare_string_still_works(cam):
+    # The vendor doc types Data as an object for the KEEPALIVE but leaves it
+    # untyped for the login, and the clock endpoint returns the replacement
+    # token as a bare string — so the device uses both shapes for the same
+    # value. Accepting only the object shape would read a successful login as a
+    # wrong password.
+    c = cam()
+    real = c.device._answer
+
+    def bare(method, path, query, body, files):
+        env = real(method, path, query, body, files)
+        if path == "/v1/token" and method == "POST" and env.get("Code") == 200:
+            env["Data"] = env["Data"]["Token"]
+        return env
+
+    c.device._answer = bare
+    c.login(SHARED)
+    assert c.token == c.device.token
+    assert c.password == SHARED
+
+
+def test_a_login_that_returns_no_token_at_all_says_so(cam):
+    c = cam()
+    real = c.device._answer
+
+    def empty(method, path, query, body, files):
+        env = real(method, path, query, body, files)
+        if path == "/v1/token" and method == "POST":
+            env["Data"] = None
+        return env
+
+    c.device._answer = empty
+    with pytest.raises(CameraError) as e:
+        c.login(SHARED)
+    assert "no token" in str(e.value)
 
 
 def test_every_later_call_carries_the_token(client):
