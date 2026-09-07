@@ -64,6 +64,7 @@ from raythink_base import (
     GEN_RPC2,
     BaseRaythinkClient,
     CameraError,
+    CameraUnreachable,
     MutationBlocked,
     NetworkView,
     format_verification,
@@ -135,7 +136,7 @@ class RaythinkCameraClient(BaseRaythinkClient):
                             headers={"Content-Type": "application/json"},
                             timeout=self.timeout)
         except requests.exceptions.RequestException as e:
-            raise CameraError(f"{method}: connection failed ({e})")
+            raise CameraUnreachable(f"{method}: connection failed ({e})")
         try:
             data = r.json()
         except ValueError:

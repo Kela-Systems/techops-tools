@@ -18,7 +18,7 @@ import pytest
 
 from bench_core import MutationBlocked
 import raythink_base as base
-from raythink_base import CameraError
+from raythink_base import CameraError, CameraUnreachable
 from raythink_rest import RaythinkRestClient, encrypt_password
 
 SHARED = "Kelafield123!"
@@ -61,6 +61,28 @@ class FakeCamera:
         self.token = "tok-1"
         self.tokens_issued = 0
         self.imported = None
+        self.reboots = 0
+        # What the camera itself would export: the profile's sections plus the
+        # two the sanitiser is required to drop before a profile can be committed.
+        self.stored = dict(V2_EXPORT)
+        self.stored.setdefault("NetworkInfo", {"Card": [{"IP": ip}]})
+        self.stored.setdefault("OnvifUser", {"User": [{"Name": "admin",
+                                                       "Password": onvif_password}]})
+
+    @staticmethod
+    def _decrypt(value: str) -> str:
+        """What the device does to an ONVIF password it is handed.
+
+        It decrypts unconditionally, so a caller that follows the vendor doc and
+        sends plaintext does not get the plaintext stored — it gets rubbish, and
+        in practice an EMPTY password, while the call still answers Code 200.
+        Reproduced here because that silent emptying is the bug this fake exists
+        to keep out, and a fake that just stored the string would not catch it.
+        """
+        for candidate in (SHARED, FACTORY_PW, "another-one", ""):
+            if value == encrypt_password(candidate):
+                return candidate
+        return ""
 
     # -- the requests.Session half the client talks to ------------------------
     def request(self, method, url, **kwargs):
@@ -140,19 +162,47 @@ class FakeCamera:
                                  "DefaultDNS": "8.8.8.8"}]})
 
         if path == "/v1/netapp/onvif/user":
+            # This endpoint hands the password back ENCRYPTED, unlike the export.
             return ok([{"Name": n, "Group": 1,
-                        "Password": self.onvif_password if n == "admin" else "x"}
+                        "Password": encrypt_password(
+                            self.onvif_password if n == "admin" else "x")}
                        for n in self.onvif_users])
         if path == "/v1/netapp/onvif/changepwd" and method == "PUT":
-            self.onvif_password = body["NewPassword"]
+            self.onvif_password = self._decrypt(body["NewPassword"])
             return ok(None)
         if path == "/v1/netapp/onvif/add" and method == "POST":
             self.onvif_users.append(body["Name"])
-            self.onvif_password = body["Password"]
+            self.onvif_password = self._decrypt(body["Password"])
             return ok(None)
 
-        if path == "/v1/system/magic/configuration" and method == "PUT":
+        if path == "/v1/system/magic/configuration":
+            # The export is the ONLY endpoint that answers with the file itself
+            # rather than the {Code, Data, ...} envelope, and the import refuses
+            # a file that does not carry every section the device knows about
+            # ("400204 msg: file is incomplete"). Both are real behaviours of the
+            # device, and between them they are what made the first bench run
+            # fail, so the fake has to reproduce them.
+            if method == "GET":
+                # The export reports the ONVIF password in PLAINTEXT, and reports
+                # it as it is NOW — the client reads the credential back through
+                # here, so a snapshot frozen at construction would make every
+                # check pass regardless of what was written.
+                return dict(self.stored, OnvifUser={
+                    "User": [{"Group": 1, "Name": n,
+                              "Password": self.onvif_password if n == "admin" else "x"}
+                             for n in self.onvif_users]})
+            missing = [s for s in self.stored if s not in json.loads(files["file"][1])]
+            if missing:
+                return {"Code": 400204, "Message": "msg: file is incomplete",
+                        "Detail": "", "Data": None}
             self.imported = json.loads(files["file"][1])
+            # A SUCCESS code, despite not being 200: the device took the file but
+            # will not run it until it restarts.
+            return {"Code": 200000, "Message": "msg: success, need to reboot device.",
+                    "Translate": "", "Detail": "", "Data": None}
+
+        if path == "/v1/system/magic/reboot" and method == "PUT":
+            self.reboots += 1
             return ok(None)
 
         return ok(None)
@@ -508,6 +558,79 @@ def test_the_onvif_password_is_set_and_confirmed(client):
     assert client.onvif_check(SHARED)[0] is True
 
 
+def test_the_onvif_password_travels_encrypted(client):
+    # The vendor doc's example body is plaintext, and following it does not fail
+    # loudly — the device decrypts whatever it is handed, so plaintext leaves the
+    # ONVIF account with NO PASSWORD while the call still answers Code 200. Every
+    # newer camera the bench touched was left wide open on ONVIF that way, so the
+    # wire form is asserted here directly rather than only through its effect.
+    client.set_onvif_password(SHARED, [FACTORY_PW])
+    sent = next(s for s in client.device.sent
+                if s["path"] == "/v1/netapp/onvif/changepwd")
+    assert sent["body"]["NewPassword"] == encrypt_password(SHARED)
+    assert sent["body"]["NewPassword"] != SHARED
+
+
+def test_a_connection_reset_just_after_a_reboot_is_waited_out(client, monkeypatch):
+    # A camera that has started answering pings can still reset the first request
+    # or two while its web server finishes coming up. That is not a login
+    # failure, and reporting it as one produced a run that warned it could not
+    # log in for verification and then passed every verification row.
+    monkeypatch.setattr(base.time, "sleep", lambda s: None)
+    attempts = []
+    real_login = client.login
+
+    def flaky(pw):
+        attempts.append(pw)
+        if len(attempts) < 3:
+            raise CameraUnreachable("POST /v1/token: connection failed (reset)")
+        return real_login(pw)
+
+    monkeypatch.setattr(client, "login", flaky)
+    client.relogin([SHARED])
+    assert len(attempts) == 3
+
+
+def test_a_rejected_password_is_not_retried(client, monkeypatch):
+    # The opposite case, and the reason the two are distinguished: a device that
+    # ANSWERS and says no will keep saying no, and on one that locks an account
+    # after a few tries, retrying is worse than failing.
+    monkeypatch.setattr(base.time, "sleep", lambda s: None)
+    attempts = []
+
+    def rejected(pw):
+        attempts.append(pw)
+        raise CameraError("POST /v1/token failed: 401 wrong password")
+
+    monkeypatch.setattr(client, "login", rejected)
+    with pytest.raises(CameraError):
+        client.relogin([SHARED])
+    assert len(attempts) == 1
+
+
+def test_the_onvif_check_reads_the_live_user_not_the_saved_config(client):
+    # After a config import the export answers from the IMPORTED FILE rather than
+    # from what the device is running, and the file the tool uploads carries
+    # whatever ONVIF password the camera had at the time — on the bench, an empty
+    # one. Checking the export therefore reported a freshly set password as still
+    # missing, and the step failed on a camera that was correctly configured.
+    client.device.stored["OnvifUser"] = {"User": [{"Group": 1, "Name": "admin",
+                                                   "Password": ""}]}
+    client.set_onvif_password(SHARED, [FACTORY_PW])
+    assert client.device.onvif_password == SHARED
+    assert client.onvif_check(SHARED)[0] is True
+
+
+def test_an_onvif_account_left_with_no_password_is_called_out(cam):
+    # Distinct from "a different password": no password at all is a way in, and
+    # it is the exact state the plaintext bug produced.
+    c = cam(onvif_password="")
+    c.login(SHARED)
+    ok_, detail = c.onvif_check(SHARED)
+    assert ok_ is False
+    assert "NO password" in detail
+
+
 def test_setting_the_onvif_password_twice_does_nothing_the_second_time(client):
     client.set_onvif_password(SHARED, [FACTORY_PW])
     client.device.calls.clear()
@@ -557,8 +680,51 @@ def test_a_profile_is_uploaded_as_one_file(client, tmp_path):
     # No per-section replay to tolerate failures of: the device takes the file
     # whole or not at all.
     result = client.import_config(profile(tmp_path, V2_EXPORT))
-    assert client.device.imported == V2_EXPORT
     assert result == {"applied": ["lan.json"], "skipped": []}
+    for section, value in V2_EXPORT.items():
+        assert client.device.imported[section] == value
+
+
+def test_success_that_asks_for_a_reboot_is_not_read_as_failure(client, tmp_path):
+    # The import answers 200000, "msg: success, need to reboot device." — a
+    # SUCCESS code that is not 200. Treating only 200 as success failed the step
+    # on a device that had just accepted all 125 sections, and the reported
+    # reason had the word "success" in it.
+    result = client.import_config(profile(tmp_path, V2_EXPORT))
+    assert result == {"applied": ["lan.json"], "skipped": []}
+    # And the reboot it asked for is actually performed, so that every later
+    # step runs against the configuration that is now live rather than a pending
+    # one. The caller waits for the camera and logs in again.
+    assert client.device.reboots == 1
+    assert client.token == ""
+
+
+def test_a_reboot_is_refused_by_a_read_only_client(client):
+    client.set_read_only()
+    with pytest.raises(MutationBlocked):
+        client.reboot()
+    assert client.device.reboots == 0
+
+
+def test_a_partial_profile_is_completed_from_the_device(client, tmp_path):
+    # The device refuses a file that is missing sections — "400204 msg: file is
+    # incomplete" — and a committed profile is ALWAYS missing some, because the
+    # sanitiser has to drop the two that carry the address and the ONVIF
+    # password. The gaps are filled from the camera's own current config, which
+    # satisfies the device without pushing anything from a reference camera.
+    client.import_config(profile(tmp_path, V2_EXPORT))
+    assert set(client.device.imported) == set(client.device.stored)
+
+
+def test_an_import_says_so_when_the_gaps_cannot_be_read(client, tmp_path, monkeypatch):
+    # Without the device's current config there is no way to complete the file,
+    # and "file is incomplete" from the device explains nothing about why.
+    monkeypatch.setattr(client, "export_config",
+                        lambda: (_ for _ in ()).throw(CameraError("token expired")))
+    with pytest.raises(CameraError) as e:
+        client.import_config(profile(tmp_path, V2_EXPORT))
+    assert "could not be read" in str(e.value)
+    assert "token expired" in str(e.value)
 
 
 def test_an_older_cameras_profile_is_refused_by_name(client, tmp_path):
@@ -580,8 +746,11 @@ def test_the_reference_cameras_address_is_never_uploaded(client, tmp_path):
                                                     "DHCPEnable": True,
                                                     "IPAddress": "192.168.88.139"}]})
     client.import_config(profile(tmp_path, export))
-    assert "NetworkInfo" not in client.device.imported
-    assert set(client.device.imported) == set(V2_EXPORT)
+    # The section IS uploaded, because the device rejects a file without it —
+    # but holding this camera's own current address, so the import is a no-op
+    # for addressing and the pipeline's last step is still the one that moves it.
+    assert client.device.imported["NetworkInfo"] == client.device.stored["NetworkInfo"]
+    assert "192.168.88.139" not in json.dumps(client.device.imported)
 
 
 def test_a_json_file_that_is_not_a_profile_is_refused(client, tmp_path):
@@ -597,7 +766,10 @@ def test_the_station_password_is_never_uploaded_or_committed(client, tmp_path):
                   OnvifUser={"User": [{"Name": "admin", "Password": SHARED}]},
                   Gb28281Cfg={"Password": "12345678"})
     client.import_config(profile(tmp_path, export))
-    assert "OnvifUser" not in client.device.imported
+    # As with the address: the section travels, but carrying the camera's own
+    # current ONVIF user rather than the reference camera's credential.
+    uploaded = client.device.imported["OnvifUser"]["User"]
+    assert [u["Password"] for u in uploaded] == [client.device.onvif_password]
     assert SHARED not in json.dumps(client.device.imported)
     # But a GB28181 SIP password is a legitimate site setting, so it stays.
     assert client.device.imported["Gb28281Cfg"]["Password"] == "12345678"

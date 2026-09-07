@@ -100,6 +100,17 @@ class CameraError(Exception):
     """A hard, run-aborting device error (login, password, network)."""
 
 
+class CameraUnreachable(CameraError):
+    """The request never got an answer — a refused, reset or timed-out
+    connection, as opposed to the device replying and saying no.
+
+    Separate from CameraError because the two mean opposite things right after a
+    reboot: a device that ANSWERS "wrong password" will still say that however
+    long we wait, while one that resets the connection is very likely still
+    coming up and will be fine a second later. `relogin` retries only this one.
+    """
+
+
 @dataclass
 class NetworkView:
     """The addressing a camera currently holds, normalised across generations.
@@ -343,21 +354,39 @@ class BaseRaythinkClient:
             time.sleep(3)
         return False
 
-    def relogin(self, candidates: list[str], settle: int = 0) -> None:
+    def relogin(self, candidates: list[str], settle: int = 0,
+                retry_for: int = 20) -> None:
         """Re-establish a session, trying each candidate password in turn. Used
         after a password change or a config import that may reset the session.
-        Raises CameraError only if none work."""
+        Raises CameraError only if none work.
+
+        A connection that is REFUSED OR RESET is retried for `retry_for`
+        seconds, because this is called just after a reboot and a camera that has
+        started answering pings can still reset the first request or two while
+        its web server finishes coming up — which is not a login failure and
+        should not be reported as one. A device that answers and rejects the
+        password is not retried: it will keep rejecting it, and on a device that
+        locks an account after a few tries, retrying is actively harmful.
+        """
         if settle:
             time.sleep(settle)
+        deadline = time.monotonic() + max(0, retry_for)
         last = None
-        for pw in [p for p in candidates if p]:
-            try:
-                self.login(pw)
-                return
-            except CameraError as e:
-                last = e
-                continue
-        raise CameraError(f"Could not re-login after the previous step: {last}")
+        while True:
+            unreachable = False
+            for pw in [p for p in candidates if p]:
+                try:
+                    self.login(pw)
+                    return
+                except CameraUnreachable as e:
+                    last, unreachable = e, True
+                    break          # nothing is answering; the password is moot
+                except CameraError as e:
+                    last = e
+                    continue
+            if not unreachable or time.monotonic() >= deadline:
+                raise CameraError(f"Could not re-login after the previous step: {last}")
+            time.sleep(2)
 
     def close(self) -> None:
         self.s.close()
@@ -580,7 +609,8 @@ __all__ = [
     "DHCP_HOST_RENEW_SEC", "DHCP_PROGRESS_SEC", "DHCP_SETTLE_SEC",
     "GENERATIONS", "GENERATION_LABELS", "GEN_REST", "GEN_RPC2",
     "PROFILE_DROP_SECTIONS",
-    "BaseRaythinkClient", "CameraError", "MutationBlocked", "NetworkView",
+    "BaseRaythinkClient", "CameraError", "CameraUnreachable", "MutationBlocked",
+    "NetworkView",
     "arp_table", "canonical_mac", "find_ip_by_mac", "find_plaintext_passwords",
     "format_verification", "host_iface_for", "log", "renew_host_dhcp",
     "sanitize_profile", "set_log_serial",

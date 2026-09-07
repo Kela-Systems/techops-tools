@@ -64,6 +64,7 @@ from raythink_base import (
     GEN_REST,
     BaseRaythinkClient,
     CameraError,
+    CameraUnreachable,
     MutationBlocked,
     NetworkView,
     log,
@@ -81,6 +82,16 @@ _AES_KEY = _AES_IV = b"YJWL202101010000"
 # unit we have), and the vendor doc suggests refreshing every 30s; 20s of slack
 # under the doc's own figure costs one cheap PUT and removes the whole question.
 TOKEN_REFRESH_SEC = 20
+
+# The envelope codes that mean the call WORKED. 200 is the ordinary one; 200000
+# is "done, but it needs a reboot before it is live", and the config import
+# answers with it. Reading anything but 200 as an error is how a successful
+# 125-section import came back as
+# "PUT /v1/system/magic/configuration failed: 200000 msg: success, need to
+# reboot device" — the message says "success" in it and the tool still failed
+# the step. The vendor doc lists neither code; both are off a live camera.
+SUCCESS_CODES = (200, 200000)
+CODE_REBOOT_REQUIRED = 200000
 
 # Marker keys used to catch a profile handed to the wrong generation. A legacy
 # export is Dahua config tables (VideoInOptions, Encode, ...); a v2 export is
@@ -122,6 +133,7 @@ class RaythinkRestClient(BaseRaythinkClient):
                          verify=verify, timeout=timeout)
         self.token: str = ""
         self._token_used = 0.0   # monotonic time of the last call that used it
+        self.last_code: Optional[int] = None   # envelope Code of the last reply
 
     # --- transport ----------------------------------------------------------
     def _request(self, method: str, path: str, *, params: Optional[dict] = None,
@@ -171,7 +183,7 @@ class RaythinkRestClient(BaseRaythinkClient):
         try:
             r = self.s.request(method, self.base + path, **kwargs)
         except requests.exceptions.RequestException as e:
-            raise CameraError(f"{where}: connection failed ({e})")
+            raise CameraUnreachable(f"{where}: connection failed ({e})")
         try:
             env = r.json()
         except ValueError:
@@ -179,10 +191,11 @@ class RaythinkRestClient(BaseRaythinkClient):
                               f"{r.text[:160]}")
         self._token_used = time.monotonic()
         code = env.get("Code")
-        if raise_on_error and code != 200:
+        self.last_code = code
+        if raise_on_error and code not in SUCCESS_CODES:
             detail = env.get("Detail") or env.get("Message") or ""
             raise CameraError(f"{where} failed: {code} {detail}".strip())
-        return env.get("Data") if code == 200 else None
+        return env.get("Data") if code in SUCCESS_CODES else None
 
     def _keep_token_alive(self) -> None:
         """Refresh the token if it has been idle long enough to be worth it.
@@ -340,17 +353,107 @@ class RaythinkRestClient(BaseRaythinkClient):
         for note in notes:
             log.info("import: %s.", note)
 
+        data = self._complete_from_device(data)
+
         payload = json.dumps(data).encode("utf-8")
         log.info("Importing %d config section(s) from %s (%d KB) ...",
                  len(data), json_path, len(payload) // 1024)
         self._request("PUT", "/v1/system/magic/configuration",
                       files={"file": ("config.json", payload, "application/json")})
+        if self.last_code == CODE_REBOOT_REQUIRED:
+            # The device took the file but will not run it until it restarts, and
+            # says so in the reply. Doing it here rather than leaving it to the
+            # operator keeps every later step — ONVIF, the address — working
+            # against the configuration that is actually live. The caller already
+            # waits for the camera to come back and logs in again.
+            log.info("The device took the config but needs a restart to run it; "
+                     "rebooting now.")
+            self.reboot()
         name = json_path.rsplit("/", 1)[-1]
         log.info("Config import accepted (%d section(s)).", len(data))
         # Same shape as the RPC2 client's return so the shared "config profile"
         # verification row needs no idea which generation produced it. This
         # device applies the file as a unit, so it is one entry, not a tally.
         return {"applied": [name], "skipped": []}
+
+    def reboot(self) -> None:
+        """Restart the camera, tolerating the restart eating the reply.
+
+        The device may well drop the connection as it goes down instead of
+        answering, and that is a reboot doing its job, not a failure — so a
+        transport error here is swallowed. What must not be swallowed is a
+        refusal, which is why the call goes through `_request` and its read-only
+        gate first. The token does not survive, so it is dropped.
+        """
+        if self.read_only:
+            raise MutationBlocked("read-only client refused a reboot")
+        try:
+            self._request("PUT", "/v1/system/magic/reboot", raise_on_error=False)
+        except CameraError:
+            pass
+        self.token = ""
+
+    def export_config(self) -> dict:
+        """The camera's own current configuration, as the export endpoint gives it.
+
+        This is the one endpoint that does NOT answer with the
+        {Code, Data, Detail, ...} envelope every other call uses: it returns the
+        configuration file itself, a bare map of section name to section. So it
+        cannot go through `_request`, which would read the absent `Code` as a
+        failure — which is exactly what it did, reporting `failed: None`. An
+        ERROR still arrives as an envelope, hence the shape check below.
+        """
+        path = "/v1/system/magic/configuration"
+        where = f"GET {path}"
+        headers = {"X-Token": self.token} if self.token else {}
+        try:
+            r = self.s.request("GET", self.base + path, params={"default": "false"},
+                               headers=headers, timeout=self.timeout)
+        except requests.exceptions.RequestException as e:
+            raise CameraUnreachable(f"{where}: connection failed ({e})")
+        try:
+            data = r.json()
+        except ValueError:
+            raise CameraError(f"{where}: non-JSON reply (HTTP {r.status_code})")
+        self._token_used = time.monotonic()
+        if not isinstance(data, dict) or not data:
+            raise CameraError(f"{where}: expected a map of config sections, got "
+                              f"{type(data).__name__}")
+        if "Code" in data and "Data" in data:   # an error envelope, not the file
+            raise CameraError(f"{where} failed: {data.get('Code')} "
+                              f"{data.get('Detail') or data.get('Message') or ''}".strip())
+        return data
+
+    def _complete_from_device(self, data: dict) -> dict:
+        """`data` with every section the camera has but the profile lacks filled
+        in from the camera's OWN current configuration.
+
+        The device rejects a partial file outright — `400204 msg: file is
+        incomplete` — and a committed profile is necessarily partial, because the
+        sanitiser drops NetworkInfo and OnvifUser (a raw export carries the
+        address and the ONVIF password in plaintext, so neither may be committed;
+        see PROFILE_DROP_SECTIONS).
+
+        Filling the gaps from the device itself satisfies the device without
+        giving up either property that made us drop them: the camera gets its own
+        current address back, so the import does not move it and addressing stays
+        the last step, and it gets its own current ONVIF user back, so no
+        credential from a reference camera is pushed onto this one. The real
+        ONVIF password is set afterwards by its own step.
+        """
+        try:
+            live = self.export_config()
+        except CameraError as e:
+            raise CameraError(
+                f"The profile is missing section(s) the device requires, and its "
+                f"current configuration could not be read to supply them: {e}")
+        missing = [s for s in live if s not in data]
+        if not missing:
+            return data
+        log.info("Filling %d section(s) the profile does not carry from the "
+                 "camera's own current config: %s.",
+                 len(missing), ", ".join(sorted(missing)))
+        return {**data, **{s: live[s] for s in missing}}
 
     # --- NTP ----------------------------------------------------------------
     def set_ntp(self, server: str, port: int = 123, update_period: int = 60) -> None:
@@ -448,6 +551,32 @@ class RaythinkRestClient(BaseRaythinkClient):
     # as two plain JSON calls, which replaces the whole hand-rolled SOAP /
     # WS-Security digest block the RPC2 client needs.
     def _onvif_users(self) -> list[dict]:
+        """The ONVIF users, with their passwords in PLAINTEXT.
+
+        Read from the config export rather than from GET /v1/netapp/onvif/user,
+        which is the obvious endpoint and the wrong one: it returns each password
+        AES-encrypted, in the same form the wire uses, while the export returns
+        it as it is. Comparing against the encrypted form would work too, but
+        only by re-deriving an encoding the vendor documents nowhere; the export
+        is what the bench measured against a live camera, so it is what this
+        trusts. The export is the larger read, and this runs a handful of times
+        per camera, so the cost does not signify.
+        """
+        export = self.export_config()
+        users = (export.get("OnvifUser") or {}).get("User") or []
+        return [u for u in users if isinstance(u, dict)]
+
+    def _onvif_users_live(self) -> list[dict]:
+        """The ONVIF users as the device holds them RIGHT NOW, passwords in the
+        AES form (confirmed against camera CB6280156: this endpoint answered
+        `AES(password)` for the same account the export reported in plaintext).
+
+        Distinct from `_onvif_users`, which reads the export, because the two
+        disagree after a config import: the export reports the SAVED
+        configuration, and once a file has been imported that is the imported
+        file rather than what the device is running. So a password set after an
+        import reads back stale from the export and current from here.
+        """
         data = self._request("GET", "/v1/netapp/onvif/user", raise_on_error=False)
         return [u for u in (data or []) if isinstance(u, dict)]
 
@@ -459,9 +588,13 @@ class RaythinkRestClient(BaseRaythinkClient):
         separate ONVIF login to make. The password itself must never reach the
         returned detail — verification rows go to bench-central verbatim
         (TEC-349) — so the row says whether it matches, never what it is.
+
+        Asked of the LIVE user list rather than the export, because after a
+        config import the export answers from the imported file and would report
+        a password set afterwards as still missing.
         """
         try:
-            users = self._onvif_users()
+            users = self._onvif_users_live()
         except CameraError as e:
             return False, f"ONVIF user list could not be read ({e})"
         if not users:
@@ -470,8 +603,15 @@ class RaythinkRestClient(BaseRaythinkClient):
         if me is None:
             names = ", ".join(str(u.get("Name")) for u in users) or "?"
             return False, f"no ONVIF user '{self.username}' (found: {names})"
-        if me.get("Password") == password:
+        held = me.get("Password")
+        if held == encrypt_password(password):
             return True, f"set (ONVIF users: {', '.join(str(u.get('Name')) for u in users)})"
+        if not held or held == encrypt_password(""):
+            # Worth saying outright rather than as "a different password": an
+            # ONVIF account with no password at all is a way in, not a
+            # misconfiguration, and it is what sending an unencrypted password
+            # to changepwd used to leave behind.
+            return False, "ONVIF has NO password set"
         return False, "ONVIF is on a different password"
 
     def set_onvif_password(self, new_password: str, current_candidates: list[str]) -> None:
@@ -493,17 +633,26 @@ class RaythinkRestClient(BaseRaythinkClient):
         if ok:
             log.info("ONVIF password already set to the target; skipping.")
             return
-        users = self._onvif_users()
+        users = self._onvif_users_live()
         exists = any(u.get("Name") == self.username for u in users)
         log.info("Setting the ONVIF admin password ...")
+        # The password goes on the wire ENCRYPTED, exactly as the login and the
+        # admin-password change send theirs. The vendor doc says otherwise — its
+        # example body is a plaintext "admin123" — and following it is silently
+        # destructive: the device decrypts whatever arrives, so a plaintext
+        # password decrypts to nothing and the account is left with NO PASSWORD
+        # while the call still answers Code 200. Measured on a live camera
+        # (CB6280156): sending the encrypted form sets the password, sending the
+        # plaintext form empties it.
         if exists:
             self._request("PUT", "/v1/netapp/onvif/changepwd",
-                          body={"Name": self.username, "NewPassword": new_password})
+                          body={"Name": self.username,
+                                "NewPassword": encrypt_password(new_password)})
         else:
             log.info("No ONVIF user '%s' on the device — creating it.", self.username)
             self._request("POST", "/v1/netapp/onvif/add",
                           body={"Group": 1, "Name": self.username,
-                                "Password": new_password})
+                                "Password": encrypt_password(new_password)})
         ok, detail = self.onvif_check(new_password)
         if not ok:
             raise CameraError(f"ONVIF password did not take: {detail}")
