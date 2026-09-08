@@ -11,15 +11,19 @@ this file covers is the half that is specific to this generation: the wire
 format, the hooks the base calls, and the two endpoints the vendor documentation
 does not mention.
 """
+import hashlib
 import json
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+import requests
 
 from bench_core import MutationBlocked
 import raythink_base as base
 from raythink_base import CameraError, CameraUnreachable
-from raythink_rest import RaythinkRestClient, encrypt_password
+from raythink_rest import (FIRMWARE_CHUNK_BYTES, FLASH_DONE,
+                           RaythinkRestClient, encrypt_password)
 
 SHARED = "Kelafield123!"
 FACTORY_PW = "admin"
@@ -62,6 +66,12 @@ class FakeCamera:
         self.tokens_issued = 0
         self.imported = None
         self.reboots = 0
+        self.upgrade_ready = None
+        self.parts: list[dict] = []
+        self.status_polls = 0
+        self.flash_stages: list[int] = []
+        self.dies_while_writing = False
+        self.flash_stalls = False
         # What the camera itself would export: the profile's sections plus the
         # two the sanitiser is required to drop before a profile can be committed.
         self.stored = dict(V2_EXPORT)
@@ -204,6 +214,23 @@ class FakeCamera:
         if path == "/v1/system/magic/reboot" and method == "PUT":
             self.reboots += 1
             return ok(None)
+
+        if path == "/v1/system/upgrade/ready":
+            self.upgrade_ready = (method, query.get("islocal"))
+            return ok(None)
+        if path == "/v1/system/upgrade/common/package":
+            self.parts.append({"query": query, "method": method,
+                               "field": next(iter(files)), "part": files["package"]})
+            return ok(None)
+        if path == "/v1/system/upgrade/common/status":
+            # Process 1 (verifying) -> 2 (writing) -> 3 (done), as captured.
+            if self.dies_while_writing:
+                raise requests.exceptions.ConnectionError("Connection aborted.")
+            self.status_polls += 1
+            if self.flash_stalls:      # never reaches Process 3
+                return ok({"Process": 2, "Percent": 40})
+            stage = self.flash_stages.pop(0) if self.flash_stages else FLASH_DONE
+            return ok({"Process": stage, "Percent": 100 if stage == FLASH_DONE else 40})
 
         return ok(None)
 
@@ -685,6 +712,114 @@ def test_a_profile_is_uploaded_as_one_file(client, tmp_path):
         assert client.device.imported[section] == value
 
 
+# ── firmware upgrade ─────────────────────────────────────────────────────────
+#
+# The wire shape here is asserted in detail because it is UNDOCUMENTED — the
+# vendor PDF has no upgrade endpoint at all, and every field below comes from a
+# capture of the camera's own web UI. There is nothing to re-read it from later.
+
+def image(tmp_path, size: int) -> Path:
+    path = tmp_path / "MVP-JUPITER4S-B1V0222916-CN-20260903.zip"
+    path.write_bytes(b"\xa5" * size)
+    return path
+
+
+def test_the_image_goes_up_in_four_mib_parts(client, tmp_path):
+    # 58,040,972 bytes went as totalNumber=14, which is 4 MiB each.
+    path = image(tmp_path, FIRMWARE_CHUNK_BYTES * 2 + 100)
+    client.upgrade_firmware(str(path))
+    assert client.device.upgrade_ready == ("PUT", "true")
+    assert [int(p["query"]["fileNumber"]) for p in client.device.parts] == [1, 2, 3]
+    assert [len(p["part"][1]) for p in client.device.parts] == \
+        [FIRMWARE_CHUNK_BYTES, FIRMWARE_CHUNK_BYTES, 100]
+    assert b"".join(p["part"][1] for p in client.device.parts) == path.read_bytes()
+
+
+def test_the_part_is_posted_as_package_named_blob(client, tmp_path):
+    # Both names are from the capture and neither is guessable: the form field
+    # is "package" and the part's filename is the literal string "blob", with
+    # the real name travelling in the query string instead.
+    client.upgrade_firmware(str(image(tmp_path, 10)))
+    sent = client.device.parts[0]
+    assert sent["method"] == "POST"
+    assert sent["field"] == "package"
+    assert sent["part"][0] == "blob"
+    assert sent["part"][2] == "application/octet-stream"
+    assert sent["query"]["filename"] == "MVP-JUPITER4S-B1V0222916-CN-20260903.zip"
+
+
+def test_every_part_carries_the_md5_of_the_whole_file(client, tmp_path):
+    # NOT a per-part digest: the captured md5 was byte-identical across all 14
+    # requests, and matches the md5 of the bundle on disk.
+    path = image(tmp_path, FIRMWARE_CHUNK_BYTES + 1)
+    whole = hashlib.md5(path.read_bytes()).hexdigest()
+    client.upgrade_firmware(str(path))
+    assert {p["query"]["md5"] for p in client.device.parts} == {whole}
+    assert {p["query"]["totalNumber"] for p in client.device.parts} == {"2"}
+    assert {p["query"]["filename"] for p in client.device.parts} == {path.name}
+
+
+def test_the_configuration_is_not_wiped(client, tmp_path):
+    # reset=true is the device's "wipe the configuration" flag. This runs BEFORE
+    # the config import, on a camera whose admin password the pipeline has
+    # already changed — a wipe would drop it back to the factory address and
+    # credential mid-run.
+    client.upgrade_firmware(str(image(tmp_path, 10)))
+    assert {p["query"]["reset"] for p in client.device.parts} == {"false"}
+
+
+def test_the_upload_is_not_mistaken_for_the_flash(client, tmp_path):
+    # The camera answered all 14 parts and only THEN wrote the image. Returning
+    # at the end of the upload would hand the caller a camera that is about to
+    # disappear rather than one that already has.
+    client.device.flash_stages = [1, 2, 2, FLASH_DONE]
+    client.upgrade_firmware(str(image(tmp_path, 10)))
+    assert client.device.status_polls == 4
+    assert client.token == ""      # nothing survives the reboot
+
+
+def test_the_camera_vanishing_while_writing_is_the_reboot_not_a_failure(client, tmp_path):
+    client.device.dies_while_writing = True
+    client.upgrade_firmware(str(image(tmp_path, 10)))
+    assert client.token == ""
+
+
+def test_a_camera_still_writing_when_time_runs_out_is_not_called_done(client, tmp_path):
+    # And the message says the one thing that matters, because an operator
+    # watching a stuck step reaches for the power.
+    client.device.flash_stalls = True
+    with pytest.raises(CameraError) as e:
+        client._await_flash(timeout=0.05)
+    assert "do NOT power it off" in str(e.value)
+
+
+def test_a_part_that_is_rejected_stops_the_upload(client, tmp_path):
+    # Silence partway through is a half-written image, and continuing to the
+    # next part would report a flash that never happened.
+    path = image(tmp_path, FIRMWARE_CHUNK_BYTES * 3)
+    original = client.device.request
+    calls = {"n": 0}
+
+    def flaky(method, url, **kwargs):
+        if "upgrade/common/package" in url:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise requests.exceptions.ConnectionError("Connection aborted.")
+        return original(method, url, **kwargs)
+
+    client.device.request = flaky
+    with pytest.raises(CameraUnreachable):
+        client.upgrade_firmware(str(path))
+    assert client.device.status_polls == 0   # never got as far as writing
+
+
+def test_a_firmware_upgrade_is_refused_by_a_read_only_client(client, tmp_path):
+    client.set_read_only()
+    with pytest.raises(MutationBlocked):
+        client.upgrade_firmware(str(image(tmp_path, 10)))
+    assert client.device.parts == []
+
+
 def test_success_that_asks_for_a_reboot_is_not_read_as_failure(client, tmp_path):
     # The import answers 200000, "msg: success, need to reboot device." — a
     # SUCCESS code that is not 200. Treating only 200 as success failed the step
@@ -791,6 +926,26 @@ def check(rows, item):
 def verify(client, **kwargs):
     return client.verify_configuration(new_password=SHARED,
                                        ntp_server="192.168.88.10", **kwargs)
+
+
+def test_the_firmware_row_uses_floor_semantics(client):
+    # A camera deliberately left alone for being NEWER than the floor must not
+    # then fail its own verification for being newer than the floor. The fake
+    # reports 2026-05-14, and this floor is numerically far HIGHER but older by
+    # date — so a row that passes here is a row comparing dates, not numbers.
+    assert check(verify(client, dhcp=True, min_firmware="B9.9.99.99.99, 2026-01-01"),
+                 "firmware")["ok"] is True
+
+
+def test_a_camera_below_the_floor_fails_its_firmware_row(client):
+    # Mirror image: numerically LOWER than what the camera reports, but newer.
+    assert check(verify(client, dhcp=True, min_firmware="B1.0.00.00.01, 2026-09-03"),
+                 "firmware")["ok"] is False
+
+
+def test_there_is_no_firmware_row_when_no_floor_is_configured(client):
+    # A bench with no image configured must not grow a row it can never pass.
+    assert not [r for r in verify(client, dhcp=True) if r["item"] == "firmware"]
 
 
 def test_a_correctly_configured_camera_passes_every_row(client, monkeypatch):

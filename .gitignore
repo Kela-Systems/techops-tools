@@ -75,6 +75,9 @@ bench/tsw-config-ui/firmware/
 # through `raythink_configure.py --sanitize-profile` before committing it —
 # see "Config profiles" in bench/raythink-config-ui/README.md.
 bench/raythink-config-ui/config/raythink.config.json
+# Firmware images, as for the other three tools: far too large for git (the
+# newer cameras' image is a ~58 MB zip) and vendor-supplied rather than ours.
+bench/raythink-config-ui/firmware/
 
 # The address mode each tool is set to (TEC-848) — station state an operator
 # flips during a shift, not checked-in intent. `ip_state.json` is the older

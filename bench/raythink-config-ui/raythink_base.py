@@ -30,10 +30,12 @@ methods marked "override" below, and never learns which generation it got.
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import sys
 import time
 from dataclasses import dataclass
+from datetime import date
 from typing import Optional
 
 try:
@@ -154,6 +156,51 @@ PROFILE_DROP_SECTIONS = {
 }
 
 _REDACTED = ""
+
+
+# Both generations end their firmware string with the build date:
+#   newer:  "B1.0.22.29.16, 2026-09-03"
+#   older:  "1.000.General 00.0.T, build: 2025-04-09"
+FW_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+
+
+def fw_build_date(version: str) -> Optional[date]:
+    """The build date in a Raythink firmware string, or None if it has none."""
+    m = FW_DATE_RE.search(version or "")
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:      # a date-shaped string that is not a date
+        return None
+
+
+def fw_at_least(current: str, floor: str) -> bool:
+    """True when `current` is the `floor` build or newer, compared BY BUILD DATE
+    rather than by the version numbers.
+
+    The numbers cannot be used, and this is not a stylistic choice. Two cameras
+    of the same model, both taking the same image:
+
+        B1.2.01.01.15, 2026-05-14
+        B1.0.22.29.16, 2026-09-03
+
+    The first sorts HIGHER numerically and is four months OLDER. Ordering by the
+    numbers would class the May camera as newer than the September build and
+    quietly leave it on the old firmware, which is the one outcome a floor is
+    supposed to prevent.
+
+    An undatable version — either side — is False rather than True: "we cannot
+    show this camera is current" must never read as "this camera is fine". False
+    makes the flash decision flash and the verification row fail, both of which
+    are visible; True would hide the problem.
+    """
+    if not floor:
+        return True
+    floor_date, current_date = fw_build_date(floor), fw_build_date(current)
+    if floor_date is None or current_date is None:
+        return False
+    return current_date >= floor_date
 
 
 def sanitize_profile(data: dict, *, secrets: tuple[str, ...] = ()) -> tuple[dict, list[str]]:
@@ -443,6 +490,54 @@ class BaseRaythinkClient:
         return {"item": "static IP", "expected": ip,
                 "actual": f"no answer on {ip} after {wait}s (laptop subnet?)", "ok": False}
 
+    def follow_by_mac(self, mac: str, subnets: list[str], *, wait: int = 300,
+                      iface_host: Optional[str] = None, why: str = "") -> bool:
+        """Sweep `subnets` for `mac` until the camera answers, then point the
+        client at wherever it turned up. True if it was found.
+
+        Used whenever the camera comes back at an address we did not choose, and
+        there are two such moments: the switch to DHCP, and a firmware upgrade —
+        the flash reboots the camera and it does NOT necessarily return on the
+        address it left (observed on the bench: it moved).
+
+        The waiting is not silent, because it is minutes long and an operator
+        watching the step log needs to see it is still working, and the host's
+        own lease is renewed as we go — the laptop may need an address on the
+        camera's new subnet before it can see the camera there at all.
+        """
+        log.info("Looking for the camera by MAC %s on %s (up to %ds%s) ...",
+                 mac, ", ".join(subnets) or "(no subnets configured)", wait,
+                 f" — {why}" if why else "")
+        # Let it actually leave first: probed too early it can still be answering
+        # on the address it is about to drop, which would look like "found it".
+        time.sleep(DHCP_SETTLE_SEC)
+        renew_host_dhcp(iface_host if iface_host is not None
+                        else host_iface_for(self.host))
+
+        deadline = time.time() + wait
+        next_renew = time.time() + DHCP_HOST_RENEW_SEC
+        next_note = time.time() + DHCP_PROGRESS_SEC
+        while time.time() < deadline:
+            found = find_ip_by_mac(mac, subnets, port=self._port())
+            if found:
+                log.info("Camera is answering on %s.", found)
+                self._point_at(found)
+                return True
+            now = time.time()
+            if now >= next_renew:
+                renew_host_dhcp(iface_host if iface_host is not None
+                                else host_iface_for(self.host))
+                next_renew = now + DHCP_HOST_RENEW_SEC
+            if now >= next_note:
+                seen_at = arp_table().get(canonical_mac(mac), [])
+                log.info("...still looking for the camera (%ds left)%s",
+                         int(deadline - now),
+                         f"; its MAC is cached at {', '.join(seen_at)} but nothing "
+                         f"answers there yet" if seen_at else "")
+                next_note = now + DHCP_PROGRESS_SEC
+            time.sleep(3)
+        return False
+
     def set_dhcp(self, *, mac: str, subnets: list[str], wait: int = 300) -> dict:
         """Switch the camera to DHCP — the alternative last step to
         set_static_ip, for a site where the camera is meant to take its address
@@ -475,37 +570,9 @@ class BaseRaythinkClient:
             return {**row, "actual": "switched to DHCP, but no MAC was known to "
                                      "find the camera again", "ok": False}
 
-        log.info("Looking for the camera by MAC %s on %s (up to %ds — it has to "
-                 "reboot, take a lease and start serving) ...",
-                 mac, ", ".join(subnets) or "(no subnets configured)", wait)
-        # Let it actually leave first: probed too early it can still be answering
-        # on the address it is about to drop, which would look like "found it".
-        time.sleep(DHCP_SETTLE_SEC)
-        renew_host_dhcp(iface_host)
-
-        deadline = time.time() + wait
-        next_renew = time.time() + DHCP_HOST_RENEW_SEC
-        next_note = time.time() + DHCP_PROGRESS_SEC
-        while time.time() < deadline:
-            found = find_ip_by_mac(mac, subnets, port=self._port())
-            if found:
-                log.info("Camera is answering on %s.", found)
-                self._point_at(found)
-                return {**row, "actual": f"answering on {found}", "ok": True}
-            now = time.time()
-            if now >= next_renew:
-                # The laptop may need a lease on the camera's new subnet before
-                # it can see the camera there at all, so keep asking.
-                renew_host_dhcp(iface_host)
-                next_renew = now + DHCP_HOST_RENEW_SEC
-            if now >= next_note:
-                seen_at = arp_table().get(canonical_mac(mac), [])
-                log.info("...still looking for the camera (%ds left)%s",
-                         int(deadline - now),
-                         f"; its MAC is cached at {', '.join(seen_at)} but nothing "
-                         f"answers there yet" if seen_at else "")
-                next_note = now + DHCP_PROGRESS_SEC
-            time.sleep(3)
+        if self.follow_by_mac(mac, subnets, wait=wait, iface_host=iface_host,
+                              why="it has to reboot, take a lease and start serving"):
+            return {**row, "actual": f"answering on {self.host}", "ok": True}
 
         # Out of time. Say precisely what the bench could and couldn't see — the
         # two failures need different fixes and look identical from the outside.
@@ -535,7 +602,8 @@ class BaseRaythinkClient:
                              ip: str = "", netmask: str = "", gateway: str = "",
                              dhcp: bool = False,
                              profile_name: str = "", imported: Optional[dict] = None,
-                             check_onvif: bool = True) -> list[dict]:
+                             check_onvif: bool = True,
+                             min_firmware: str = "") -> list[dict]:
         """Re-read the settings we changed and confirm they took. Runs AFTER the
         addressing change, so it talks to the device on its new address (we are
         already re-pointed there). Returns {item, expected, actual, ok} rows.
@@ -548,6 +616,14 @@ class BaseRaythinkClient:
 
         def add(item, expected, actual, ok):
             checks.append({"item": item, "expected": expected, "actual": actual, "ok": ok})
+
+        # Firmware, when a floor is configured. Floor semantics here too, so a
+        # camera that arrives newer than the floor and was deliberately left
+        # alone does not then fail its own verification.
+        if min_firmware:
+            running = self.get_identity().get("firmware", "")
+            add("firmware", f"{min_firmware} or newer", running or "unknown",
+                fw_at_least(running, min_firmware))
 
         # Password: we are authenticated on new_password (we re-logged-in under
         # it). Neither side of this row may carry an actual password — these rows
@@ -612,6 +688,7 @@ __all__ = [
     "BaseRaythinkClient", "CameraError", "CameraUnreachable", "MutationBlocked",
     "NetworkView",
     "arp_table", "canonical_mac", "find_ip_by_mac", "find_plaintext_passwords",
-    "format_verification", "host_iface_for", "log", "renew_host_dhcp",
+    "format_verification", "fw_at_least", "fw_build_date",
+    "host_iface_for", "log", "renew_host_dhcp",
     "sanitize_profile", "set_log_serial",
 ]

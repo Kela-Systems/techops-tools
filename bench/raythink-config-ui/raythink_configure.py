@@ -59,10 +59,12 @@ from raythink_base import (
     DEFAULT_USERNAME,
     GENERATION_LABELS,
     GENERATIONS,
+    GEN_REST,
     GEN_RPC2,
     CameraError,
     find_plaintext_passwords,
     format_verification,
+    fw_at_least,
     log,
     sanitize_profile,
     set_log_serial,
@@ -72,6 +74,7 @@ from raythink_client import (
     detect_generation,
     open_camera,
 )
+from raythink_firmware import check_model, plan_upgrade
 
 LOG_LINE_FORMAT = "[%(levelname_lc)s] [%(sn)s] %(message)s"
 
@@ -89,6 +92,10 @@ DEFAULT_SCAN_SUBNETS = ["192.168.88.0/24", "192.168.1.0/24", "192.168.2.0/24"]
 # rebooting, taking a lease AND starting its web server. Giving up early gets a
 # camera that is actually fine reported as unverifiable.
 DEFAULT_LEASE_TIMEOUT = 300
+# Covers only the reboot: the write itself is awaited inside upgrade_firmware,
+# which returns when the device reports it finished. Still generous, because the
+# camera boots a freshly written image and may take a lease on the way up.
+DEFAULT_FIRMWARE_REBOOT_TIMEOUT = 600
 
 DHCP_DEVICE_NAME = "raythink-dhcp"
 
@@ -247,6 +254,150 @@ def find_camera(hosts: list[str], port: int = 80, scheme: str = DEFAULT_SCHEME,
 
 # --- pipeline (shared by CLI + web UI) ----------------------------------------
 
+def min_firmware_for(client, settings: dict) -> str:
+    """The configured firmware floor, or "" when there is none to check against.
+
+    Empty for the older generation whatever the config says: there is no upgrade
+    path for it here, so a floor meant for the newer cameras must not fail an
+    older one's verification.
+    """
+    if client.generation != GEN_REST:
+        return ""
+    return ((settings.get("firmware", {}) or {}).get("minimum_version") or "").strip()
+
+
+def firmware_only(client, *, settings: dict, force: bool = False) -> bool:
+    """Flash the camera and stop, changing nothing else.
+
+    Exists for a specific chicken-and-egg: the floor has to be set to the
+    version string the camera REPORTS, and nothing outside the camera knows what
+    that is — the bundle's filename ('B1V0222916') is not the reported scheme
+    ('B1.2.02.29.16, 2026-09-03') and nothing inside it pairs the two. So the
+    first bundle of a batch gets flashed with this, and the version it prints is
+    what goes in the config.
+
+    Deliberately does NOT touch the password, the profile or the addressing:
+    a camera used to answer this question should come out of it in the same
+    state it went in, apart from its firmware.
+    """
+    initial_pw = settings.get("initial_password", DEFAULT_INITIAL_PASSWORD)
+    new_pw = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    try:
+        client.login(initial_pw)
+    except CameraError:
+        client.login(new_pw)
+
+    if client.generation != GEN_REST:
+        log.error("Firmware upgrades are only supported on the newer (REST) "
+                  "cameras; this one is %s.",
+                  GENERATION_LABELS.get(client.generation, client.generation))
+        return False
+
+    identity = client.get_identity()
+    log.info("Camera %s (%s) is on %s.", identity.get("serial", "?"),
+             identity.get("model", "?"), identity.get("firmware", "?"))
+
+    dhcp_cfg = settings.get("dhcp", {}) or {}
+    failures, _step = make_step_runner(log, CameraError)
+    apply_firmware_floor(client, settings, identity, force=force,
+                         subnets=dhcp_cfg.get("scan_subnets", DEFAULT_SCAN_SUBNETS),
+                         passwords=[new_pw, initial_pw], step=_step)
+    if failures:
+        for line in failures:
+            log.error("%s", line)
+        return False
+
+    running = client.get_identity().get("firmware", "")
+    log.info("Camera now reports: %s", running or "(nothing)")
+    log.info('Set this as the floor:  "firmware": { "minimum_version": "%s" }',
+             running)
+    return True
+
+
+def apply_firmware_floor(client, settings: dict, identity: dict, *,
+                         subnets: list[str], passwords: list[str], step,
+                         force: bool = False) -> str:
+    """Bring the camera up to the configured minimum firmware if it is below it,
+    and return the note that goes in the run record either way.
+
+    A FLOOR, not a pin (see raythink_firmware.plan_upgrade). Configured entirely
+    under `firmware` in the settings, and absent configuration means no firmware
+    step at all — so a bench that has not been given an image behaves exactly as
+    it did before this existed.
+
+    The whole thing runs through `step`, so a firmware problem fails ITS step and
+    is reported with the others rather than aborting the run. That is the right
+    trade for a camera that is otherwise provisionable: an operator would rather
+    have a fully configured camera on the wrong build, named in the failures,
+    than an aborted run leaving it half-done.
+    """
+    fw = settings.get("firmware", {}) or {}
+    minimum = (fw.get("minimum_version") or "").strip()
+    zip_path = fw.get("zip_path") or ""
+    if zip_path:
+        zip_path = str((BASE_DIR / zip_path).resolve())
+
+    note = ""
+
+    def do_firmware() -> None:
+        nonlocal note
+        current = identity.get("firmware", "")
+        if force:
+            # --firmware-only --force-firmware: the operator is establishing what
+            # a bundle reports, so the floor comparison is exactly what has to be
+            # bypassed. The MODEL check is not bypassed — the wrong image bricks.
+            if not zip_path:
+                raise CameraError("no firmware.zip_path configured, so there is "
+                                  "nothing to flash")
+            check_model(zip_path, identity.get("model", ""))
+            flash, note = True, f"forced from {current or 'unknown'}"
+        else:
+            flash, note = plan_upgrade(current, minimum, zip_path,
+                                       identity.get("model", ""))
+        if not flash:
+            log.info("Firmware: %s.", note)
+            return
+
+        # It restarts on the last part and does NOT reliably come back where it
+        # was: on the bench it moved, which is why the camera is searched for by
+        # MAC rather than waited for on the address we were talking to. Checked
+        # BEFORE the flash starts, not after — without a MAC the camera would be
+        # rewritten and then lost, which is far worse than not flashing it.
+        mac = identity.get("mac", "")
+        if not mac:
+            raise CameraError("the camera reported no MAC, so the bench could not "
+                              "find it again after the reboot — refusing to flash")
+
+        log.info("Firmware: %s — flashing.", note)
+        client.upgrade_firmware(zip_path)
+
+        wait = int(fw.get("reboot_timeout", DEFAULT_FIRMWARE_REBOOT_TIMEOUT))
+        if not client.follow_by_mac(mac, subnets, wait=wait,
+                                    why="it has to restart on the new firmware"):
+            # The image is written by this point (upgrade_firmware waits for the
+            # device to say so), so this is a camera that rebooted and did not
+            # reappear on any subnet the bench is watching — most often because
+            # it landed somewhere this PC has no address on.
+            raise CameraError(
+                f"the firmware was written, but the camera did not reappear on "
+                f"{', '.join(subnets) or '(no subnets configured)'} within {wait}s. "
+                "It most likely came back on a subnet this PC is not on — find it "
+                "by hand and re-run.")
+        client.relogin(passwords, settle=5)
+
+        after = client.get_identity().get("firmware", "")
+        note = f"{current or 'unknown'} -> {after or 'unknown'}"
+        # Only assertable against a floor. Under --force-firmware there may be
+        # none — establishing what the camera reports is the whole point.
+        if minimum and not fw_at_least(after, minimum):
+            raise CameraError(f"flashed, but the camera reports {after or 'nothing'} "
+                              f"rather than {minimum} or newer")
+        log.info("Firmware upgraded: %s.", note)
+
+    step("firmware", do_firmware)
+    return note or "firmware step failed — see above"
+
+
 def configure_camera(client, *, profile_name: str,
                      profile_path: str, octet: Optional[int], settings: dict,
                      mac: str = "") -> dict:
@@ -298,7 +449,17 @@ def configure_camera(client, *, profile_name: str,
 
     failures, _step = make_step_runner(log, CameraError)
 
-    # 3. Import the chosen config profile, then re-login (an import can drop the
+    # 3. Firmware, BEFORE the config import, so the profile lands on the build
+    # that will actually run it — a flash afterwards could migrate or discard
+    # what we just imported. A floor rather than a pin: see raythink_firmware.
+    if client.generation == GEN_REST:
+        apply_firmware_floor(client, settings, identity, subnets=scan_subnets,
+                             passwords=[new_pw, initial_pw], step=_step)
+        # The flash reboots the camera and it can come back elsewhere, so
+        # anything read before it is stale.
+        identity = client.get_identity()
+
+    # 4. Import the chosen config profile, then re-login (an import can drop the
     # session or reboot the camera).
     imported = {"applied": [], "skipped": []}
 
@@ -355,7 +516,8 @@ def configure_camera(client, *, profile_name: str,
             verification += client.verify_configuration(
                 new_password=new_pw, ntp_server=ntp_server, ip=target_ip,
                 netmask=netmask, gateway=gateway, dhcp=dhcp_mode,
-                profile_name=profile_name, imported=imported)
+                profile_name=profile_name, imported=imported,
+                min_firmware=min_firmware_for(client, settings))
             for line in format_verification(verification).splitlines():
                 log.info("%s", line)
         except CameraError as e:
@@ -492,6 +654,7 @@ def verify_camera(client, *, settings: dict, resolve=None,
         new_password=new_pw, ntp_server=ntp_server,
         ip=target_ip or reached, netmask=netmask, gateway=gateway,
         dhcp=dhcp_mode, profile_name="",   # the profile row is built above
+        min_firmware=min_firmware_for(client, settings),
     ) if not (still_factory and c["item"] == "admin password")]
 
     for line in format_verification(verification).splitlines():
@@ -575,6 +738,17 @@ def main():
     p.add_argument("--generation", choices=GENERATIONS, default="",
                    help="skip the API probe and force a generation "
                         f"({', '.join(f'{g} = {GENERATION_LABELS[g]}' for g in GENERATIONS)})")
+    p.add_argument("--host", default="",
+                   help="the camera's address, overriding the config's host — "
+                        "for a camera that has already been moved off the "
+                        "factory address (ignored with --verify, which searches)")
+    p.add_argument("--firmware-only", action="store_true",
+                   help="flash the firmware and stop, changing nothing else — "
+                        "for establishing what version a bundle actually reports "
+                        "so it can be set as firmware.minimum_version")
+    p.add_argument("--force-firmware", action="store_true",
+                   help="with --firmware-only, flash even if the camera already "
+                        "meets the floor (or none is configured)")
     p.add_argument("--sanitize-profile", metavar="EXPORT.json", default="",
                    help="turn a raw config export into a committable profile "
                         "(drops the reference camera's address and the station "
@@ -585,7 +759,7 @@ def main():
                    help="shared settings JSON (default: config/raythink.config.json)")
     args = p.parse_args()
 
-    if not args.sanitize_profile and not args.verify:
+    if not args.sanitize_profile and not args.verify and not args.firmware_only:
         if not args.profile:
             p.error("--profile is required when provisioning a camera")
         if args.ip is None and not args.dhcp:
@@ -616,7 +790,7 @@ def main():
     # generations take incompatible config files, so there is no profile to
     # resolve until we know which camera is on the bench.
     scheme = settings.get("scheme", DEFAULT_SCHEME)
-    host = settings.get("host", DEFAULT_HOST)
+    host = args.host or settings.get("host", DEFAULT_HOST)
     generation = args.generation or None
     if args.verify:
         # A finished camera is not on the factory address any more, so find it
@@ -657,6 +831,9 @@ def main():
         generation=generation,
     )
     try:
+        if args.firmware_only:
+            sys.exit(0 if firmware_only(client, settings=settings,
+                                        force=args.force_firmware) else 1)
         if args.verify:
             result = verify_camera(client, settings=settings,
                                    profile_name=args.profile, octet=octet,

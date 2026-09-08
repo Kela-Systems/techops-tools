@@ -44,6 +44,13 @@
     }
   },
 
+  "_comment_firmware": "NEWER (REST) cameras only — the older generation has no upgrade path here. minimum_version is a FLOOR, not a pin: a camera that arrives OLDER is flashed from zip_path, one at or above it is left alone, and one that is NEWER is passed through with a note rather than downgraded. OLDER/NEWER mean the BUILD DATE, not the version number — the vendor's numbering is not chronological ('B1.2.01.01.15, 2026-05-14' sorts higher than 'B1.0.22.29.16, 2026-09-03' but is four months older), so the floor MUST include its date or it is rejected. Leave the whole block out and no firmware step runs at all. zip_path is relative to the tool folder and points at the vendor's bundle in firmware/ (gitignored, like the other tools' images); the bundle names the models it is built for in its own check.img, and a camera whose model is not in that list is REFUSED, because the wrong image bricks rather than fails. The version is not stated in the bundle (its name encodes it — 'B1V0222916' flashed to a camera reporting 'B1.0.22.29.16, 2026-09-03' — but that is one observation, not a documented rule), so set minimum_version to what a camera actually reports after 'raythink_configure.py --firmware-only --force-firmware'. The flash reboots the camera and it can come back on a DIFFERENT address, so it is found again by MAC over dhcp.scan_subnets; reboot_timeout must cover writing ~58 MB to flash AND the restart.",
+  "firmware": {
+    "minimum_version": "B1.0.22.29.16, 2026-09-03",
+    "zip_path": "firmware/MVP-JUPITER4S-B1V0222916-CN-20260903.zip",
+    "reboot_timeout": 600
+  },
+
   "_comment_timeouts": "import_reboot_timeout: seconds to wait for the camera to come back if a config import reboots it. ip_move_timeout: seconds to wait for the camera to answer on its new static IP.",
   "import_reboot_timeout": 180,
   "ip_move_timeout": 120

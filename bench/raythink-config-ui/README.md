@@ -27,11 +27,11 @@ version anyway and cross-checks it against the API that answered; a disagreement
 is logged loudly rather than acted on, since it would mean the version convention
 has moved. `--generation rpc2|rest` on the CLI skips the probe.
 
-Two of the newer API's endpoints — the admin password change and the device
-identity — appear nowhere in the vendor's 597-page documentation and were
-captured from the camera's own web UI. They are marked as such in
-`raythink_rest.py`, since a reader checking them against the PDF will not find
-them.
+Three of the newer API's endpoints — the admin password change, the device
+identity and the **firmware upgrade** — appear nowhere in the vendor's 597-page
+documentation and were captured from the camera's own web UI. They are marked as
+such in `raythink_rest.py`, since a reader checking them against the PDF will not
+find them.
 
 ## What it does per camera
 
@@ -42,23 +42,25 @@ them.
   generation takes it in plaintext: the older stores
    `MD5(user:realm:password)` (hex case per firmware), the newer wants the same
    AES form as the login.
-3. Import the chosen config profile (LAN or Cellular). On the older cameras that
+3. **Firmware** (newer cameras only), if a floor is configured — see below. Runs
+   before the import so the profile lands on the build that will run it.
+4. Import the chosen config profile (LAN or Cellular). On the older cameras that
   is the JSON the web's *Setup > System > Import* accepts, replayed one config
    table at a time via `configManager.setConfig`; on the newer ones the file is
    uploaded whole. Then re-login (an import can drop the session).
-4. Date & Time: set NTP to `192.168.88.10` **and** sync the clock to the bench
+5. Date & Time: set NTP to `192.168.88.10` **and** sync the clock to the bench
   PC's current time (the web UI's *Sync to PC time* button).
-5. Set the **ONVIF** `admin` password to `Kelafield123!`. ONVIF keeps a
+6. Set the **ONVIF** `admin` password to `Kelafield123!`. ONVIF keeps a
   **separate credential** from the web/system account on both generations, so
    the step 2 password change does **not** touch it — verified on a live unit
    that was still ONVIF `admin/admin` after a normal provisioning run. The older
    cameras have no endpoint for it, so the tool speaks ONVIF `SetUser` over SOAP;
    the newer ones expose it as two plain JSON calls. Idempotent either way.
-6. **Last step:** address the camera — either move it to a static
+7. **Last step:** address the camera — either move it to a static
   `192.168.88.XX` (gateway `192.168.88.1`, mask `255.255.255.0`) or switch it to
    **DHCP**. Either way the connection drops by design; see below for how each
    one is confirmed.
-7. Verify every setting by reading it back off the camera — including the
+8. Verify every setting by reading it back off the camera — including the
   **ONVIF** credential, confirmed with an authenticated `GetUsers` call on the
    older cameras and read back off the user list on the newer ones.
 
@@ -166,6 +168,100 @@ The profile list in the UI is unchanged; a profile with no file for the camera
 currently on the bench is shown greyed out, and a run that would need one is
 refused before it starts. A profile aimed at the wrong generation is rejected by
 name rather than being uploaded for the camera to complain about.
+
+### Firmware
+
+**Newer (REST) cameras only** — the older generation has no upgrade path here.
+Configured under `firmware`, and leaving the block out means no firmware step
+runs at all, so a bench that has not been given an image behaves exactly as it
+did before this existed.
+
+`minimum_version` is a **floor, not a pin**: a camera that arrives older is
+flashed, one already at or above it is left alone, and one that is *newer* is
+passed through with a note rather than downgraded.
+
+**Older and newer mean the build date, not the version number**, and that is not
+a stylistic choice. Two cameras of the same `XX-MVP-PC4-V100`, both taking this
+same image, reported:
+
+```
+B1.2.01.01.15, 2026-05-14      <- sorts HIGHER, is four months OLDER
+B1.0.22.29.16, 2026-09-03
+```
+
+Ordering by the numbers would class the May camera as newer than the September
+build and quietly leave it on the old firmware — the one outcome a floor exists
+to prevent. So the floor must carry a date, and a `minimum_version` without one
+is rejected as a configuration error. A camera whose *own* version has no
+readable date is flashed rather than assumed current, on the same reasoning: a
+needless flash costs a reboot, a needless skip ships the wrong build in silence. The image itself lives in
+`firmware/`, which is **gitignored** — the bundle is ~58 MB, so it is copied to
+each bench by hand like the other tools' images.
+
+Two things about it are worth knowing before you run it on a real camera:
+
+- **The version is not stated anywhere in the bundle**, though the filename does
+  encode it: `...B1V0222916...` flashed to a camera reporting
+  `B1.0.22.29.16, 2026-09-03`, i.e. `B1` + `V` + `0`,`22`,`29`,`16`. That is one
+  observation, not a documented rule, so `minimum_version` is still set from what
+  a camera actually **reports after a flash** rather than parsed out of the name
+  (see below). Until it is set, the firmware step is simply skipped.
+- **The camera can come back on a different address.** The flash reboots it and
+  it does not reliably return where it was (observed on the bench), so the tool
+  finds it again by MAC across `dhcp.scan_subnets` rather than waiting on the
+  address it was talking to. A camera that reports no MAC is **not flashed**:
+  it would be rewritten and then unfindable.
+
+The bundle names the models it was built for in its own `check.img`, and a
+camera whose model is not in that list is **refused** — the wrong image bricks
+rather than fails.
+
+#### Finding out what a bundle reports
+
+To set the floor for a new bundle, flash one camera with it and read the version
+back. `--firmware-only` does exactly that and nothing else — no password change,
+no profile, no addressing, so the camera comes out as it went in apart from its
+firmware:
+
+```
+python3 raythink_configure.py --firmware-only --force-firmware
+```
+
+`--force-firmware` skips the floor comparison, which is the point when there is
+no floor yet. It does **not** skip the model check. The run ends by printing the
+line to paste into the config:
+
+```
+[info] Camera now reports: B1.2.02.29.16, 2026-09-03
+[info] Set this as the floor:  "firmware": { "minimum_version": "B1.2.02.29.16, 2026-09-03" }
+```
+
+The upgrade endpoints are **undocumented**, like the two above, and were
+reconstructed from a HAR of the camera's own web UI doing an upgrade:
+
+```
+PUT  /v1/system/upgrade/ready?islocal=true
+POST /v1/system/upgrade/common/package?filename=&fileNumber=&totalNumber=
+         &md5=&packageType=1&reset=false&verifyType=1
+     multipart, one part named "package" whose filename is the literal "blob"
+GET  /v1/system/upgrade/common/status   -> {"Process": 1|2|3, "Percent": 0-100}
+```
+
+Three details there are worth spelling out, because none of them is guessable
+and all of them are load-bearing:
+
+- **The `md5` is of the whole file, not of the part.** It is byte-identical
+  across all 14 requests and matches the md5 of the bundle on disk.
+- **The part is named `package` and its filename is the string `blob`.** The
+  real filename travels in the query string instead.
+- **The upload does not reboot the camera.** All 14 parts answer `200`, and the
+  write happens *afterwards* — that is what `status` reports, going
+  `Process 1` (verifying) → `2` (writing, with `Percent`) → `3` (written), and
+  only then rebooting. The tool polls it through, so the step log shows real
+  progress and the reboot is not confused with a failure.
+
+`reset` stays `false` — it is the device's *wipe the configuration* flag, and
+this runs on a camera whose admin password the tool has already changed.
 
 #### Sanitize an export before committing it
 

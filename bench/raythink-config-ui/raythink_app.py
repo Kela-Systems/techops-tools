@@ -389,6 +389,26 @@ class RaythinkConfigurator(BenchConfigurator):
 
     # ── CLI banner ──────────────────────────────────────────────────────────────
 
+    def _firmware_banner(self) -> str:
+        """The firmware line for the startup banner.
+
+        A missing image is reported but not fatal: only a camera that arrives
+        BELOW the floor needs it, and a bench provisioning cameras that are
+        already current never touches it. The line still says so plainly,
+        because discovering it mid-run costs the operator a camera's worth of
+        waiting.
+        """
+        fw = self.cfg.get("firmware", {}) or {}
+        floor = (fw.get("minimum_version") or "").strip()
+        if not floor:
+            return "no floor configured — cameras are left on the build they arrive with"
+        rel = fw.get("zip_path") or ""
+        image = self.base_dir / rel if rel else None
+        if image and image.is_file():
+            return f"floor {floor}, image {image.name} (found)"
+        return (f"floor {floor}, image {image.name if image else '(none configured)'} "
+                "(MISSING — needed only for a camera that arrives below the floor)")
+
     def print_banner(self) -> None:
         lo, hi = self._octet_range()
         static = self.cfg.get("static", {}) or {}
@@ -402,6 +422,7 @@ class RaythinkConfigurator(BenchConfigurator):
               f"{', '.join(self._dhcp_subnets())} "
               f"(up to {dhcp.get('lease_timeout', DEFAULT_LEASE_TIMEOUT)}s)")
         print(f"  NTP          : {self.cfg.get('ntp_server', '?')}")
+        print(f"  firmware     : {self._firmware_banner()}")
         profiles = self.cfg.get("profiles", {}) or {}
         print(f"  profiles     : {', '.join(profiles) if profiles else 'NONE — add them to the config'}")
         for key, entry in profiles.items():

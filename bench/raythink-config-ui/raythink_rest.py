@@ -39,12 +39,15 @@ the 597-page vendor PDF, so a reader checking them against it will not find them
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import math
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 try:
     import requests
@@ -93,6 +96,21 @@ TOKEN_REFRESH_SEC = 20
 SUCCESS_CODES = (200, 200000)
 CODE_REBOOT_REQUIRED = 200000
 
+# The part size the firmware upgrade is split into. Not a choice: the camera's
+# own web UI sent 58,040,972 bytes as totalNumber=14, which is this exactly.
+FIRMWARE_CHUNK_BYTES = 4 * 1024 * 1024
+# Firmware parts get their own timeout: the default 15s is sized for control
+# calls, and timing out mid-upload would abandon a half-written image. (The
+# captured upload took ~0.4s a part, so this is slack, not an expectation.)
+FIRMWARE_TIMEOUT = 120
+# /v1/system/upgrade/common/status reports Process 1 (verifying) -> 2 (writing)
+# -> 3 (written, about to reboot). The capture took 17s end to end; the ceiling
+# is generous because giving up on a camera that is mid-write is the one thing
+# here that can destroy a unit.
+FLASH_DONE = 3
+FLASH_POLL_SEC = 1
+FIRMWARE_WRITE_TIMEOUT = 600
+
 # Marker keys used to catch a profile handed to the wrong generation. A legacy
 # export is Dahua config tables (VideoInOptions, Encode, ...); a v2 export is
 # these. The two share no section names at all, so one hit is conclusive.
@@ -138,7 +156,7 @@ class RaythinkRestClient(BaseRaythinkClient):
     # --- transport ----------------------------------------------------------
     def _request(self, method: str, path: str, *, params: Optional[dict] = None,
                  body: Optional[dict] = None, files=None, keepalive: bool = True,
-                 raise_on_error: bool = True):
+                 raise_on_error: bool = True, timeout: Optional[int] = None):
         """One REST call. Returns the envelope's `Data`. Raises CameraError when
         raise_on_error and the device reports a non-200 `Code`.
 
@@ -152,7 +170,7 @@ class RaythinkRestClient(BaseRaythinkClient):
         if keepalive:
             self._keep_token_alive()
         return self._raw(method, path, params=params, body=body, files=files,
-                         raise_on_error=raise_on_error)
+                         raise_on_error=raise_on_error, timeout=timeout)
 
     @staticmethod
     def _safe(path: str) -> str:
@@ -168,12 +186,14 @@ class RaythinkRestClient(BaseRaythinkClient):
         return path.split("?", 1)[0]
 
     def _raw(self, method: str, path: str, *, params: Optional[dict] = None,
-             body: Optional[dict] = None, files=None, raise_on_error: bool = True):
+             body: Optional[dict] = None, files=None, raise_on_error: bool = True,
+             timeout: Optional[int] = None):
         """The call itself, with no read-only gate and no token refresh — used by
         the two operations that cannot recurse through them (the login and the
         refresh itself)."""
         headers = {"X-Token": self.token} if self.token else {}
-        kwargs = {"timeout": self.timeout, "headers": headers, "params": params}
+        kwargs = {"timeout": timeout or self.timeout, "headers": headers,
+                  "params": params}
         if files is not None:
             kwargs["files"] = files
         elif body is not None:
@@ -375,6 +395,104 @@ class RaythinkRestClient(BaseRaythinkClient):
         # verification row needs no idea which generation produced it. This
         # device applies the file as a unit, so it is one entry, not a tally.
         return {"applied": [name], "skipped": []}
+
+    def upgrade_firmware(self, zip_path: str, *, reset: bool = False) -> None:
+        """Flash a vendor firmware bundle: upload it in parts, then watch the
+        device write it.
+
+        UNDOCUMENTED, like the identity and password-change endpoints: the
+        597-page vendor PDF has no upgrade endpoint at all. Every detail below
+        comes from a HAR of the camera's own web UI performing an upgrade, and
+        the odd-looking ones are odd in the capture too:
+
+            PUT  /v1/system/upgrade/ready?islocal=true
+            POST /v1/system/upgrade/common/package?filename=&fileNumber=&
+                     totalNumber=&md5=&packageType=1&reset=false&verifyType=1
+                 multipart, one part named "package" whose filename is "blob"
+            GET  /v1/system/upgrade/common/status   -> {Process, Percent}
+
+        - `md5` is of the WHOLE file, not of the part: it is byte-identical
+          across all 14 requests and matches the bundle on disk.
+        - The part is named `package` and its filename is the literal string
+          `blob` — the real name travels in the query string instead. A part
+          named anything else is not what the device was observed to accept.
+        - The upload does NOT reboot the camera. All 14 parts answered 200, and
+          the write happens afterwards, which is what `status` reports:
+          Process 1 (verifying) -> 2 (writing, with Percent) -> 3 (done). Only
+          then does it reboot. Treating the last part as "the restart" would
+          return while the device was still verifying, and hand the caller a
+          camera that is about to disappear rather than one that already has.
+
+        `reset` stays false: it is the device's "wipe the configuration" flag,
+        and this runs BEFORE the config import in a pipeline that has already
+        set the admin password. Wiping here would drop the camera back to its
+        factory address and credential mid-run.
+
+        Returns once the device reports the write finished, which is when the
+        reboot begins. Does NOT wait for the camera to come back: it can return
+        on a DIFFERENT address, so finding it again needs the MAC and the
+        bench's subnet list, which the caller has and this does not.
+        """
+        if self.read_only:
+            raise MutationBlocked("read-only client refused a firmware upgrade")
+        path = Path(zip_path)
+        blob = path.read_bytes()
+        digest = hashlib.md5(blob).hexdigest()
+        parts = max(1, math.ceil(len(blob) / FIRMWARE_CHUNK_BYTES))
+
+        log.info("Upgrading firmware from %s (%d MB, %d parts).",
+                 path.name, len(blob) // (1024 * 1024), parts)
+        self._request("PUT", "/v1/system/upgrade/ready?islocal=true",
+                      timeout=FIRMWARE_TIMEOUT)
+
+        for index in range(parts):
+            chunk = blob[index * FIRMWARE_CHUNK_BYTES:(index + 1) * FIRMWARE_CHUNK_BYTES]
+            query = urlencode({"filename": path.name, "fileNumber": index + 1,
+                               "totalNumber": parts, "md5": digest,
+                               "packageType": 1, "reset": str(bool(reset)).lower(),
+                               "verifyType": 1})
+            # Every part must be accepted. Silence here is a half-uploaded image,
+            # and carrying on would report a flash that never happened.
+            self._request("POST", f"/v1/system/upgrade/common/package?{query}",
+                          files={"package": ("blob", chunk,
+                                             "application/octet-stream")},
+                          timeout=FIRMWARE_TIMEOUT)
+            if (index + 1) % 4 == 0 or index + 1 == parts:
+                log.info("...uploaded %d of %d parts.", index + 1, parts)
+
+        self._await_flash()
+        self.token = ""   # nothing survives the reboot
+        log.info("Firmware written; the camera is restarting.")
+
+    def _await_flash(self, timeout: int = FIRMWARE_WRITE_TIMEOUT) -> None:
+        """Poll the upgrade status until the device says it has written the image.
+
+        Process 3 is the finish line; the reboot follows it. The camera can also
+        simply stop answering — it is rebooting, which is the same finish line
+        reached from the other side, so that is not an error here.
+        """
+        deadline = time.time() + timeout
+        last_seen = ""
+        while time.time() < deadline:
+            try:
+                data = self._request("GET", "/v1/system/upgrade/common/status") or {}
+            except CameraUnreachable:
+                log.info("The camera stopped answering while writing — it has "
+                         "started to restart.")
+                return
+            process, percent = data.get("Process"), data.get("Percent", 0)
+            if process == FLASH_DONE:
+                log.info("Firmware write finished.")
+                return
+            note = f"{process}/{percent}%"
+            if note != last_seen:
+                log.info("...writing firmware (stage %s, %s%%) — do NOT power the "
+                         "camera off.", process, percent)
+                last_seen = note
+            time.sleep(FLASH_POLL_SEC)
+        raise CameraError(f"the camera was still writing the firmware after "
+                          f"{timeout}s (last reported stage {last_seen or 'nothing'}) "
+                          f"— do NOT power it off; check it by hand")
 
     def reboot(self) -> None:
         """Restart the camera, tolerating the restart eating the reply.
