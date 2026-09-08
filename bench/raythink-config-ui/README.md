@@ -5,32 +5,64 @@ connect → configure → next flow as the other bench tools, with **no manifest
 CSV** — when a camera is detected, you pick a config **profile** (LAN or
 Cellular) and how it should be **addressed** (a static IP, or DHCP).
 
-A fresh camera ships on the static IP `192.168.1.123` with `admin/admin` and
-speaks the Dahua-OEM **RPC2 JSON API** (the same protocol its own web UI uses).
+A fresh camera of either generation ships on the static IP `192.168.1.123` with
+`admin/admin`.
+
+## Two camera generations
+
+Raythink ships two generations of these cameras, and they have **no protocol in
+common**. The tool supports both and works out which is on the bench by itself,
+so an operator never chooses: everything below is the same on either, except
+which config profile file gets sent.
+
+| | firmware version | API |
+|---|---|---|
+| older | `1.000.General 00.0.T, build: 2025-04-09` | Dahua-OEM **RPC2 JSON** (the protocol its own web UI uses) |
+| newer | `B1.2.01.01.15, 2026-05-14` | **REST** under `/v1` with an `X-Token` header |
+
+Detection is a pair of unauthenticated probes — the REST login route, then the
+RPC2 login challenge — because reading the firmware version needs a session and
+establishing one is the thing that differs. Once logged in, the tool reads the
+version anyway and cross-checks it against the API that answered; a disagreement
+is logged loudly rather than acted on, since it would mean the version convention
+has moved. `--generation rpc2|rest` on the CLI skips the probe.
+
+Three of the newer API's endpoints — the admin password change, the device
+identity and the **firmware upgrade** — appear nowhere in the vendor's 597-page
+documentation and were captured from the camera's own web UI. They are marked as
+such in `raythink_rest.py`, since a reader checking them against the PDF will not
+find them.
 
 ## What it does per camera
 
-1. Login with `admin/admin` (falls back to the new password for re-runs).
-2. Change the admin password to `Kelafield123!` (`new_password`). The device
-  stores `MD5(user:realm:password)` (hex case per firmware), not plaintext.
-3. Import the chosen config profile (LAN or Cellular) — the same JSON the web's
-  *Setup > System > Import* accepts; the tool replays each config table via
-   `configManager.setConfig`, then re-logs-in (an import can drop the session).
-4. Date & Time: set NTP to `192.168.88.10` **and** sync the clock to the bench
+1. Login with `admin/admin` (falls back to the new password for re-runs). The
+  older cameras use a two-step challenge/response; the newer ones send the
+   password AES-encrypted under a fixed key and get a token back.
+2. Change the admin password to `Kelafield123!` (`new_password`). Neither
+  generation takes it in plaintext: the older stores
+   `MD5(user:realm:password)` (hex case per firmware), the newer wants the same
+   AES form as the login.
+3. **Firmware** (newer cameras only), if a floor is configured — see below. Runs
+   before the import so the profile lands on the build that will run it.
+4. Import the chosen config profile (LAN or Cellular). On the older cameras that
+  is the JSON the web's *Setup > System > Import* accepts, replayed one config
+   table at a time via `configManager.setConfig`; on the newer ones the file is
+   uploaded whole. Then re-login (an import can drop the session).
+5. Date & Time: set NTP to `192.168.88.10` **and** sync the clock to the bench
   PC's current time (the web UI's *Sync to PC time* button).
-5. Set the **ONVIF** `admin` password to `Kelafield123!`. ONVIF keeps a
-  **separate credential** from the web/system account (ONVIF PasswordDigest
-   needs a recoverable password, which the system account's `MD5(user:realm:pw)`
-   isn't), so the step 2 password change does **not** touch it. The tool sets it
-   over the standard ONVIF `SetUser` op, authenticating with the factory ONVIF
-   password (the same default as the web login, `admin`). Idempotent.
-6. **Last step:** address the camera — either move it to a static
+6. Set the **ONVIF** `admin` password to `Kelafield123!`. ONVIF keeps a
+  **separate credential** from the web/system account on both generations, so
+   the step 2 password change does **not** touch it — verified on a live unit
+   that was still ONVIF `admin/admin` after a normal provisioning run. The older
+   cameras have no endpoint for it, so the tool speaks ONVIF `SetUser` over SOAP;
+   the newer ones expose it as two plain JSON calls. Idempotent either way.
+7. **Last step:** address the camera — either move it to a static
   `192.168.88.XX` (gateway `192.168.88.1`, mask `255.255.255.0`) or switch it to
    **DHCP**. Either way the connection drops by design; see below for how each
    one is confirmed.
-7. Verify every setting by reading it back off the camera — including an
-  authenticated **ONVIF** `GetUsers` call to confirm the ONVIF login is
-   `admin/Kelafield123!`.
+8. Verify every setting by reading it back off the camera — including the
+  **ONVIF** credential, confirmed with an authenticated `GetUsers` call on the
+   older cameras and read back off the user list on the newer ones.
 
 The addressing step runs last because the camera leaves `192.168.1.123` the
 moment it applies.
@@ -117,10 +149,148 @@ confirm the move.
 
 Each profile is a config JSON exported from a reference camera
 (*Setup > System > Export*), stored under `config/profiles/` (the paths in the
-config are relative to `config/`). Keep the camera's **Network/IP table out** of
-these files — the tool sets the address (static or DHCP) and NTP itself, after
-the import. The profile exports ship committed (no secrets); only the real
-`raythink.config.json` (copied from the example) is gitignored.
+config are relative to `config/`).
+
+The two generations export **incompatible** files — the older one a map of Dahua
+config tables replayed one at a time, the newer one a set of sections uploaded
+whole, sharing no section names at all — so one profile key names one file per
+generation. A plain string still means the older generation only, so a bench
+that has not met a new camera yet needs no change:
+
+```json
+"profiles": {
+  "lan":      { "rpc2": "profiles/lan.json", "rest": "profiles/v2/lan.json" },
+  "cellular": "profiles/cellular.json"
+}
+```
+
+The profile list in the UI is unchanged; a profile with no file for the camera
+currently on the bench is shown greyed out, and a run that would need one is
+refused before it starts. A profile aimed at the wrong generation is rejected by
+name rather than being uploaded for the camera to complain about.
+
+### Firmware
+
+**Newer (REST) cameras only** — the older generation has no upgrade path here.
+Configured under `firmware`, and leaving the block out means no firmware step
+runs at all, so a bench that has not been given an image behaves exactly as it
+did before this existed.
+
+`minimum_version` is a **floor, not a pin**: a camera that arrives older is
+flashed, one already at or above it is left alone, and one that is *newer* is
+passed through with a note rather than downgraded.
+
+**Older and newer mean the build date, not the version number**, and that is not
+a stylistic choice. Two cameras of the same `XX-MVP-PC4-V100`, both taking this
+same image, reported:
+
+```
+B1.2.01.01.15, 2026-05-14      <- sorts HIGHER, is four months OLDER
+B1.0.22.29.16, 2026-09-03
+```
+
+Ordering by the numbers would class the May camera as newer than the September
+build and quietly leave it on the old firmware — the one outcome a floor exists
+to prevent. So the floor must carry a date, and a `minimum_version` without one
+is rejected as a configuration error. A camera whose *own* version has no
+readable date is flashed rather than assumed current, on the same reasoning: a
+needless flash costs a reboot, a needless skip ships the wrong build in silence. The image itself lives in
+`firmware/`, which is **gitignored** — the bundle is ~58 MB, so it is copied to
+each bench by hand like the other tools' images.
+
+Two things about it are worth knowing before you run it on a real camera:
+
+- **The version is not stated anywhere in the bundle**, though the filename does
+  encode it: `...B1V0222916...` flashed to a camera reporting
+  `B1.0.22.29.16, 2026-09-03`, i.e. `B1` + `V` + `0`,`22`,`29`,`16`. That is one
+  observation, not a documented rule, so `minimum_version` is still set from what
+  a camera actually **reports after a flash** rather than parsed out of the name
+  (see below). Until it is set, the firmware step is simply skipped.
+- **The camera can come back on a different address.** The flash reboots it and
+  it does not reliably return where it was (observed on the bench), so the tool
+  finds it again by MAC across `dhcp.scan_subnets` rather than waiting on the
+  address it was talking to. A camera that reports no MAC is **not flashed**:
+  it would be rewritten and then unfindable.
+
+The bundle names the models it was built for in its own `check.img`, and a
+camera whose model is not in that list is **refused** — the wrong image bricks
+rather than fails.
+
+#### Finding out what a bundle reports
+
+To set the floor for a new bundle, flash one camera with it and read the version
+back. `--firmware-only` does exactly that and nothing else — no password change,
+no profile, no addressing, so the camera comes out as it went in apart from its
+firmware:
+
+```
+python3 raythink_configure.py --firmware-only --force-firmware
+```
+
+`--force-firmware` skips the floor comparison, which is the point when there is
+no floor yet. It does **not** skip the model check. The run ends by printing the
+line to paste into the config:
+
+```
+[info] Camera now reports: B1.2.02.29.16, 2026-09-03
+[info] Set this as the floor:  "firmware": { "minimum_version": "B1.2.02.29.16, 2026-09-03" }
+```
+
+The upgrade endpoints are **undocumented**, like the two above, and were
+reconstructed from a HAR of the camera's own web UI doing an upgrade:
+
+```
+PUT  /v1/system/upgrade/ready?islocal=true
+POST /v1/system/upgrade/common/package?filename=&fileNumber=&totalNumber=
+         &md5=&packageType=1&reset=false&verifyType=1
+     multipart, one part named "package" whose filename is the literal "blob"
+GET  /v1/system/upgrade/common/status   -> {"Process": 1|2|3, "Percent": 0-100}
+```
+
+Three details there are worth spelling out, because none of them is guessable
+and all of them are load-bearing:
+
+- **The `md5` is of the whole file, not of the part.** It is byte-identical
+  across all 14 requests and matches the md5 of the bundle on disk.
+- **The part is named `package` and its filename is the string `blob`.** The
+  real filename travels in the query string instead.
+- **The upload does not reboot the camera.** All 14 parts answer `200`, and the
+  write happens *afterwards* — that is what `status` reports, going
+  `Process 1` (verifying) → `2` (writing, with `Percent`) → `3` (written), and
+  only then rebooting. The tool polls it through, so the step log shows real
+  progress and the reboot is not confused with a failure.
+
+`reset` stays `false` — it is the device's *wipe the configuration* flag, and
+this runs on a camera whose admin password the tool has already changed.
+
+#### Sanitize an export before committing it
+
+Profiles ship committed, because they are needed at runtime. **That is only safe
+for a sanitized export**, so run any new one through:
+
+```
+python3 raythink_configure.py --sanitize-profile ~/Downloads/export.json \
+        -o config/profiles/v2/lan.json
+```
+
+A raw export is the reference camera's entire configuration, which is two things
+a profile must not be:
+
+- **It carries that camera's address.** The profile is imported in the *middle*
+of the pipeline while addressing is deliberately *last*, so an export with a
+network section moves the next unit mid-run and the run loses it. This used to
+rest on whoever exported the profile deleting it by hand.
+- **It carries the station password in plaintext**, on the newer generation —
+`OnvifUser.User[].Password` on a bench-provisioned reference camera is the shared
+bench password. Committing a raw export puts it in git history, where it stays.
+The tool sets the ONVIF password itself, so dropping the section costs nothing.
+
+The sanitizer removes both and **reports** anything else password-shaped it left
+alone (a GB28181 SIP password, an SMTP login) — those may be legitimate site
+settings, so removing them is a person's call. `import_config` re-runs the same
+sanitizer on whatever it is given as a backstop, but that does nothing about a
+password already committed. Only the real `raythink.config.json` (copied from the
+example) is gitignored.
 
 There is also a single-camera CLI (`--ip` and `--dhcp` are the two ways to
 address it, exactly one required):
@@ -128,6 +298,7 @@ address it, exactly one required):
 ```
 python3 raythink_configure.py --profile lan --ip 30
 python3 raythink_configure.py --profile lan --dhcp
+python3 raythink_configure.py --profile lan --ip 30 --generation rest
 ```
 
 
@@ -139,9 +310,23 @@ This folder must sit next to `bench-core`, the shared local package it installs
 detection loop, run machinery, routes, WebSocket, step logging) and the host-side
 network helpers: the DHCP-renew ones, plus `find_ip_by_mac` (sweep a subnet, read
 the ARP cache, match a MAC) which is what finds a camera again after it is put on
-DHCP. `raythink_camera.py` adds the camera client (RPC2 login, config import,
-NTP, the static-IP move and the DHCP switch, verification);
-`raythink_configure.py` adds the pipeline + CLI; `raythink_app.py` is the
+DHCP.
+
+The camera client is split so that the two generations share everything that is
+not protocol:
+
+- `raythink_base.py` — the addressing steps, the reachability helpers and the
+verification report, over four per-generation hooks. Following a camera through
+an IP change is host-side work that is identical whichever protocol answers, and
+it is long enough that two copies of it would drift apart.
+- `raythink_camera.py` — the older cameras (RPC2 login, table-by-table import,
+the hand-rolled ONVIF SOAP).
+- `raythink_rest.py` — the newer cameras (AES login and token, whole-file
+import, ONVIF as plain JSON).
+- `raythink_client.py` — which generation is on the bench, and the client for it.
+
+`raythink_configure.py` adds the pipeline + CLI, written against the shared
+client interface so it is one pipeline rather than two; `raythink_app.py` is the
 `BenchConfigurator` subclass (the profile/IP-mode form and the persisted cycle
 counter).
 

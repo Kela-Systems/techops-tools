@@ -38,7 +38,7 @@ from bench_core.ip_mode import (
 )
 from bench_core.run_record import build_run_entry
 
-from raythink_camera import DEFAULT_HOST
+from raythink_base import DEFAULT_HOST, GENERATION_LABELS, GEN_RPC2
 from raythink_configure import (
     DEFAULT_LEASE_TIMEOUT,
     DEFAULT_OCTET_MAX,
@@ -48,6 +48,7 @@ from raythink_configure import (
     configure_camera,
     device_name,
     find_camera,
+    profile_generations,
     resolve_profile,
     verify_camera,
 )
@@ -117,6 +118,11 @@ class RaythinkConfigurator(BenchConfigurator):
             "detected": False,
             "active_host": None,
             "active_mac": None,
+            # Which API the detected camera speaks (see raythink_client). None
+            # also means "nothing detected". Held in state rather than probed
+            # per use because detection has already paid for the answer.
+            "generation": None,
+            "generation_label": "",
             "on_factory_ip": False,    # False also means "nothing detected"
             "busy": False,
             "message": "Connect the first camera (it ships on 192.168.1.123)…",
@@ -128,8 +134,13 @@ class RaythinkConfigurator(BenchConfigurator):
         # The addressing block (mode, range, next address) is contributed by the
         # shared IpModeStore — see BenchConfigurator.public_state.
         static = self.cfg.get("static", {}) or {}
+        profiles = list((self.cfg.get("profiles", {}) or {}).keys())
         return {
-            "profiles": list((self.cfg.get("profiles", {}) or {}).keys()),
+            "profiles": profiles,
+            # Which generations each profile has a file for, so the page can mark
+            # one that cannot serve the camera currently on the bench.
+            "profile_generations": {p: profile_generations(self.cfg, p)
+                                    for p in profiles},
             "ntp_server": self.cfg.get("ntp_server", ""),
             "gateway": static.get("gateway", ""),
             "netmask": static.get("netmask", ""),
@@ -156,12 +167,21 @@ class RaythinkConfigurator(BenchConfigurator):
         return inputs.get("host") or self.cfg.get("host", DEFAULT_HOST)
 
     def build_client(self, run_cfg: dict, host: str):
-        from raythink_camera import DEFAULT_SCHEME, DEFAULT_USERNAME, RaythinkCameraClient
-        return RaythinkCameraClient(
-            host=host,
+        """The client for whichever generation is on the bench.
+
+        The generation comes off the detection state rather than being probed
+        again here: `poll_once` established it a second ago, and re-probing
+        would spend a round trip re-learning something we already know. It falls
+        back to a probe (inside `open_camera`) if state somehow has none.
+        """
+        from raythink_base import DEFAULT_SCHEME, DEFAULT_USERNAME
+        from raythink_client import open_camera
+        return open_camera(
+            host,
             username=run_cfg.get("username", DEFAULT_USERNAME),
             scheme=run_cfg.get("scheme", DEFAULT_SCHEME),
             verify=not run_cfg.get("insecure", True),
+            generation=self.state.get("generation"),
         )
 
     def run_pipeline(self, client, run_cfg: dict, inputs: dict) -> dict:
@@ -234,6 +254,11 @@ class RaythinkConfigurator(BenchConfigurator):
                 # verification rows instead).
                 "ip": result.get("ip", inputs.get("target_ip", "")),
                 "ip_mode": result.get("ip_mode", "static"),
+                # Which API this unit was driven over. Recorded because the two
+                # generations are provisioned differently enough that a record
+                # is hard to read without it, and because a fleet's mix of the
+                # two is exactly what a later question will be about.
+                "generation": result.get("generation", ""),
             },
         )
 
@@ -256,9 +281,9 @@ class RaythinkConfigurator(BenchConfigurator):
         port = 443 if self.cfg.get("scheme", "http") == "https" else 80
         return tcp_port_open(host, port, timeout=DETECT_TIMEOUT_SEC)
 
-    def _find_camera(self) -> Optional[str]:
-        """Where a camera is answering: the factory address, or anywhere in the
-        assigned static range.
+    def _find_camera(self) -> tuple[Optional[str], Optional[str]]:
+        """`(address, generation)` of a camera answering on the factory address
+        or anywhere in the assigned static range.
 
         The range half is what makes Verify reachable (TEC-348) — a camera this
         bench already moved to 192.168.88.31 is invisible to a tool that only
@@ -274,11 +299,13 @@ class RaythinkConfigurator(BenchConfigurator):
         if self.state["busy"]:
             return  # mid-run the camera reboots / changes IP — leave detection alone
 
-        host = await loop.run_in_executor(None, self._find_camera)
+        host, generation = await loop.run_in_executor(None, self._find_camera)
         self.state["detected"] = bool(host)
 
         if host:
             self.state["active_host"] = host
+            self.state["generation"] = generation
+            self.state["generation_label"] = GENERATION_LABELS.get(generation, "")
             mac = await loop.run_in_executor(None, read_device_mac, host)
             self.state["active_mac"] = mac
             # A camera on the factory address is fresh; one in the assigned
@@ -290,7 +317,9 @@ class RaythinkConfigurator(BenchConfigurator):
                 return  # a run finished but the camera is still answering
             self.state["phase"] = "detected"
             self.state["message"] = (
-                f"Camera detected on {host} (MAC {mac or 'unknown'}). "
+                f"Camera detected on {host} — "
+                f"{GENERATION_LABELS.get(generation, 'unknown generation')}, "
+                f"MAC {mac or 'unknown'}. "
                 + ("Pick a profile and the IP, then Configure."
                    if host == factory
                    else "It is already on an assigned address — press Verify to "
@@ -298,6 +327,8 @@ class RaythinkConfigurator(BenchConfigurator):
         else:
             self.state["active_host"] = None
             self.state["active_mac"] = None
+            self.state["generation"] = None
+            self.state["generation_label"] = ""
             self.state["on_factory_ip"] = False
             if self.state["phase"] in ("detected", *TERMINAL_PHASES):
                 self.state["phase"] = "waiting"
@@ -316,13 +347,19 @@ class RaythinkConfigurator(BenchConfigurator):
             profile = (body.profile or "").strip() or next(iter(profiles))
             if profile not in profiles:
                 return {"error": f"Unknown profile '{profile}'. Known: {', '.join(profiles)}."}
-            try:
-                profile_path = str(resolve_profile(self.cfg, profile))
-            except Exception as e:  # noqa: BLE001 — surface a missing file cleanly
-                return {"error": str(e)}
 
             if not self.state["detected"]:
                 return {"error": "No camera is currently detected."}
+
+            # The profile file depends on the generation, so this can only be
+            # resolved once a camera is on the bench — and it is resolved here,
+            # before the run starts, so a profile that has no file for this
+            # camera is refused up front instead of three steps in.
+            generation = self.state.get("generation") or GEN_RPC2
+            try:
+                profile_path = str(resolve_profile(self.cfg, profile, generation))
+            except Exception as e:  # noqa: BLE001 — surface a missing file cleanly
+                return {"error": str(e)}
 
             try:
                 assign = self.resolve_ip_mode(body.ip_mode, body.octet)
@@ -352,6 +389,26 @@ class RaythinkConfigurator(BenchConfigurator):
 
     # ── CLI banner ──────────────────────────────────────────────────────────────
 
+    def _firmware_banner(self) -> str:
+        """The firmware line for the startup banner.
+
+        A missing image is reported but not fatal: only a camera that arrives
+        BELOW the floor needs it, and a bench provisioning cameras that are
+        already current never touches it. The line still says so plainly,
+        because discovering it mid-run costs the operator a camera's worth of
+        waiting.
+        """
+        fw = self.cfg.get("firmware", {}) or {}
+        floor = (fw.get("minimum_version") or "").strip()
+        if not floor:
+            return "no floor configured — cameras are left on the build they arrive with"
+        rel = fw.get("zip_path") or ""
+        image = self.base_dir / rel if rel else None
+        if image and image.is_file():
+            return f"floor {floor}, image {image.name} (found)"
+        return (f"floor {floor}, image {image.name if image else '(none configured)'} "
+                "(MISSING — needed only for a camera that arrives below the floor)")
+
     def print_banner(self) -> None:
         lo, hi = self._octet_range()
         static = self.cfg.get("static", {}) or {}
@@ -365,11 +422,22 @@ class RaythinkConfigurator(BenchConfigurator):
               f"{', '.join(self._dhcp_subnets())} "
               f"(up to {dhcp.get('lease_timeout', DEFAULT_LEASE_TIMEOUT)}s)")
         print(f"  NTP          : {self.cfg.get('ntp_server', '?')}")
+        print(f"  firmware     : {self._firmware_banner()}")
         profiles = self.cfg.get("profiles", {}) or {}
         print(f"  profiles     : {', '.join(profiles) if profiles else 'NONE — add them to the config'}")
-        for key, rel in profiles.items():
-            ok = (BASE_DIR / "config" / rel).is_file()
-            print(f"    - {key:<9}: {rel} ({'found' if ok else 'MISSING'})")
+        for key, entry in profiles.items():
+            # One profile key names one file per camera generation; a plain
+            # string is the older generation only. Both are listed, because a
+            # profile with no file for the camera on the bench is the failure
+            # this banner exists to make obvious before a run starts.
+            files = entry if isinstance(entry, dict) else {GEN_RPC2: entry}
+            for gen in GENERATION_LABELS:
+                rel = files.get(gen)
+                if not rel:
+                    print(f"    - {key:<9} {gen:<4}: (none configured)")
+                    continue
+                ok = (BASE_DIR / "config" / rel).is_file()
+                print(f"    - {key:<9} {gen:<4}: {rel} ({'found' if ok else 'MISSING'})")
         print(f"  config       : "
               f"{'config/raythink.config.json' if self.cfg else 'MISSING — copy the example'}")
 

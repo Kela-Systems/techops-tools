@@ -12,7 +12,7 @@
   <header style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;">
     <div class="brand">
       <img class="brand-logo" src="/shared/favicon.png" alt="Kela Bench">
-      <h1>Raythink Camera Configurator<span class="sub">Connect a camera (192.168.1.123) &rarr; pick profile + address &rarr; configured &rarr; next. Finished cameras in the assigned range can be re-checked with Verify.</span></h1>
+      <h1>Raythink Camera Configurator<span class="sub">Connect a camera (192.168.1.123) &rarr; pick profile + address &rarr; configured &rarr; next. Both camera generations are detected automatically. Finished cameras in the assigned range can be re-checked with Verify.</span></h1>
     </div>
     <span id="conn" class="conn">connecting…</span>
   </header>
@@ -163,13 +163,26 @@ function addrLabel(device){
   return d.ip || (d.ip_mode === 'dhcp' ? 'DHCP' : '—');
 }
 
+// The two camera generations take incompatible config files, so a profile is
+// only offerable if it has one for the camera on the bench. The rest are shown
+// but disabled, saying why: hiding them would make a profile the operator knows
+// exists look like it had been deleted.
 function fillProfiles(s){
-  const key = (s.profiles||[]).join('|');
+  const gen = s.generation || '';
+  const key = (s.profiles||[]).join('|') + '@' + gen;
   if (key === profilesLoaded) return;
   profilesLoaded = key;
+  const per = s.profile_generations || {};
   const sel = $('profile');
-  sel.innerHTML = (s.profiles||[]).map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('')
-    || '<option value="">(no profiles configured)</option>';
+  sel.innerHTML = (s.profiles||[]).map(p => {
+    const ok = !gen || (per[p]||[]).includes(gen);
+    return `<option value="${esc(p)}"${ok ? '' : ' disabled'}>`
+      + `${esc(p)}${ok ? '' : ' — no file for this camera'}</option>`;
+  }).join('') || '<option value="">(no profiles configured)</option>';
+  // Land on something selectable, or the form opens on an option that cannot
+  // be submitted and the operator has to discover that by pressing Configure.
+  const first = Array.from(sel.options).find(o => !o.disabled);
+  if (first) sel.value = first.value;
 }
 
 function render(s){
@@ -208,8 +221,9 @@ function render(s){
     // already, so Verify is the action the operator wants. Swap the emphasis
     // rather than disabling anything — re-running a camera is legitimate.
     const finished = s.detected && !s.on_factory_ip;
-    $('formTitle').textContent = finished ? 'Camera already provisioned'
-                                          : 'New camera';
+    const gen = s.generation_label ? ` — ${s.generation_label}` : '';
+    $('formTitle').textContent = (finished ? 'Camera already provisioned'
+                                           : 'New camera') + gen;
     $('goBtn').className = finished ? 'btn-outline' : 'btn-primary';
     $('verifyBtn').className = finished ? 'btn-primary' : 'btn-outline';
   } else {
@@ -262,7 +276,8 @@ function render(s){
       <span>profile <b>${esc((lr.device||{}).profile||'—')}</b></span>
       <span>IP <b class="mono">${esc(addrLabel(lr.device))}</b></span>
       <span>serial <b class="mono">${esc(lr.serial||'—')}</b></span>
-      <span>fw <b class="mono">${esc(lr.firmware||'—')}</b></span>` +
+      <span>fw <b class="mono">${esc(lr.firmware||'—')}</b></span>
+      <span>API <b>${esc((lr.device||{}).generation||'—')}</b></span>` +
       (lr.duration_s != null ? `<span>took <b>${fmtDur(lr.duration_s)}</b></span>` : '');
     renderVerifyTable(lr.verification, 'verifyTable', 'verifyBody');
     const lg = $('lastLog');

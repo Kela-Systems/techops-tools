@@ -18,6 +18,7 @@ import json
 import pytest
 
 from bench_core import MutationBlocked
+from raythink_base import GEN_REST, GEN_RPC2
 from raythink_camera import (
     DEFAULT_INITIAL_PASSWORD as FACTORY_PW,
     DEFAULT_NEW_PASSWORD as SHARED,
@@ -55,34 +56,52 @@ def test_the_candidate_list_covers_the_factory_address_and_the_whole_range():
     assert "192.168.88.51" not in hosts
 
 
+def only(host, generation=GEN_RPC2):
+    """A `camera_generation` stand-in: `host` is a camera, nothing else is.
+    Detection now reports WHICH generation answered, because establishing that
+    is the same probe as establishing that this is a camera at all."""
+    return lambda h, scheme=None, timeout=None: generation if h == host else None
+
+
 def test_a_finished_camera_in_the_assigned_range_is_found(monkeypatch):
     # The whole point: before this, a camera at 192.168.88.31 was undetectable
     # and so unverifiable.
     monkeypatch.setattr(mod, "tcp_port_open",
                         lambda host, port, timeout=0: host == ASSIGNED)
-    monkeypatch.setattr(mod, "is_camera", lambda host, scheme=None: host == ASSIGNED)
-    assert mod.find_camera(mod.camera_hosts(settings())) == ASSIGNED
+    monkeypatch.setattr(mod, "camera_generation", only(ASSIGNED))
+    assert mod.find_camera(mod.camera_hosts(settings())) == (ASSIGNED, GEN_RPC2)
 
 
 def test_a_fresh_camera_on_the_factory_address_is_still_found(monkeypatch):
     monkeypatch.setattr(mod, "tcp_port_open", lambda host, port, timeout=0: True)
-    monkeypatch.setattr(mod, "is_camera", lambda host, scheme=None: True)
-    assert mod.find_camera(mod.camera_hosts(settings())) == FACTORY
+    monkeypatch.setattr(mod, "camera_generation",
+                        lambda h, scheme=None, timeout=None: GEN_RPC2)
+    assert mod.find_camera(mod.camera_hosts(settings())) == (FACTORY, GEN_RPC2)
+
+
+def test_a_newer_camera_is_found_and_reported_as_one(monkeypatch):
+    # Both generations ship on the factory address and look identical from the
+    # outside, so the sweep has to say which one it found — the profile that can
+    # be sent to it depends on the answer.
+    monkeypatch.setattr(mod, "tcp_port_open", lambda host, port, timeout=0: True)
+    monkeypatch.setattr(mod, "camera_generation", only(FACTORY, GEN_REST))
+    assert mod.find_camera(mod.camera_hosts(settings())) == (FACTORY, GEN_REST)
 
 
 def test_something_else_answering_in_the_range_is_not_a_camera(monkeypatch):
     # The bench range holds a router, a speaker and an NTP server. Anything that
-    # answers port 80 but not the camera's login challenge must be ignored, or
-    # Verify would log in to the wrong device.
+    # answers port 80 but neither API must be ignored, or Verify would log in to
+    # the wrong device.
     monkeypatch.setattr(mod, "tcp_port_open", lambda host, port, timeout=0: True)
-    monkeypatch.setattr(mod, "is_camera", lambda host, scheme=None: host == ASSIGNED)
-    assert mod.find_camera(mod.camera_hosts(settings())) == ASSIGNED
+    monkeypatch.setattr(mod, "camera_generation", only(ASSIGNED))
+    assert mod.find_camera(mod.camera_hosts(settings())) == (ASSIGNED, GEN_RPC2)
 
 
 def test_nothing_answering_is_no_camera(monkeypatch):
     monkeypatch.setattr(mod, "tcp_port_open", lambda host, port, timeout=0: False)
-    monkeypatch.setattr(mod, "is_camera", lambda host, scheme=None: True)
-    assert mod.find_camera(mod.camera_hosts(settings())) is None
+    monkeypatch.setattr(mod, "camera_generation",
+                        lambda h, scheme=None, timeout=None: GEN_RPC2)
+    assert mod.find_camera(mod.camera_hosts(settings())) == (None, None)
 
 
 def test_the_last_seen_address_is_probed_alone_first(monkeypatch):
@@ -91,38 +110,11 @@ def test_the_last_seen_address_is_probed_alone_first(monkeypatch):
     probed = []
     monkeypatch.setattr(mod, "tcp_port_open",
                         lambda host, port, timeout=0: probed.append(host) or True)
-    monkeypatch.setattr(mod, "is_camera", lambda host, scheme=None: True)
+    monkeypatch.setattr(mod, "camera_generation",
+                        lambda h, scheme=None, timeout=None: GEN_RPC2)
     assert mod.find_camera(mod.camera_hosts(settings()),
-                           first_guess=ASSIGNED) == ASSIGNED
+                           first_guess=ASSIGNED) == (ASSIGNED, GEN_RPC2)
     assert probed == [ASSIGNED]
-
-
-def test_the_signature_is_the_cameras_own_login_challenge(monkeypatch):
-    # A device is a camera when it answers the unauthenticated first half of
-    # login() with a nonce to hash against.
-    class Reply:
-        def __init__(self, body):
-            self._body = body
-
-        def json(self):
-            return self._body
-
-    replies = {}
-    monkeypatch.setattr(mod.requests, "post",
-                        lambda url, **kw: Reply(replies[url.split("//")[1].split("/")[0]]))
-    replies[ASSIGNED] = {"result": False, "params": {"random": "12345",
-                                                     "realm": "Login to SN1"}}
-    replies[FACTORY] = {"result": False, "params": {}}      # answers, no challenge
-    assert mod.is_camera(ASSIGNED) is True
-    assert mod.is_camera(FACTORY) is False
-
-
-def test_an_unreachable_host_is_not_a_camera(monkeypatch):
-    def boom(url, **kw):
-        raise mod.requests.exceptions.ConnectionError("nothing there")
-
-    monkeypatch.setattr(mod.requests, "post", boom)
-    assert mod.is_camera("192.168.88.99") is False
 
 
 # ── the verify pass ──────────────────────────────────────────────────────────
@@ -177,7 +169,9 @@ class FakeCamera:
             return {"result": True, "params": {"serialNumber": self.serial,
                                                "deviceType": "Raythink"}}
         if method == "magicBox.getSoftwareVersion":
-            return {"result": True, "params": {"version": {"Version": "1.2.3"}}}
+            return {"result": True,
+                    "params": {"version": {"Version": "1.000.General 00.0.T, "
+                                                      "build: 2025-04-09"}}}
         return {"result": True, "params": {}}
 
     def _table(self, name) -> dict:

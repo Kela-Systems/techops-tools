@@ -1,6 +1,8 @@
 {
   "_comment": "Copy to raythink.config.json (gitignored) and adjust as needed. Shared settings applied to every Raythink camera; the config profile (LAN/Cellular) and the addressing (static octet, or DHCP) are chosen in the UI per camera (one camera at a time).",
 
+  "_comment_generations": "Raythink ships two generations with incompatible control APIs, told apart automatically by probing which one answers (firmware 'B1.2.01.01.15, 2026-05-14' = newer/REST, '1.000.General 00.0.T, build: 2025-04-09' = older/RPC2). Everything below is shared by both EXCEPT 'profiles', where each generation needs its own exported config file.",
+
   "host": "192.168.1.123",
   "username": "admin",
   "scheme": "http",
@@ -29,10 +31,24 @@
     "lease_timeout": 300
   },
 
-  "_comment_profiles": "Each profile is a config JSON exported from a reference camera (Setup > System > Export), stored under config/profiles/ (paths are relative to config/). Import replays each config table via setConfig. The profile exports ship committed (no secrets). Keep the device's Network/IP table OUT of these files — the tool sets the address (static or DHCP) and NTP itself, after the import.",
+  "_comment_profiles": "Each profile is a config JSON exported from a reference camera (Setup > System > Export), stored under config/profiles/ (paths are relative to config/). The two generations export incompatible files — the older one a map of config tables replayed one setConfig at a time, the newer one a set of sections uploaded whole — so one profile key names one file PER GENERATION: {\"rpc2\": \"...\", \"rest\": \"...\"}. A plain string still means the older generation only, so a bench that has not met a new camera yet needs no change here.",
+  "_comment_profiles_sanitize": "Run a raw export through 'python3 raythink_configure.py --sanitize-profile export.json -o config/profiles/v2/lan.json' before committing it. That drops the reference camera's own address (which would move the next unit mid-run, since the tool addresses the camera LAST) and the station password, which a newer camera's export carries in PLAINTEXT under OnvifUser. The tool sets the address, NTP and the ONVIF credential itself, after the import.",
   "profiles": {
-    "lan": "profiles/lan.json",
-    "cellular": "profiles/cellular.json"
+    "lan": {
+      "rpc2": "profiles/lan.json",
+      "rest": "profiles/v2/lan.json"
+    },
+    "cellular": {
+      "rpc2": "profiles/cellular.json",
+      "rest": "profiles/v2/cellular.json"
+    }
+  },
+
+  "_comment_firmware": "NEWER (REST) cameras only — the older generation has no upgrade path here. minimum_version is a FLOOR, not a pin: a camera that arrives OLDER is flashed from zip_path, one at or above it is left alone, and one that is NEWER is passed through with a note rather than downgraded. OLDER/NEWER mean the BUILD DATE, not the version number — the vendor's numbering is not chronological ('B1.2.01.01.15, 2026-05-14' sorts higher than 'B1.0.22.29.16, 2026-09-03' but is four months older), so the floor MUST include its date or it is rejected. Leave the whole block out and no firmware step runs at all. zip_path is relative to the tool folder and points at the vendor's bundle in firmware/ (gitignored, like the other tools' images); the bundle names the models it is built for in its own check.img, and a camera whose model is not in that list is REFUSED, because the wrong image bricks rather than fails. The version is not stated in the bundle (its name encodes it — 'B1V0222916' flashed to a camera reporting 'B1.0.22.29.16, 2026-09-03' — but that is one observation, not a documented rule), so set minimum_version to what a camera actually reports after 'raythink_configure.py --firmware-only --force-firmware'. The flash reboots the camera and it can come back on a DIFFERENT address, so it is found again by MAC over dhcp.scan_subnets; reboot_timeout must cover writing ~58 MB to flash AND the restart.",
+  "firmware": {
+    "minimum_version": "B1.0.22.29.16, 2026-09-03",
+    "zip_path": "firmware/MVP-JUPITER4S-B1V0222916-CN-20260903.zip",
+    "reboot_timeout": 600
   },
 
   "_comment_timeouts": "import_reboot_timeout: seconds to wait for the camera to come back if a config import reboots it. ip_move_timeout: seconds to wait for the camera to answer on its new static IP.",
