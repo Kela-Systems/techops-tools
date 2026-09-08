@@ -66,6 +66,8 @@ class FakeCamera:
         self.tokens_issued = 0
         self.imported = None
         self.reboots = 0
+        self.up = True             # answers on its port
+
         self.upgrade_ready = None
         self.parts: list[dict] = []
         self.status_polls = 0
@@ -213,6 +215,7 @@ class FakeCamera:
 
         if path == "/v1/system/magic/reboot" and method == "PUT":
             self.reboots += 1
+            self.up = False        # a real camera stops answering, eventually
             return ok(None)
 
         if path == "/v1/system/upgrade/ready":
@@ -248,6 +251,9 @@ def cam(monkeypatch):
         c = RaythinkRestClient(host="192.168.1.123")
         c.device = FakeCamera(**kwargs)
         c.s = c.device
+        # Whether the camera answers its port is device state here, not a real
+        # socket: a reboot takes it down, and nothing waits on a live network.
+        c.port_open = lambda host=None: c.device.up
         # Host-side effects and retry pacing are not what these tests are about.
         monkeypatch.setattr(base, "host_iface_for", lambda ip: "en0")
         monkeypatch.setattr(base, "renew_host_dhcp", lambda iface: None)
@@ -832,6 +838,35 @@ def test_success_that_asks_for_a_reboot_is_not_read_as_failure(client, tmp_path)
     # one. The caller waits for the camera and logs in again.
     assert client.device.reboots == 1
     assert client.token == ""
+
+
+def test_a_reboot_waits_for_the_camera_to_actually_go_down(client):
+    # The bug this exists for: the camera kept serving for ~30s after accepting
+    # the reboot, so returning when the CALL succeeded meant the caller's "wait
+    # until it answers" was satisfied by the camera that had not left yet. Every
+    # step after the config import — ONVIF, NTP, the addressing — was then
+    # written to a camera that rebooted and threw them away.
+    client.reboot()
+    assert client.device.up is False
+    assert client.wait_reachable(timeout=0) is False   # genuinely gone
+
+
+def test_a_camera_that_lingers_after_a_reboot_is_reported_not_hidden(
+        client, caplog, monkeypatch):
+    monkeypatch.setattr(base, "REBOOT_DROP_SEC", 0.05)
+    # It may just have restarted between polls, so this is a warning rather than
+    # a failure — but a silent one would leave the next failure unexplainable.
+    original = client.device.request
+
+    def never_drops(method, url, **kwargs):
+        r = original(method, url, **kwargs)
+        client.device.up = True
+        return r
+
+    client.device.request = never_drops
+    with caplog.at_level("WARNING"):
+        client.reboot()
+    assert "never stopped answering" in caplog.text
 
 
 def test_a_reboot_is_refused_by_a_read_only_client(client):

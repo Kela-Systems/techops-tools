@@ -502,6 +502,13 @@ class RaythinkRestClient(BaseRaythinkClient):
         transport error here is swallowed. What must not be swallowed is a
         refusal, which is why the call goes through `_request` and its read-only
         gate first. The token does not survive, so it is dropped.
+
+        Returns only once the camera has actually STOPPED answering, which is
+        not the same as the call being accepted: this camera kept serving for
+        ~30s after agreeing to reboot. Returning early let the caller's "wait
+        until it answers" succeed against the camera that had not left yet, and
+        the steps after a config import were then written to a camera that
+        rebooted and discarded them.
         """
         if self.read_only:
             raise MutationBlocked("read-only client refused a reboot")
@@ -510,6 +517,16 @@ class RaythinkRestClient(BaseRaythinkClient):
         except CameraError:
             pass
         self.token = ""
+        log.info("Reboot accepted; waiting for the camera to go down ...")
+        if self.wait_until_down():
+            log.info("The camera has gone down.")
+        else:
+            # Not fatal: it may have restarted between polls. Worth saying,
+            # because the alternative is that the reboot never happened and the
+            # settings we are about to write will be the ones that survive.
+            log.warning("The camera never stopped answering after being told to "
+                        "reboot — continuing, but if later steps do not stick "
+                        "this is why.")
 
     def export_config(self) -> dict:
         """The camera's own current configuration, as the export endpoint gives it.

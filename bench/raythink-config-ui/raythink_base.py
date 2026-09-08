@@ -77,6 +77,11 @@ DEFAULT_NEW_PASSWORD = "Kelafield123!"
 DEFAULT_NTP_SERVER = "192.168.88.10"
 
 # Pacing of the hunt for a camera that was just switched to DHCP (set_dhcp).
+# How long to give a camera that has been told to reboot to actually stop
+# answering. Observed on the bench: ~30s between the reboot call being accepted
+# and the web server going away.
+REBOOT_DROP_SEC = 90
+
 DHCP_SETTLE_SEC = 10        # before looking: let it drop its old address
 DHCP_HOST_RENEW_SEC = 45    # re-renew this PC's own lease while waiting
 DHCP_PROGRESS_SEC = 20      # how often to log that we are still looking
@@ -390,6 +395,31 @@ class BaseRaythinkClient:
                 return True
         except OSError:
             return False
+
+    def wait_until_down(self, timeout: Optional[float] = None,
+                        host: Optional[str] = None) -> bool:
+        """Block until host:port STOPS answering. True if it did.
+
+        The other half of wait_reachable, and the half whose absence let a whole
+        provisioning run write to nothing: a camera does not stop answering the
+        moment it is told to reboot. One took ~30s to go down and ~60s to come
+        back after a config import, so
+        "wait until it answers" was satisfied instantly by the camera that was
+        still up, and every step after the import — ONVIF, NTP, the addressing —
+        was written to a camera that then rebooted and discarded them. The run
+        looked clean until verification.
+
+        A camera that never drops is reported, not raised on: it may simply have
+        rebooted faster than a poll interval, and the caller has a verification
+        pass that will catch a reboot which really did not happen.
+        """
+        target = host or self.host
+        deadline = time.time() + (REBOOT_DROP_SEC if timeout is None else timeout)
+        while time.time() < deadline:
+            if not self.port_open(target):
+                return True
+            time.sleep(2)
+        return False
 
     def wait_reachable(self, timeout: int = 180, host: Optional[str] = None) -> bool:
         """Block until host:port answers (used after an import that may reboot)."""
