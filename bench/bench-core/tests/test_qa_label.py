@@ -35,9 +35,11 @@ from bench_core.qa_label import (
     barcode_module_width,
     barcode_x,
     barcode_y,
+    extra_contents,
     label_content,
     label_count,
     main,
+    render_content,
     render_darkness_ladder,
     pick_face,
     render_zpl,
@@ -51,6 +53,9 @@ def record(name: str) -> dict:
 
 
 ALL_RECORDS = sorted(p.stem for p in RECORDS.glob("*.json"))
+# Formats, not records: the switch's record renders its QA label AND its port
+# map, so a dump of everything is longer than the file count.
+ALL_FORMATS = sum(1 + len(extra_contents(record(n))) for n in ALL_RECORDS)
 
 
 # ── face selection ───────────────────────────────────────────────────────────
@@ -65,6 +70,7 @@ ALL_RECORDS = sorted(p.stem for p in RECORDS.glob("*.json"))
     ("raythink-dhcp", "dhcp-mac"),
     ("magos-radar", "channel"),
     ("magos-apu", "pairing"),
+    ("planet", "shared-ip"),
 ])
 def test_each_tool_gets_its_designed_face(name, face):
     assert pick_face(record(name)) == face
@@ -752,7 +758,7 @@ def test_a_wildcard_is_expanded_by_the_tool_not_the_shell(capsys):
     """cmd and PowerShell hand a pattern over as a literal filename, so a glob
     that works on a mac would fail on the only machine that has the printer."""
     assert main([str(RECORDS / "*.json")]) == 0
-    assert capsys.readouterr().out.count("^XA") == len(ALL_RECORDS)
+    assert capsys.readouterr().out.count("^XA") == ALL_FORMATS
 
 
 def test_the_records_are_dumped_in_a_stable_order(capsys):
@@ -785,7 +791,7 @@ def test_the_written_file_is_the_bytes_the_printer_wants(tmp_path):
     out = tmp_path / "all.zpl"
     assert main(["-o", str(out), str(RECORDS / "*.json")]) == 0
     raw = out.read_bytes()
-    assert raw.decode("ascii").count("^XA") == len(ALL_RECORDS)
+    assert raw.decode("ascii").count("^XA") == ALL_FORMATS
     assert not raw.startswith(b"\xff\xfe") and not raw.startswith(b"\xef\xbb\xbf")
 
 
@@ -872,3 +878,73 @@ def test_an_unknown_media_type_is_refused(capsys):
     between a readable label and a pale one, so a typo stops here."""
     assert main(["--media", "thermal", str(RECORDS / "tsw-static.json")]) == 2
     assert "--media must be one of" in capsys.readouterr().err
+
+
+# ── the switch's second label: which socket takes what ───────────────────────
+
+def test_only_the_poe_switch_earns_a_second_label():
+    """Every other tool provisions one device with one identity. The switch is
+    the only one whose label has to say something about the things plugged
+    into it."""
+    for name in ALL_RECORDS:
+        extras = extra_contents(record(name))
+        assert len(extras) == (1 if name == "planet" else 0), name
+
+
+def test_the_port_map_says_what_the_run_recorded_and_nothing_else():
+    """The rows come from the plan the tool wrote into the record. A label that
+    guessed which socket a radar was on would be worse than no label at all."""
+    entry = record("planet")
+    content = extra_contents(entry)[0]
+    assert content.face == "port-map"
+    assert content.pairing == [tuple(row) for row in entry["device"]["port_map"]]
+    assert content.hero == "192.168.88.3"
+
+
+def test_a_switch_with_no_recorded_plan_prints_no_port_map():
+    """A record from before the plan was recorded — or one whose config had no
+    named ports — gets its QA label and nothing invented beside it."""
+    entry = record("planet")
+    entry["device"].pop("port_map")
+    assert extra_contents(entry) == []
+
+
+def test_the_port_map_carries_no_barcode():
+    """It is the same label on every switch at a site; the unit's identity is
+    on the QA label beside it, and the room went to the tenth socket."""
+    zpl = render_content(extra_contents(record("planet"))[0])
+    assert "^BC" not in zpl
+    assert record("planet")["serial"] not in zpl
+
+
+def test_every_socket_reaches_the_label():
+    zpl = render_content(extra_contents(record("planet"))[0])
+    for port, what in record("planet")["device"]["port_map"]:
+        assert f"^FD{what}^FS" in zpl, f"gi{port} is not on the label"
+
+
+def test_no_row_of_the_port_map_falls_off_the_media():
+    """Ten rows on a 29 mm label is the tightest face there is: it runs in two
+    columns and has no barcode, so the usual bottom anchor does not guard it."""
+    zpl = render_content(extra_contents(record("planet"))[0])
+    for x, y in _placed(zpl):
+        assert MARGIN <= x <= LABEL_W - MARGIN, f"field {x} dots across the head"
+        assert MARGIN_Y <= y <= LABEL_H - MARGIN_Y, f"field {y} dots along the feed"
+
+
+def test_more_sockets_than_the_label_holds_is_refused_not_truncated():
+    """A truncated port map still looks complete. Refusing turns it into the
+    missing label the operator is warned about."""
+    entry = record("planet")
+    entry["device"]["port_map"] += [["11", "SFP 1"], ["12", "SFP 2"]]
+    with pytest.raises(ValueError, match="the label holds"):
+        extra_contents(entry)
+
+
+def test_the_cli_dumps_the_port_map_beside_the_qa_label(capsys):
+    """The review loop is "dump it and paste it into labelary" — a face it
+    never printed is a face nobody looks at."""
+    assert main([str(RECORDS / "planet.json")]) == 0
+    out = capsys.readouterr().out
+    assert out.count("^XA") == 2
+    assert "PORT MAP" in out

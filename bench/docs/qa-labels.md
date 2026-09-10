@@ -366,7 +366,7 @@ by a print.
 printer and a blocking one; `test_raythink_label.py` does the same for the
 octet counter.
 
-## The seven faces
+## The eight faces
 
 The tools do genuinely different things to a device, so the useful largest
 field differs. Each face leads with the identity **that tool actually wrote**,
@@ -383,7 +383,25 @@ them, because the barcode already prints it.
 | Magos radar (AR-300, channel confirmed) | `channel` | RF channel | MODEL, MAC | the system diagram says "radar 1", not an address |
 | Magos radar (any other) | `shared-ip` | IP | MAC | only the AR-300 line has a channel at all |
 | Magos APU | `pairing` | APU + radars | — | the only unit whose label has to name *other* devices |
+| PLANET IGS-4215 | `shared-ip` | mgmt IP | — | every switch lands on the same address; the MAC row is dropped because on this device the MAC *is* the serial the barcode already prints |
+| PLANET IGS-4215 (second label) | `port-map` | the sockets | mgmt IP | see below |
 | any of TSW / speaker / Raythink left on DHCP | `dhcp-mac` | the MAC | HOST | there is no address to print, and the MAC is how it gets found again |
+
+### `port-map`, the one label that is not about identity
+
+The PoE switch earns **two** labels: its QA label, and a port map that goes on
+the switch itself saying which socket takes which device. It is the only face
+built from something other than the unit's identity, and the only case where
+one run produces two formats — sent as a single job, because a port map that
+reached a switch whose QA label did not would read as a unit that passed.
+
+Ten sockets do not fit down 29 mm as one column, so they run as two columns of
+five, port number then device, with the management address on the last line.
+No barcode: the label is identical on every switch at a site, and the unit's
+identity is on the QA label beside it. The rows come from `device.port_map`,
+written by the tool from its own config — nothing about the site plan is
+derived inside `qa_label`, so a label can never disagree with the switch about
+which socket a radar is on.
 
 The DHCP face makes the MAC the hero rather than printing the word DHCP over
 it: the header already says DHCP, and the MAC is the only thing on that label

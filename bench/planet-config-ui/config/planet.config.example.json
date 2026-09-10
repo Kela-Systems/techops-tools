@@ -1,0 +1,53 @@
+{
+  "_comment": "Copy to planet.config.json (gitignored). These are the shared settings applied to every IGS-4215-8UP2T2S. There is no per-device input at all — no factory label password, no site name — so the UI asks for nothing: detect, press Configure, unplug.",
+
+  "_comment_host": "A factory IGS-4215 boots on 192.168.0.100 — a different /24 from every other bench tool (the Teltonikas are on 192.168.1.x), so the station needs an address on 192.168.0.x to reach a fresh switch AND one on 192.168.88.x to confirm the move below.",
+  "host": "192.168.0.100",
+  "username": "admin",
+
+  "_comment_password": "The factory password is DERIVED, not printed: 'sw' + the last 6 hex digits of the switch's MAC in lowercase (a8:f7:e0:f6:c4:3a -> swf6c43a). The bench reads the MAC off ARP, so there is still nothing to scan or type. Login tries new_password first (a re-run is the common case) and the derived factory password second, then stops — three wrong attempts start a lockout in which the switch answers, prints its banner and hangs up without prompting, which is indistinguishable from the broken-SSH firmware fault. Set factory_password only to override the derivation for an odd unit; leave it empty otherwise.",
+  "factory_password": "",
+  "new_password": "Kelasys123!",
+
+  "_comment_time": "timezone_acronym must be 1-4 CHARACTERS — the switch silently ignores a longer one and stays on its factory +8. Use 3 for IDT (summer), 2 for IST (winter). The NTP server is unreachable from the factory subnet by design, so verification checks the configuration, not that the clock has synced.",
+  "timezone_acronym": "IST",
+  "timezone_offset": 3,
+  "ntp_server": "192.168.88.10",
+
+  "_comment_lan": "Applied as the LAST step: the management interface moves off the factory address. .1 is the site gateway, .2 is the TSW202, .3 is this switch. The station needs an address on this subnet for the move to be confirmable. No gateway is set — the management plane is deliberately reachable only from inside this /24.",
+  "lan_ip": "192.168.88.3",
+  "netmask": "255.255.255.0",
+  "move_timeout": 120,
+
+  "_comment_ip_mode": "'fixed' = every switch to lan_ip, 'manual' = type it per switch. No 'dhcp' and no 'cycle': a site takes one switch, and a PoE switch with no gateway that wanders to a lease is a switch nobody can find.",
+  "default_ip_mode": "fixed",
+
+  "_comment_telnet": "Dropped after SSH has carried the whole run, never before — telnet is the way back in if SSH turns out not to work on this unit.",
+  "disable_telnet": true,
+
+  "_comment_firmware": "ENABLED BY DEFAULT, and it matters more here than on any other bench tool: firmware at or below v1.305b251017 has a BROKEN SSH SERVER (accepts credential-less auth, refuses the password, then closes the CLI channel right after the banner) and cannot be configured over the CLI at all. b260324 fixes it — PLANET's release notes for that build say 'Bug Fixed: NA', so the notes do not record the fix; the behaviour does. minimum_version is a FLOOR, not a pin: a switch arriving newer is passed through with a note. The image flashes to the INACTIVE partition, so the known-good image stays put and a bad flash is one partition flip from recovery. Download the .bix from https://www.planet.com.tw/en/support/downloads?method=keyword&keyword=IGS-4215-8UP2T2S into firmware/ (gitignored).",
+  "firmware": {
+    "enabled": true,
+    "minimum_version": "1.305b260324",
+    "bix_path": "./firmware/FW-IGS-4215-8UP2T2S_v1.305b260324.bix",
+    "reboot_wait": 300
+  },
+
+  "_comment_poe": "The site's power plan. limit_w is in WATTS here and converted to the switch's deci-watts once, in code — do not pre-multiply. Limits are a CEILING, not a draw: an AR-300 pulls ~35 W and is capped at 45 W because 802.3bt Type 3 Class 5 sources 45 W to guarantee 40 W at the far end of 100 m of copper, and a 35 W cap browns the radar out on a long run or a cold start. In 'allocation' mode each enabled port's limit is reserved against budget_w, so 4x45 + 20 = 200 W against 240 W. budget_w may only exceed 240 if BOTH power inputs are wired (the switch reports PWR1/PWR2, and the tool warns when they disagree). Priorities decide who survives a shortfall: radars critical, speaker high. 'short' is what the printed PORT MAP label calls the socket (the wattage is appended from limit_w, so it is never written twice); 'description' is the longer name written into the switch itself.",
+  "poe": {
+    "budget_w": 240,
+    "limit_mode": "allocation",
+    "ports": {
+      "1": {"enabled": true,  "limit_w": 45, "priority": "critical", "description": "Radar-AR300-1", "short": "RADAR 1"},
+      "2": {"enabled": true,  "limit_w": 45, "priority": "critical", "description": "Radar-AR300-2", "short": "RADAR 2"},
+      "3": {"enabled": true,  "limit_w": 45, "priority": "critical", "description": "Radar-AR300-3", "short": "RADAR 3"},
+      "4": {"enabled": true,  "limit_w": 45, "priority": "critical", "description": "Radar-AR300-4", "short": "RADAR 4"},
+      "5": {"enabled": false, "limit_w": 0,  "priority": "low",      "description": "Spare-PoE-1", "short": "SPARE"},
+      "6": {"enabled": false, "limit_w": 0,  "priority": "low",      "description": "Spare-PoE-2", "short": "SPARE"},
+      "7": {"enabled": false, "limit_w": 0,  "priority": "low",      "description": "Spare-PoE-3", "short": "SPARE"},
+      "8": {"enabled": true,  "limit_w": 20, "priority": "high",     "description": "Speaker-PR-HS15W-IP", "short": "SPEAKER"},
+      "9": {"enabled": false, "limit_w": 0,  "priority": "low",      "description": "Camera-RAYTHINK-PC464A1", "short": "CAMERA"},
+      "10": {"enabled": false, "limit_w": 0, "priority": "low",      "description": "Management", "short": "MGMT"}
+    }
+  }
+}

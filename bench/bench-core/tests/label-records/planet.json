@@ -1,0 +1,49 @@
+{
+  "schema": "bench-run-record/1",
+  "run_id": "6b1f2c40-3f2e-4a55-9d2a-5a1c0f7c9e21",
+  "tool": "planet",
+  "kind": "configure",
+  "timestamp": "2026-09-10T08:41:03.120000+00:00",
+  "time": "08:41:03",
+  "status": "ok",
+  "error": null,
+  "serial": "A8:F7:E0:F6:C4:3A",
+  "mac": "a8:f7:e0:f6:c4:3a",
+  "model": "IGS-4215-8UP2T2S",
+  "firmware": "1.305b260324",
+  "duration_s": 34,
+  "verified": true,
+  "verify_detail": null,
+  "verification": [
+    {"item": "lan-ip", "expected": "192.168.88.3", "actual": "192.168.88.3", "ok": true},
+    {"item": "poe-port-1", "expected": "on @ 45.0W", "actual": "on @ 45.0W", "ok": true}
+  ],
+  "warnings": [],
+  "steps": [],
+  "log": "",
+  "device": {
+    "ip": "192.168.88.3",
+    "ip_mode": "fixed",
+    "reached_at": "192.168.0.100",
+    "firmware_note": "arrived on 1.305b260324, at or above the configured floor",
+    "poe_budget_w": 240,
+    "poe_allocated_w": 200,
+    "dual_power": false,
+    "port_map": [
+      ["1", "RADAR 1 45W"],
+      ["2", "RADAR 2 45W"],
+      ["3", "RADAR 3 45W"],
+      ["4", "RADAR 4 45W"],
+      ["5", "SPARE"],
+      ["6", "SPARE"],
+      ["7", "SPARE"],
+      ["8", "SPEAKER 20W"],
+      ["9", "CAMERA"],
+      ["10", "MGMT"]
+    ]
+  },
+  "operator": "Avi",
+  "station_id": "bench-01",
+  "bench_version": "b8021eb",
+  "config_hash": "31108800ab71"
+}

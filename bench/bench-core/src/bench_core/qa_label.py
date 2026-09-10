@@ -10,7 +10,7 @@ Named `qa_label` because `device_label.py` already exists and means the
 opposite: that one READS the factory sticker a device arrives with, this one
 WRITES the sticker it leaves with.
 
-Seven faces, because the tools do genuinely different things to a device and
+Eight faces, because the tools do genuinely different things to a device and
 the useful hero field differs (design session 2026-08-29, mocked up in
 `docs/qa-labels.md`). What they share is a family language: inverted header, a
 hero, up to two supporting fields, and Code 128 of the serial along the bottom.
@@ -24,6 +24,10 @@ The hero is whichever identity that tool actually wrote:
     magos-radar    channel      the system diagram says "radar 1", not an IP
     magos-apu      APU + pairs  the only face that must name other devices
     (any of tsw/speaker/raythink left on DHCP)  ->  the MAC
+
+The eighth, `port-map`, is the exception to "one record, one label": the PLANET
+switch also earns a second label saying which socket takes which device, which
+goes on the switch itself rather than into the QA pile. See `extra_contents`.
 
 No face prints the serial as a field: the barcode's human-readable line already
 does, and on 58 mm stock that duplicate was worth a whole row.
@@ -42,7 +46,7 @@ if any of them appears in rendered output.
 
 Everything here is pure: no printer, no I/O, no clock. `python -m
 bench_core.qa_label <run.json>` dumps the ZPL for a real record to stdout,
-which pasted into labelary.com renders the exact label — how all seven faces
+which pasted into labelary.com renders the exact label — how all eight faces
 get reviewed without hardware.
 """
 from __future__ import annotations
@@ -122,6 +126,9 @@ HERO_Y = 53
 ROW1_Y = 89           # the first row under an FS_HERO hero
 ROW1_BIG_Y = 99       # ...and under an FS_HERO_BIG one, which reaches lower
 ROW2_Y = 127
+PORT_Y = 46           # the port map's first row, clear of the header band
+PORT_ROW_H = 30
+PORT_NUM_W = 30       # the port-number column, wide enough for two digits
 
 FS_HEAD = 20
 FS_MODE = 15          # the header's right side, smaller than the family name
@@ -132,7 +139,14 @@ FS_HERO = 32          # a hero with two rows under it
 FS_HERO_BIG = 42      # a hero with one row, or none
 
 FACES = ("hostname-imei", "hostname-gateway", "shared-ip", "unit-ip",
-         "dhcp-mac", "channel", "pairing")
+         "dhcp-mac", "channel", "pairing", "port-map")
+
+# The port map is the one label that is not about identity: it says which
+# socket takes which device, and it goes on the switch rather than in the QA
+# pile. It is printed IN ADDITION to a QA label, never instead of one.
+PORT_MAP_TOOLS = ("planet",)
+PORT_MAP_ROWS = 5          # rows per column; 10 ports do not fit in one
+PORT_MAP_MAX = 2 * PORT_MAP_ROWS
 
 # Tools whose unit can legitimately leave the bench on DHCP (TEC-848), i.e.
 # where an absent address is a decision rather than a gap. An OTD500 has no LAN
@@ -509,6 +523,67 @@ def _content_tsw(entry: dict) -> LabelContent:
     )
 
 
+def _content_planet(entry: dict) -> LabelContent:
+    """PLANET IGS-4215 PoE switch.
+
+    `shared-ip` like the TSW202 next to it: every switch lands on the same
+    management address, which is not an identity but is what an installer
+    types once the box is racked. The MAC does double duty here — it is the
+    only per-unit identifier the device exposes (there is no serial), and it
+    is what the factory password derives from.
+    """
+    serial = _ascii(entry.get("serial"))
+    mac = _mac(entry.get("mac"))
+    return LabelContent(
+        face="shared-ip",
+        family="IGS-4215", mode="STATIC",
+        hero_key="MGMT IP", hero=_ip(entry),
+        # The MAC row is dropped when the MAC *is* the serial, which on this
+        # device is the normal case: the barcode's interpretation line already
+        # prints it, and no face spends a row saying the same thing twice.
+        fields=[] if _mac(serial) == mac else [("MAC", mac)],
+        serial=serial,
+    )
+
+
+def _content_port_map(entry: dict) -> Optional[LabelContent]:
+    """The switch's port map, from the plan the run recorded.
+
+    Built from `device.port_map` — pairs of (port, what is plugged into it)
+    that the tool wrote from its own config. Nothing is derived here: a label
+    that guessed which socket a radar was on would be worse than no label.
+    """
+    rows = [(_ascii(port), _ascii(what))
+            for port, what in (_device(entry).get("port_map") or [])
+            if _ascii(what)]
+    if not rows:
+        return None
+    if len(rows) > PORT_MAP_MAX:
+        # Refused rather than truncated: a port map missing its last sockets
+        # still looks complete, and the operator would have no way to tell.
+        # print_run turns this into "no label printed", which they do see.
+        raise ValueError(f"{len(rows)} ports named but the label holds "
+                         f"{PORT_MAP_MAX}")
+    return LabelContent(
+        face="port-map",
+        family="IGS-4215", mode="PORT MAP",
+        hero_key="MGMT IP", hero=_ip(entry),
+        # No barcode: this label is the same on every switch at a site, and the
+        # unit's identity is on the QA label beside it.
+        serial="",
+        pairing=rows,
+    )
+
+
+def extra_contents(entry: dict) -> list[LabelContent]:
+    """Labels this run earns BESIDES its QA label, in print order."""
+    record = parse_run_record(entry)
+    if record.get("tool") not in PORT_MAP_TOOLS:
+        return []
+    content = _content_port_map(record)
+    return [content] if content else []
+
+
 def _content_speaker(entry: dict) -> LabelContent:
     serial = _ascii(entry.get("serial"))
     if _on_dhcp(entry):
@@ -620,6 +695,7 @@ _CONTENT_BY_TOOL = {
     "otd": _content_otd,
     "rutm": _content_rutm,
     "tsw": _content_tsw,
+    "planet": _content_planet,
     "speaker": _content_speaker,
     "raythink": _content_raythink,
     "magos-radar": _content_magos_radar,
@@ -747,6 +823,29 @@ def _face_pairing(c: LabelContent) -> list[str]:
     return out
 
 
+def _face_port_map(c: LabelContent) -> list[str]:
+    """Ten sockets down a 29 mm label: two columns of five, port then device.
+
+    The management address sits on the last line rather than as a hero — on
+    this label the sockets are the content, and the address is the one thing
+    an installer needs once the box is racked.
+    """
+    out = []
+    col_w = BODY_W // 2
+    for index, (port, what) in enumerate(c.pairing[:PORT_MAP_MAX]):
+        x = MARGIN + (index // PORT_MAP_ROWS) * col_w
+        y = PORT_Y + (index % PORT_MAP_ROWS) * PORT_ROW_H
+        out += [_text(x, y, FS_VAL, port, width=PORT_NUM_W),
+                _text(x + PORT_NUM_W, y, FS_VAL, what,
+                      width=col_w - PORT_NUM_W - 6)]
+    if c.hero:
+        y = PORT_Y + PORT_MAP_ROWS * PORT_ROW_H + 4
+        out += [_rule(MARGIN, y, BODY_W),
+                _text(MARGIN, y + 6, FS_VAL, f"{c.hero_key} {c.hero}",
+                      width=BODY_W)]
+    return out
+
+
 _FACE_RENDERERS = {
     "hostname-imei": _face_hostname_imei,
     "hostname-gateway": _face_hostname_gateway,
@@ -755,6 +854,7 @@ _FACE_RENDERERS = {
     "dhcp-mac": _face_dhcp_mac,
     "channel": _face_channel,
     "pairing": _face_pairing,
+    "port-map": _face_port_map,
 }
 
 
@@ -987,8 +1087,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     for path in paths:
         with open(path, "r", encoding="utf-8") as handle:
             record = json.load(handle)
-        chunks.append(render_darkness_ladder(record, **quality) if ladder
-                      else render_zpl(record, **quality))
+        if ladder:
+            chunks.append(render_darkness_ladder(record, **quality))
+            continue
+        chunks.append(render_zpl(record, **quality))
+        # The switch's port map is a real label this record produces, so the
+        # review loop has to show it too — a ladder is about darkness, and one
+        # face is enough for that.
+        chunks += [render_content(extra, copies=1, **quality)
+                   for extra in extra_contents(record)]
     zpl = "".join(chunks)
     if out_path:
         with open(out_path, "w", encoding="ascii", newline="\n") as handle:

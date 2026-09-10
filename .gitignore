@@ -67,6 +67,11 @@ bench/rutm-config-ui/firmware/
 bench/tsw-config-ui/config/tsw.config.json
 bench/tsw-config-ui/firmware/
 
+# PLANET IGS-4215 PoE switch tool — real config + firmware images.
+# The .bix is ~7 MB and is what a switch below the SSH-fix floor needs.
+bench/planet-config-ui/config/planet.config.json
+bench/planet-config-ui/firmware/
+
 # Raythink camera tool — real config (copy from the example).
 # The config/profiles/ exports ship committed (no secrets; needed at runtime).
 bench/raythink-config-ui/config/raythink.config.json
@@ -99,6 +104,7 @@ bench/magos-config-ui/logs/
 bench/otd-config-ui/logs/
 bench/rutm-config-ui/logs/
 bench/tsw-config-ui/logs/
+bench/planet-config-ui/logs/
 bench/raythink-config-ui/logs/
 bench/speaker-config-ui/logs/
 

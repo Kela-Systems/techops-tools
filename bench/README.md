@@ -73,6 +73,7 @@ double-click launcher  →  dashboard  ┌────────────�
                                      │  ● Raythink Camera   :8005   192.168.1.x  │
                                      │  ● ISR Speaker       :8006   DHCP (scan)  │
                                      │  ● Teltonika TSW202  :8007   192.168.1.x  │
+                                     │  ● PLANET IGS-4215   :8008   192.168.0.x  │
                                      └───────────────────────────────────────────┘
 ```
 
@@ -105,11 +106,14 @@ window (Windows) or press Ctrl+C in the terminal (macOS/Linux).
 | `raythink-config-ui/` | Raythink **thermal camera**  | 8005 | factory `192.168.1.123`, RPC2 API                      |
 | `speaker-config-ui/`  | Provision-ISR **IP speaker** | 8006 | arrives on **DHCP** — auto-scans `192.168.1/2/88.0/24` |
 | `tsw-config-ui/`      | Teltonika **TSW202** switch  | 8007 | factory `192.168.1.**2**`; label scan                  |
+| `planet-config-ui/`   | PLANET **IGS-4215** PoE switch | 8008 | factory `192.168.**0**.100`; no scan; PoE plan + firmware floor |
 
 
 The ports are fixed and don't collide, so all the tools run side by side under
 the one launcher. The Teltonika subnet is shared without conflict: the OTD500 and
-RUTM08 arrive on `192.168.1.1`, the TSW202 on `192.168.1.2`.
+RUTM08 arrive on `192.168.1.1`, the TSW202 on `192.168.1.2`. The PLANET IGS-4215
+is the one device that arrives on a *different* `/24` — `192.168.0.100` — so the
+bench adapter needs an address on `192.168.0.x` as well to reach a fresh one.
 
 > **One exception, if the RUTM08's `wan` block is switched on** (TEC-857): that
 > step pins the router's WAN port to a static `192.168.1.2` — the same address a
@@ -120,7 +124,8 @@ RUTM08 arrive on `192.168.1.1`, the TSW202 on `192.168.1.2`.
 > the committed template; read the comments there before turning it on.
 
 > **Devices that end up on `192.168.88.x`.** The RUTM08 (`.1`), TSW202 (`.2`),
-> camera and speaker (`.70`) all move to that subnet as their last step, and the
+> PLANET IGS-4215 (`.3`), camera and speaker (`.70`) all move to that subnet as
+> their last step, and the
 > tool confirms the move by reaching the device on its new address. The RUTM08
 > case works anywhere because the router *serves* DHCP there and the tool renews
 > the station's lease. **A switch, a camera and a speaker do not**, so the bench

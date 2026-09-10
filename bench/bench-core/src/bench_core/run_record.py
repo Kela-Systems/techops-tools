@@ -75,7 +75,8 @@ from typing import Optional
 
 RUN_RECORD_SCHEMA = "bench-run-record/1"
 
-TOOLS = ("otd", "rutm", "tsw", "raythink", "speaker", "magos-radar", "magos-apu")
+TOOLS = ("otd", "rutm", "tsw", "planet", "raythink", "speaker", "magos-radar",
+         "magos-apu")
 
 # What a run did to the device. A mutation-free check is a first-class kind of
 # run (TEC-348), not a configure run with most of its steps skipped: it has to

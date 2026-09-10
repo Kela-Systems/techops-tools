@@ -24,6 +24,9 @@ the design's 15 cm side runs along the feed — the printhead is only 104 mm wid
 so it cannot be otherwise. `docs/qa-labels.md` shows how to get the render in
 reading orientation, and explains why.
 
+`planet.json` dumps TWO formats, not one: the PoE switch earns a port map
+beside its QA label (`qa_label.extra_contents`), and the review loop shows both.
+
 Every record here is `status: "ok"` with `verified: true`, because that is the
 only combination that prints. Records for the gate itself (verified false,
 verified null, status error) are built inline in `tests/test_label_printer.py`
