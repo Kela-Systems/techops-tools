@@ -1636,7 +1636,10 @@ class TeltonikaClient:
     def set_admin_password(self, new_password: str) -> None:
         """Change the admin password from the per-device label password to the
         shared default. Idempotent: if the device already accepts new_password we
-        skip. Sets it for the WebUI/REST user (admin) and root (SSH)."""
+        skip. Sets it for the WebUI/REST user (admin) and root (SSH).
+
+        Raises SystemExit when the WebUI/REST half is refused, rather than
+        leaving the device on two different passwords."""
         if self.password == new_password:
             log.info("Password already set to the shared default; skipping.")
             return
@@ -1651,26 +1654,37 @@ class TeltonikaClient:
         # new password) still heals instead of erroring.
         self._ssh_alt_passwords = [new_password]
 
-        # 1) SSH user (root) via chpasswd — guarantees root ends on the new pw.
-        # shlex.quote: a password containing a quote must not break the shell
-        # (worst case is failing MID password change).
-        self.ssh_exec(f"echo {shlex.quote(f'{self.ssh_username}:{new_password}')} | chpasswd")
-
-        # 2) WebUI/REST user (admin) via the first-login endpoint. The API wants
+        # 1) WebUI/REST user (admin) via the first-login endpoint. The API wants
         #    password + password_confirm (and rejects current_password).
+        #    This runs BEFORE root's chpasswd below, and the order is load-
+        #    bearing: since OTD5 07.24 the endpoint refuses a new password that
+        #    matches the CURRENT system password ("Password is the same"), and
+        #    setting root first is precisely what makes it match. 07.22 had no
+        #    such validation, which is why the old order passed there.
         try:
             r = self.s.post(
                 f"{self.base}/system/actions/change_password_firstlogin",
                 json={"data": {"password": new_password, "password_confirm": new_password}},
                 timeout=self.timeout,
             )
-            if r.status_code in (200, 201):
-                log.info("WebUI/REST password changed via API.")
-            else:
-                log.warning("First-login password API returned HTTP %s: %s",
-                            r.status_code, r.text[:200])
         except requests.exceptions.RequestException as e:
-            log.warning("First-login password API call failed: %s", e)
+            raise SystemExit(f"Could not change the admin password — the "
+                             f"first-login password API call failed: {e}")
+        # Fatal rather than a warning: the REST/WebUI user still holds its old
+        # password, so the re-login at the end of this method cannot succeed and
+        # every later step would fail behind it. Stopping here also stops one
+        # step short of the half-changed device the warning used to produce.
+        if r.status_code not in (200, 201):
+            raise SystemExit(f"Could not change the admin password — the "
+                             f"first-login password API returned HTTP "
+                             f"{r.status_code}: {r.text[:200]}")
+        log.info("WebUI/REST password changed via API.")
+
+        # 2) SSH user (root) via chpasswd — guarantees root ends on the new pw
+        # too, on firmware where it is a separate credential from admin's.
+        # shlex.quote: a password containing a quote must not break the shell
+        # (worst case is failing MID password change).
+        self.ssh_exec(f"echo {shlex.quote(f'{self.ssh_username}:{new_password}')} | chpasswd")
 
         # Switch both transports to the new password.
         self.password = new_password
