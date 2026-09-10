@@ -81,6 +81,8 @@
     "_comment_key": "Either paste a single reusable auth_key, OR set mint_per_device + an api_key/tailnet to mint a fresh ephemeral, pre-authorized key per device via the Tailscale API (recommended).",
     "auth_key": "",
     "mint_per_device": true,
+    "_comment_expiry": "Seconds a minted auth key may still register a device. Unused keys from a failed run then expire on their own. Omit to use the 900s (15 min) default.",
+    "key_expiry_seconds": 900,
     "api_key": "tskey-api-xxxxx",
     "tailnet": "example.com",
     "tags": ["tag:otd"],

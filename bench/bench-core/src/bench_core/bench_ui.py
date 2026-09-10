@@ -104,6 +104,7 @@ FACTORY_LABEL_INPUT = "factory_label"
 PIPELINE_CORE_KEYS = frozenset({"identity", "warnings", "verification", "ok",
                                 "failures"})
 
+TS_MINTED_KEY_TTL_SEC = 15 * 60
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -391,6 +392,25 @@ def read_device_mac(ip: str) -> Optional[str]:
 
 # ── Tailscale per-device key minting ─────────────────────────────────────────
 
+
+def _minted_key_ttl_sec(ts: dict, logger: logging.Logger) -> int:
+    """Seconds a minted auth key may still register a device. Reads
+    `tailscale.key_expiry_seconds`; falls back to TS_MINTED_KEY_TTL_SEC on
+    a missing or unusable value so a typo cannot mint a 90-day key."""
+    raw = ts.get("key_expiry_seconds", TS_MINTED_KEY_TTL_SEC)
+    try:
+        expiry = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("tailscale.key_expiry_seconds=%r is not an integer — "
+                       "using the %ds default.", raw, TS_MINTED_KEY_TTL_SEC)
+        return TS_MINTED_KEY_TTL_SEC
+    if expiry <= 0:
+        logger.warning("tailscale.key_expiry_seconds=%s must be > 0 — "
+                       "using the %ds default.", expiry, TS_MINTED_KEY_TTL_SEC)
+        return TS_MINTED_KEY_TTL_SEC
+    return expiry
+
+
 def resolve_tailscale_key(cfg: dict, hostname: str, *, label: str,
                           logger: logging.Logger) -> str:
     """Return an auth key for this device: a freshly minted pre-authorized key
@@ -402,6 +422,7 @@ def resolve_tailscale_key(cfg: dict, hostname: str, *, label: str,
     if requests is None:
         logger.warning("requests unavailable; falling back to static Tailscale key.")
         return ts.get("auth_key", "")
+    expiry = _minted_key_ttl_sec(ts, logger)
     try:
         r = requests.post(
             f"https://api.tailscale.com/api/v2/tailnet/{ts['tailnet']}/keys",
@@ -409,11 +430,14 @@ def resolve_tailscale_key(cfg: dict, hostname: str, *, label: str,
             json={"capabilities": {"devices": {"create": {
                 "reusable": False, "ephemeral": False, "preauthorized": True,
                 "tags": ts.get("tags", []),
-            }}}, "description": f"{label} {hostname}"},
+            }}},
+                 "expirySeconds": expiry,
+                 "description": f"{label} {hostname}"},
             timeout=15,
         )
         r.raise_for_status()
-        logger.info("Minted a fresh Tailscale key for %s.", hostname)
+        logger.info("Minted a fresh Tailscale key for %s (valid %ds).",
+                    hostname, expiry)
         return r.json().get("key", "")
     except Exception as e:  # noqa: BLE001
         logger.error("Tailscale key minting failed (%s); using static key.", e)
