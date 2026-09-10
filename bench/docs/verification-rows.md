@@ -57,7 +57,7 @@ SIM row out.
 | `timezone` | `date +%z` against what the zone means today, **and** `system.ntp.zoneName` for what the WebUI renders. `test_timezone_applied.py`. | effect-based |
 | `SIM 4G-only` | `AT+COPS?` access-technology field — the radio the modem is attached on — **and** the `simcard.@sim[N].service` intent. Amber when the modem is not attached. Converted from UCI-only in TEC-348; `test_sim_4g_effect.py`. | effect-based, degrades |
 | `SIM switch slot 1/2` | `uci show sim_switch`: the failover rule options we wrote. | read-back |
-| `quota sync script` | `[ -x /sbin/quota-sync ]` and the boot hook: files present and executable on the device's filesystem. | effect-based |
+| `quota sync script` | Three things: the script and its init script present and executable, **and** the `/etc/rc.d/S99…` symlink that actually runs it at boot. The last one is separate on purpose — a keep-settings upgrade restores the files but regenerates `/etc/rc.d`, so the hook can be installed and disabled at once (TEC-861). | effect-based |
 | `quota sync cron` | The exact cron line in `/etc/crontabs/root`. | read-back |
 | `quota sync survives upgrade` | The paths listed in `/etc/sysupgrade.conf`. | known gap |
 | `RMS` | `ubus call <rms object> status` for a live connection state, then the RMS cloud API as the authority. `enable=1` alone is not a pass. | effect-based |

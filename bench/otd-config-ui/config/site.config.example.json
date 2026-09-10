@@ -30,7 +30,7 @@
 
   "sim_switch": {
     "_comment": "TEC-359 — automatic SIM failover. The device switches slot 1 <-> slot 2 on its own when the active SIM has no network, is denied/not inserted, fails the ICMP data check, drops below weak_signal_dbm, or hits its data limit. Sticky: it stays on whichever SIM works (no switch-back). Only the four values below are per-site; the rest of the rule set is fixed policy in bench_core.sim_switch_options().",
-    "_comment_firmware": "The sim_switch/quota_limit UCI option names are undocumented and were verified on FW 07.22.3 (bench_core.VERIFIED_SIM_SWITCH_FW). Provisioning a device on another firmware logs a warning — re-check with `uci export sim_switch` before trusting it.",
+    "_comment_firmware": "The sim_switch/quota_limit UCI option names are undocumented and were verified on FW 07.22.3 and 07.24.3 (bench_core.VERIFIED_SIM_SWITCH_FW). Provisioning a device on any other firmware logs a warning — re-check with `uci export sim_switch` before trusting it. Note the guard covers option NAMES only: 07.24 changed SIM-switch behaviour in the no-SIM case, so a new firmware still needs its failover re-tested, not just its config diffed.",
     "enabled": true,
     "check_interval": 30,
     "check_count": 5,
@@ -56,10 +56,11 @@
 
   "firmware": {
     "_comment": "mode = local (upload a pinned .bin from this machine), fota (device pulls latest-stable from Teltonika), rms (defer — registered device upgrades itself on first RMS connect), or none.",
+    "_comment_standard": "The fleet standard is OTD5_R_00.07.24.3 (TEC-861) — Teltonika's current Stable, published MD5 c9db698648928d0f21cd1d6b13ebca3e. Download it from the OTD500 Firmware Downloads wiki page, save it as bin_path, and set expected_version to match: it is verified after flashing, and a device already on that version skips the re-flash on a retry.",
     "mode": "local",
-    "bin_path": "./firmware/OTD500_latest-stable.bin",
+    "bin_path": "./firmware/OTD5_R_00.07.24.3_WEBUI.bin",
     "keep_settings": true,
-    "expected_version": "OTD5_R_00.07.00"
+    "expected_version": "OTD5_R_00.07.24.3"
   },
 
   "rms": {

@@ -111,7 +111,8 @@ ALLOWED_READS = [
     # The one that broke the first version of the pattern.
     "grep -v '^#' /etc/sysupgrade.conf 2>/dev/null",
     "grep -F quota-sync /etc/crontabs/root 2>/dev/null",
-    "[ -x /sbin/quota-sync ] && echo script; [ -x /etc/init.d/quota-sync ] && echo boot-hook",
+    "[ -x /sbin/quota-sync ] && echo script; [ -x /etc/init.d/quota-sync ] && echo boot-hook; "
+    "[ -e /etc/rc.d/S99quota-sync ] && echo enabled",
     "ps w 2>/dev/null | grep '[n]tpd'",
     "tr -d '\\000' < /proc/device-tree/model 2>/dev/null",
     # The TEC-857 rows. `uci show <pkg>` is a read whatever the package, but

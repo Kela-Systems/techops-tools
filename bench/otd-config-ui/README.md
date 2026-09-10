@@ -132,10 +132,21 @@ read from the device's config (existing `sim_switch` sections first, then
 correct with no SIM in.
 
 The `sim_switch` option names are undocumented and were verified on **firmware
-07.22.3**. On any other version the run logs a warning and continues, because
-Teltonika renames these options between releases and `uci set` silently accepts
-a name the service ignores. Re-check with `uci export sim_switch` before trusting
-a new firmware.
+07.22.3 and 07.24.3**. On any other version the run logs a warning and continues,
+because Teltonika renames these options between releases and `uci set` silently
+accepts a name the service ignores. Re-check with `uci export sim_switch` before
+trusting a new firmware.
+
+Two versions rather than one because devices arrive on both while the 07.24.3
+upgrade campaign runs (TEC-861), and the check reads the firmware the device
+arrives on — the SIM rules are written before the firmware step. 07.24.3 was
+added on the evidence of a keep-settings upgrade in the field that left all 19
+options byte-identical.
+
+That guard covers option **names**, not behaviour. 07.24 also changed when the
+"on data connection fail" rule triggers with no SIM inserted — which is the
+state the bench provisions in — so a new firmware still needs its failover
+re-tested, not just its config diffed.
 
 ### Data-limit logic
 
@@ -198,6 +209,15 @@ ssh root@192.168.1.1 'sysupgrade -b /tmp/b.tar.gz && tar -tzf /tmp/b.tar.gz | gr
 ```
 
 which builds the keep archive without flashing anything.
+
+Keeping the *files* is not the same as keeping them *enabled*. An upgrade
+regenerates `/etc/rc.d` from scratch, so `/etc/rc.d/S99kela-quota-sync` — the
+symlink that makes boot run the hook — disappears even though the init script it
+points at was preserved (seen in the field on 07.24.3, TEC-861). Nothing on the
+device reports that; it just stops running at boot. Two things cover it: the
+`quota sync script` verification row checks the symlink separately from the
+files, and the script re-enables its own hook when it finds the symlink missing,
+which is how a device upgraded in the field repairs itself without the bench.
 
 The pipeline still installs quota-sync *after* the firmware step, since a device
 being flashed on the bench has nothing to preserve yet.

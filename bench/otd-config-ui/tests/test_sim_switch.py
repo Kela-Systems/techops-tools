@@ -3,7 +3,7 @@
 No hardware: the device is a `FakeDevice` standing in for `ssh_exec`, so the
 tests pin the exact UCI command strings and the rendered on-device script — the
 things that actually decide whether a real OTD500 ends up with the rule set that
-was validated on the bench (FW 07.22.3).
+was validated on the bench (FW 07.22.3, re-validated on 07.24.3).
 """
 import logging
 import re
@@ -55,7 +55,7 @@ SLOT_RULES = (
 # The eSIM slot: present, and switched off.
 ESIM_RULES = (("modem", "2-1"), ("position", "3"), ("order", "3"), ("enabled", "0"))
 
-FW_VERIFIED = f"OTD5_R_00.{VERIFIED_SIM_SWITCH_FW}"
+FW_VERIFIED = f"OTD5_R_00.{VERIFIED_SIM_SWITCH_FW[-1]}"
 
 
 class FakeDevice:
@@ -224,15 +224,24 @@ def teltonika_caplog(caplog, monkeypatch):
 
 
 def test_unverified_firmware_warns_but_still_configures(teltonika_caplog):
+    # 07.24.1 sits BETWEEN the two verified releases: a near miss on the last
+    # segment has to warn, or the guard would wave through any 07.24.x.
     client, device = fake_client(version="OTD5_R_00.07.24.1")
     client.configure_sim_switch(SIM_SWITCH_CFG)
     assert "uci export sim_switch" in teltonika_caplog.text
-    assert VERIFIED_SIM_SWITCH_FW in teltonika_caplog.text
+    # Every verified version is named, so the operator can see what the device
+    # would have had to be running to skip the warning.
+    for version in VERIFIED_SIM_SWITCH_FW:
+        assert version in teltonika_caplog.text
     assert uci_set_command(device)          # the warning does not stop the step
 
 
-def test_verified_firmware_does_not_warn(teltonika_caplog):
-    client, _ = fake_client()
+@pytest.mark.parametrize("version", VERIFIED_SIM_SWITCH_FW)
+def test_every_verified_firmware_does_not_warn(teltonika_caplog, version):
+    # Both the outgoing standard (07.22.3) and the incoming one (07.24.3) are
+    # verified, and devices arrive on both while TEC-861's upgrade campaign
+    # runs — warning on either would be noise the operator learns to ignore.
+    client, _ = fake_client(version=f"OTD5_R_00.{version}")
     client.configure_sim_switch(SIM_SWITCH_CFG)
     assert teltonika_caplog.text == ""
 
@@ -396,6 +405,24 @@ def test_re_provisioning_does_not_grow_the_keep_list(monkeypatch):
     assert once[:len(stock)] == stock
 
 
+def test_the_script_re_enables_its_own_boot_hook_when_the_symlink_is_gone():
+    # A keep-settings upgrade restores the files in /etc/sysupgrade.conf but
+    # regenerates /etc/rc.d, so the init script comes back and its enable-state
+    # does not (TEC-861, kela-fob-18-otd). The bench can't fix that: the device
+    # is upgraded in the field, long after provisioning. Cron runs this script
+    # every 10 minutes, which makes it the only thing on the device positioned
+    # to notice — so it repairs the hook itself rather than just degrading.
+    script = render_quota_sync_script(SIM_SWITCH_CFG)
+
+    assert f"[ ! -e {QUOTA_SYNC_RC_LINK} ]" in script
+    assert f"{QUOTA_SYNC_INIT_PATH} enable" in script
+    # Guarded by the init script still being there: `enable` on a device where
+    # the file itself is gone would fail every 10 minutes and log noise.
+    assert f"[ -x {QUOTA_SYNC_INIT_PATH} ]" in script
+    # Inside the lock, so a boot-time run and a cron tick can't both enable.
+    assert script.index('mkdir "$LOCK"') < script.index(f"[ ! -e {QUOTA_SYNC_RC_LINK} ]")
+
+
 def test_the_rc_symlink_matches_the_boot_hooks_priority():
     # The keep list names the rc.d symlink literally; if START ever changes,
     # `enable` writes S<new> and the kept path would point at nothing.
@@ -466,11 +493,14 @@ def verify(**kwargs) -> dict:
 
 ALL_KEPT = "\n".join((SYSUPGRADE_CONF, QUOTA_SYNC_PATH, QUOTA_SYNC_INIT_PATH,
                       QUOTA_SYNC_RC_LINK))
+# What the `test -x`/`test -e` probe reports on a correctly installed device:
+# the script, its init script, AND the rc.d symlink that runs it at boot.
+FULLY_INSTALLED = "script\nboot-hook\nenabled"
 
 
 def test_verification_pairs_expected_with_what_the_device_reports():
     rows = verify(uci=device_uci({1: GOOD_SLOT, 2: {**GOOD_SLOT, "weak_signal": "-50"}}),
-                  installed="script\nboot-hook", cron=QUOTA_SYNC_CRON, keep=ALL_KEPT)
+                  installed=FULLY_INSTALLED, cron=QUOTA_SYNC_CRON, keep=ALL_KEPT)
 
     expected = " ".join(f"{o}={GOOD_SLOT[o]}" for o in VERIFIED_OPTIONS)
     assert rows["SIM switch slot 1"]["expected"] == expected
@@ -496,11 +526,29 @@ def test_verification_flags_a_missing_script_and_cron_entry():
     assert rows["quota sync cron"]["actual"] == "(no cron entry)"
 
 
+def test_verification_flags_a_boot_hook_that_is_present_but_not_enabled():
+    # The post-upgrade state seen in the field (TEC-861): a keep-settings
+    # upgrade restores the files listed in /etc/sysupgrade.conf but regenerates
+    # /etc/rc.d, so the init script is there and the symlink that runs it is
+    # not. Both files present used to be enough to pass this row, which made
+    # the one check that could have caught it report green.
+    rows = verify(uci=device_uci({1: GOOD_SLOT, 2: GOOD_SLOT}),
+                  installed="script\nboot-hook", cron=QUOTA_SYNC_CRON, keep=ALL_KEPT)
+    row = rows["quota sync script"]
+    assert row["ok"] is False
+    assert row["actual"] == "script + boot-hook"           # 'enabled' absent
+    assert "enabled" in row["expected"]
+    # The rest of the feature is fine — only the boot hook row may fail, or the
+    # operator cannot tell this apart from a device that never got provisioned.
+    assert rows["quota sync cron"]["ok"] is True
+    assert rows["quota sync survives upgrade"]["ok"] is True
+
+
 def test_verification_names_the_paths_an_upgrade_would_drop():
     # A partial keep list is the case worth naming: the operator has to know
     # WHICH file a firmware upgrade would take away.
     rows = verify(uci=device_uci({1: GOOD_SLOT, 2: GOOD_SLOT}),
-                  installed="script\nboot-hook", cron=QUOTA_SYNC_CRON,
+                  installed=FULLY_INSTALLED, cron=QUOTA_SYNC_CRON,
                   keep=f"{SYSUPGRADE_CONF}\n{QUOTA_SYNC_PATH}")
     row = rows["quota sync survives upgrade"]
     assert row["ok"] is False
