@@ -8,7 +8,7 @@ one teaches you all of them.
 This `bench/` folder is the **only** thing that runs on the bench PC — and it
 gets there via **bench-central**, not by hand: stations install and update
 from the release pinned there (see "Station setup" below). The rest of
-`techops-tools/` (cluster scripts, GIS tools, etc.) is not used here.
+`techops-tools/` is not used here.
 
 ## Station setup (new bench PC)
 
