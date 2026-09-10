@@ -1363,6 +1363,19 @@ class TeltonikaClient:
         self.fw_version: str = ""  # version actually running after an upgrade
         # Extra SSH passwords to try (used to self-heal a half-changed device
         # where root already has the new password but admin/REST does not).
+        #
+        # Keep this list short. Every entry that misses is a failed login the
+        # device counts, and ip_blockd — on by default, max_attempt_count=10,
+        # counting SSH and WebUI together — blocks the source IP once the count
+        # is reached. A worst-case run spends two of those, one REST and one
+        # SSH, so there is headroom for the self-heal but not for a third or
+        # fourth guess per transport.
+        #
+        # 07.24.2's new "PAM account lockout" is a different mechanism and does
+        # not apply to us: PAM is an optional package, and a stock 07.24.3
+        # OTD500 has no /etc/pam.d, no libpam and no pam entry in the opkg
+        # database (checked on the bench, TEC-861). ip_blockd remains the only
+        # lockout in play, and it is unchanged since 7.07.
         self._ssh_alt_passwords: list[str] = []
         # Read-only mode (TEC-348). Off by default: a configure pipeline is the
         # normal case, and a flag that had to be turned OFF to provision would
