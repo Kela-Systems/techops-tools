@@ -47,10 +47,11 @@
 
   "firmware": {
     "_comment": "mode = fota (device pulls latest-stable from Teltonika — needs WAN internet), local (upload a pinned .bin from this machine), rms (defer — registered device upgrades itself on first RMS connect), or none. keep_settings must stay true: a settings wipe would reset a moved device back to 192.168.1.1 mid-run.",
+    "_comment_standard": "The fleet standard is RUTM_R_00.07.24.3 (TEC-861) — Teltonika's current Stable, published MD5 625873bfed7e04fcef3f343fc8e8c3f9. Pin it rather than tracking 'Latest': the RUTM family already ships 07.25.x, which is ahead of what the bench has validated. Set expected_version to match the .bin — it is verified after flashing, and a device already on that version skips the re-flash on a retry.",
     "mode": "fota",
-    "bin_path": "./firmware/RUTM08_latest-stable.bin",
+    "bin_path": "./firmware/RUTM_R_00.07.24.3_WEBUI.bin",
     "keep_settings": true,
-    "expected_version": ""
+    "expected_version": "RUTM_R_00.07.24.3"
   },
 
   "rms": {

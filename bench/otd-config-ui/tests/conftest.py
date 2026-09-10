@@ -15,9 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from bench_core import VERIFIED_SIM_SWITCH_FW  # noqa: E402
 
-# The firmware the SIM-switch UCI options were verified against, so a run does
-# not trip the unverified-firmware warning that no test here is about.
-FW_VERIFIED = f"OTD5_R_00.{VERIFIED_SIM_SWITCH_FW}"
+# A firmware the SIM-switch UCI options were verified against, so a run does
+# not trip the unverified-firmware warning that no test here is about. The
+# newest one, so the harness stands in for a device on the current standard.
+FW_VERIFIED = f"OTD5_R_00.{VERIFIED_SIM_SWITCH_FW[-1]}"
 
 
 class _StubClient:

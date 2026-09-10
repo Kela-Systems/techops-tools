@@ -251,7 +251,19 @@ UCI_TS_ENABLED = "tailscale.settings.enabled"
 # OTD5_R_00.07.22.3 (`uci export sim_switch` / `uci export quota_limit`), and
 # the policy was validated on that device. configure_sim_switch() therefore
 # warns when it meets a different firmware instead of trusting the names.
-VERIFIED_SIM_SWITCH_FW = "07.22.3"
+#
+# A SET, not a single version, because the guard runs on the firmware the
+# device ARRIVES on (configure_sim_switch is called before the upgrade step) and
+# devices still arrive on both: 07.22.3 is the outgoing standard, 07.24.3 the
+# incoming one (TEC-861). 07.24.3 earned its place by field validation on
+# 2026-08-31 (kela-fob-18-otd), where all 19 options came back byte-identical
+# after a keep-settings upgrade — no UCI renames across the jump.
+#
+# Names surviving is NOT behaviour surviving: 07.24 also carries "fixed SIM
+# switch 'On data connection fail' rule triggering unexpectedly when no SIM card
+# is inserted", which is this feature in the no-SIM state the bench provisions
+# in. Adding a version here means its option names are verified, nothing more.
+VERIFIED_SIM_SWITCH_FW = ("07.22.3", "07.24.3")
 SIM_SWITCH_PACKAGE = "sim_switch"
 # The physical SIM slots we provision. Slot 3 is the eSIM: it has a section in
 # the config too, which we keep explicitly disabled.
@@ -947,6 +959,20 @@ LOCK=/tmp/kela-quota-sync.lock
 mkdir "$LOCK" 2>/dev/null || exit 0
 trap 'rmdir "$LOCK"' EXIT
 
+# Re-enable our own boot hook if it went missing. A keep-settings upgrade
+# restores the FILES named in /etc/sysupgrade.conf but regenerates /etc/rc.d
+# from scratch, so the init script survives while its enable-state does not
+# (observed on 07.24.3: TEC-861). Nothing on the device reports that — the
+# unit just silently stops running us at boot. Cron still ticks every 10
+# minutes, so this is the one place that gets a chance to notice and repair it.
+if [ -x """ + QUOTA_SYNC_INIT_PATH + """ ] && [ ! -e """ + QUOTA_SYNC_RC_LINK + """ ]; then
+    if """ + QUOTA_SYNC_INIT_PATH + """ enable >/dev/null 2>&1; then
+        log "boot hook re-enabled (""" + QUOTA_SYNC_RC_LINK + """ was missing)"
+    else
+        log "boot hook missing and could not be re-enabled"
+    fi
+fi
+
 changed=0
 detected=''
 
@@ -1337,6 +1363,19 @@ class TeltonikaClient:
         self.fw_version: str = ""  # version actually running after an upgrade
         # Extra SSH passwords to try (used to self-heal a half-changed device
         # where root already has the new password but admin/REST does not).
+        #
+        # Keep this list short. Every entry that misses is a failed login the
+        # device counts, and ip_blockd — on by default, max_attempt_count=10,
+        # counting SSH and WebUI together — blocks the source IP once the count
+        # is reached. A worst-case run spends two of those, one REST and one
+        # SSH, so there is headroom for the self-heal but not for a third or
+        # fourth guess per transport.
+        #
+        # 07.24.2's new "PAM account lockout" is a different mechanism and does
+        # not apply to us: PAM is an optional package, and a stock 07.24.3
+        # OTD500 has no /etc/pam.d, no libpam and no pam entry in the opkg
+        # database (checked on the bench, TEC-861). ip_blockd remains the only
+        # lockout in play, and it is unchanged since 7.07.
         self._ssh_alt_passwords: list[str] = []
         # Read-only mode (TEC-348). Off by default: a configure pipeline is the
         # normal case, and a flag that had to be turned OFF to provision would
@@ -1636,7 +1675,10 @@ class TeltonikaClient:
     def set_admin_password(self, new_password: str) -> None:
         """Change the admin password from the per-device label password to the
         shared default. Idempotent: if the device already accepts new_password we
-        skip. Sets it for the WebUI/REST user (admin) and root (SSH)."""
+        skip. Sets it for the WebUI/REST user (admin) and root (SSH).
+
+        Raises SystemExit when the WebUI/REST half is refused, rather than
+        leaving the device on two different passwords."""
         if self.password == new_password:
             log.info("Password already set to the shared default; skipping.")
             return
@@ -1651,26 +1693,37 @@ class TeltonikaClient:
         # new password) still heals instead of erroring.
         self._ssh_alt_passwords = [new_password]
 
-        # 1) SSH user (root) via chpasswd — guarantees root ends on the new pw.
-        # shlex.quote: a password containing a quote must not break the shell
-        # (worst case is failing MID password change).
-        self.ssh_exec(f"echo {shlex.quote(f'{self.ssh_username}:{new_password}')} | chpasswd")
-
-        # 2) WebUI/REST user (admin) via the first-login endpoint. The API wants
+        # 1) WebUI/REST user (admin) via the first-login endpoint. The API wants
         #    password + password_confirm (and rejects current_password).
+        #    This runs BEFORE root's chpasswd below, and the order is load-
+        #    bearing: since OTD5 07.24 the endpoint refuses a new password that
+        #    matches the CURRENT system password ("Password is the same"), and
+        #    setting root first is precisely what makes it match. 07.22 had no
+        #    such validation, which is why the old order passed there.
         try:
             r = self.s.post(
                 f"{self.base}/system/actions/change_password_firstlogin",
                 json={"data": {"password": new_password, "password_confirm": new_password}},
                 timeout=self.timeout,
             )
-            if r.status_code in (200, 201):
-                log.info("WebUI/REST password changed via API.")
-            else:
-                log.warning("First-login password API returned HTTP %s: %s",
-                            r.status_code, r.text[:200])
         except requests.exceptions.RequestException as e:
-            log.warning("First-login password API call failed: %s", e)
+            raise SystemExit(f"Could not change the admin password — the "
+                             f"first-login password API call failed: {e}")
+        # Fatal rather than a warning: the REST/WebUI user still holds its old
+        # password, so the re-login at the end of this method cannot succeed and
+        # every later step would fail behind it. Stopping here also stops one
+        # step short of the half-changed device the warning used to produce.
+        if r.status_code not in (200, 201):
+            raise SystemExit(f"Could not change the admin password — the "
+                             f"first-login password API returned HTTP "
+                             f"{r.status_code}: {r.text[:200]}")
+        log.info("WebUI/REST password changed via API.")
+
+        # 2) SSH user (root) via chpasswd — guarantees root ends on the new pw
+        # too, on firmware where it is a separate credential from admin's.
+        # shlex.quote: a password containing a quote must not break the shell
+        # (worst case is failing MID password change).
+        self.ssh_exec(f"echo {shlex.quote(f'{self.ssh_username}:{new_password}')} | chpasswd")
 
         # Switch both transports to the new password.
         self.password = new_password
@@ -3052,15 +3105,16 @@ class TeltonikaClient:
         return from_simcard or DEFAULT_MODEM_ID
 
     def _warn_if_sim_switch_fw_unverified(self) -> None:
-        """The sim_switch option names are undocumented and were verified on one
-        firmware. Say so loudly on any other one — but don't fail: a warning that
-        the map may have drifted is useful, refusing to provision is not."""
+        """The sim_switch option names are undocumented and were verified on a
+        known set of firmware. Say so loudly on any other one — but don't fail: a
+        warning that the map may have drifted is useful, refusing to provision is
+        not."""
         fw = self.ssh_exec("cat /etc/version 2>/dev/null", check=False).strip()
-        if fw_carries_version(fw, VERIFIED_SIM_SWITCH_FW):
+        if any(fw_carries_version(fw, v) for v in VERIFIED_SIM_SWITCH_FW):
             return
         log.warning("sim_switch UCI names verified on %s — this device reports %s. "
                     "Re-verify with `uci export sim_switch` on this firmware.",
-                    VERIFIED_SIM_SWITCH_FW, fw or "no version")
+                    " / ".join(VERIFIED_SIM_SWITCH_FW), fw or "no version")
 
     def configure_sim_switch(self, cfg: dict) -> None:
         """Provision the RutOS `sim_switch` service: sticky, symmetric failover
@@ -3515,12 +3569,20 @@ class TeltonikaClient:
                               for o in self.SIM_SWITCH_VERIFIED_OPTIONS)
             add(f"SIM switch slot {slot}", expected, actual, actual == expected)
 
+        # Three things, not two. `boot-hook` is the init SCRIPT existing;
+        # `enabled` is the /etc/rc.d symlink that actually makes boot run it,
+        # and those come apart in exactly the case this row exists to catch — a
+        # keep-settings upgrade restores the file and regenerates the symlink
+        # away (TEC-861). Probing only the file reported a green boot hook on a
+        # device that had stopped running the script at boot entirely.
         installed = self.ssh_exec(
             f"[ -x {QUOTA_SYNC_PATH} ] && echo script; "
-            f"[ -x {QUOTA_SYNC_INIT_PATH} ] && echo boot-hook", check=False).split()
-        add("quota sync script", "script + boot-hook",
+            f"[ -x {QUOTA_SYNC_INIT_PATH} ] && echo boot-hook; "
+            f"[ -e {QUOTA_SYNC_RC_LINK} ] && echo enabled", check=False).split()
+        wanted = ("script", "boot-hook", "enabled")
+        add("quota sync script", " + ".join(wanted),
             " + ".join(installed) or "(not installed)",
-            "script" in installed and "boot-hook" in installed)
+            all(w in installed for w in wanted))
 
         cron = self.ssh_exec(f"grep -F {QUOTA_SYNC_NAME} {CRONTAB_PATH} 2>/dev/null",
                              check=False).strip()
