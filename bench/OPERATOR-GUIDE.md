@@ -270,9 +270,8 @@ The PoE switch that powers the radars, the camera and the speaker at a site. **N
 nothing to scan** — the factory password is worked out from the switch's own MAC address. Plug it
 in, wait for it to be detected, and click **Configure**.
 
-The tool brings the firmware up to the bench standard if needed, sets the shared password, applies
-the **PoE plan** shown on the page (ports 1–4 radars at 45 W, port 8 speaker at 20 W), names every
-port, sets the time server and timezone, turns telnet off, and
+The tool brings the firmware up to the bench standard if needed, sets the shared password, names
+every port, sets the time server and timezone, turns telnet off, and
 **moves the switch to** `192.168.88.3` **as the last step**.
 
 > ⚠️ **One switch at a time.** Every switch ends up on the **same** final address, so finish and
@@ -282,6 +281,10 @@ port, sets the time server and timezone, turns telnet off, and
 > server — it accepts the connection and then refuses to open a session — and **cannot be
 > configured at all** until it is flashed. The *Skip the firmware step* toggle is only for a switch
 > you already know is at or above the version the page names.
+
+> **The bench does not set PoE.** The switch works out how much power each device needs on its
+> own, so there is no power column to check and nothing to get wrong. The page lists the ports so
+> you know what plugs in where.
 
 > **Which socket does what.** 1–4 the radars, **8** the speaker, **9** the camera and **10** the
 > management drop — 9 and 10 are the switch's two non-PoE copper sockets, and neither of those

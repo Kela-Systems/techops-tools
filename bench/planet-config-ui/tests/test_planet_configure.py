@@ -27,6 +27,7 @@ OLDER = "1.305b251017"                       # the build with the broken SSH ser
 NEWER = "1.305b261120"
 
 SITE_POE = {
+    "managed": True,           # the plan under test IS the managed one
     "budget_w": 240,
     "limit_mode": "allocation",
     "ports": {
@@ -122,7 +123,7 @@ def test_ports_without_a_description_are_skipped():
 def test_over_allocation_is_warned_about():
     """In allocation mode every enabled port's limit is reserved, so a plan
     over budget means a port is denied power — at the site, not on the bench."""
-    plan = {"budget_w": 100,
+    plan = {"managed": True, "budget_w": 100,
             "ports": {"1": {"enabled": True, "limit_w": 45},
                       "2": {"enabled": True, "limit_w": 45},
                       "3": {"enabled": True, "limit_w": 45}}}
@@ -132,14 +133,32 @@ def test_over_allocation_is_warned_about():
 
 def test_a_budget_over_240_on_one_supply_is_warned_about():
     """360 W needs both power inputs; on one supply it browns out under load."""
-    plan = {"budget_w": 360, "ports": {}}
+    plan = {"managed": True, "budget_w": 360, "ports": {}}
     assert any("one power input" in w
                for w in poe_budget_warnings(plan, {"dual_power": False}))
 
 
 def test_the_same_budget_with_both_supplies_is_fine():
-    assert poe_budget_warnings({"budget_w": 360, "ports": {}},
+    assert poe_budget_warnings({"managed": True, "budget_w": 360, "ports": {}},
                                {"dual_power": True}) == []
+
+
+def test_nothing_is_warned_about_when_poe_is_left_to_the_switch():
+    """No limit is reserved, so no plan can over-allocate. The warning would be
+    about a budget the bench never applied."""
+    plan = {"budget_w": 100,
+            "ports": {"1": {"enabled": True, "limit_w": 45},
+                      "2": {"enabled": True, "limit_w": 45},
+                      "3": {"enabled": True, "limit_w": 45}}}
+    assert poe_budget_warnings(plan, {"dual_power": False}) == []
+
+
+def test_the_poe_plan_is_kept_but_not_applied():
+    """Naor's call: the switch negotiates power itself. The plan stays in the
+    config and `poe_cmds` still builds it — one flag turns the step back on."""
+    assert mod.poe_is_managed({}) is False
+    assert mod.poe_is_managed({"managed": True}) is True
+    assert "poe port enable 1" in poe_cmds(SITE_POE)      # still builds
 
 
 def test_the_site_plan_fits_its_budget():
@@ -609,3 +628,49 @@ def test_unknown_command_is_treated_as_a_rejection():
     """This firmware answers `Unknown command` where others say `Invalid` — a
     check that silently passes is worse than no check."""
     assert mod.CLI_REJECT.search("show interface description\nUnknown command")
+
+
+# --- PoE left to the switch (2026-09-14) --------------------------------------
+
+def _verifying_client(poe_seen: list):
+    """A PlanetClient whose CLI answers enough of `verify_configuration` to see
+    which rows it emits, and records whether `show poe` was asked for at all."""
+
+    class Client(mod.PlanetClient):
+        def cli(self, command, **kwargs):
+            if command == "show poe":
+                poe_seen.append(command)
+                return ""
+            if command == "show sntp":
+                return "SNTP Server address: 192.168.88.10"
+            if command == "show clock":
+                return "Time source is SNTP\n  (UTC+3) Jerusalem"
+            return ""
+
+        def show_descriptions(self):
+            return {}
+
+    return Client("192.168.88.3")
+
+
+def test_verify_asks_the_switch_nothing_about_poe_when_it_is_unmanaged():
+    """Not merely "the rows pass" — the switch is not asked. A row comparing a
+    limit nobody applied is a red check on a correctly provisioned switch."""
+    seen = []
+    checks = _verifying_client(seen).verify_configuration(
+        settings={"poe": dict(SITE_POE, managed=False),
+                  "ntp_server": "192.168.88.10", "timezone_offset": 3,
+                  "disable_telnet": False})
+    assert seen == []
+    assert not [c for c in checks if c["item"].startswith("poe-port")]
+    # The port names are not PoE and are still checked.
+    assert [c for c in checks if c["item"].startswith("port-name")]
+
+
+def test_verify_checks_the_ports_again_the_moment_poe_is_re_enabled():
+    seen = []
+    checks = _verifying_client(seen).verify_configuration(
+        settings={"poe": SITE_POE, "ntp_server": "192.168.88.10",
+                  "timezone_offset": 3, "disable_telnet": False})
+    assert seen == ["show poe"]
+    assert [c for c in checks if c["item"].startswith("poe-port")]

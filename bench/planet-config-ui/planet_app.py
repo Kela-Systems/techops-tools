@@ -4,9 +4,10 @@
 Workflow (one switch at a time, nothing to type):
   1. Plug an IGS-4215 into the laptop (it boots at 192.168.0.100).
   2. The UI detects it over HTTP and reads its MAC.
-  3. Press Configure -> full pipeline: firmware floor -> password -> PoE plan
-     -> port names -> NTP 192.168.88.10 -> timezone -> verify -> disable telnet
-     -> move the management IP to 192.168.88.3.
+  3. Press Configure -> full pipeline: firmware floor -> password -> port
+     names -> NTP 192.168.88.10 -> timezone -> verify -> disable telnet
+     -> move the management IP to 192.168.88.3. (PoE is left to the switch
+     since 2026-09-14 — see `planet_configure.poe_is_managed`.)
   4. Unplug it and plug in the next one.
 
 Three differences from the Teltonika tools this UI sits beside:
@@ -66,6 +67,7 @@ from planet_configure import (
     SINGLE_SUPPLY_BUDGET_W,
     PlanetClient,
     configure_planet,
+    poe_is_managed,
     ports_of,
     verify_planet,
 )
@@ -123,6 +125,7 @@ class PlanetConfigurator(BenchConfigurator):
             "min_firmware": self._min_firmware(),
             "firmware_enabled": self._firmware_enabled(),
             "firmware_found": self._firmware_image_found(),
+            "poe_managed": self._poe_managed(),
             "poe_plan": self._poe_plan(),
             "poe_budget_w": self._poe_budget(),
             "poe_allocated_w": self._poe_allocated(),
@@ -190,6 +193,12 @@ class PlanetConfigurator(BenchConfigurator):
                    for spec in ports_of(self._poe_cfg()).values()
                    if spec.get("enabled"))
 
+    def _poe_managed(self) -> bool:
+        """Whether the bench sets PoE at all — off since 2026-09-14. The plan
+        below is still published, because it is what the ports are FOR even
+        when the switch decides their power itself."""
+        return poe_is_managed(self._poe_cfg())
+
     def _poe_plan(self) -> list[dict]:
         """The per-port plan, flattened for the page."""
         return [{"port": port,
@@ -209,11 +218,15 @@ class PlanetConfigurator(BenchConfigurator):
         silkscreened on the metal.
         """
         rows = []
+        managed = self._poe_managed()
         for port, spec in sorted(ports_of(self._poe_cfg()).items()):
             text = (spec.get("short") or spec.get("description") or "").strip()
             if not text:
                 continue
-            if spec.get("enabled"):
+            # Only when the bench actually applies that limit. With PoE left
+            # to the switch, a label reading "RADAR 1 45W" would be claiming a
+            # cap nobody set.
+            if managed and spec.get("enabled"):
                 text += f" {float(spec.get('limit_w', 0)):g}W"
             rows.append([str(port), text])
         return rows
@@ -296,11 +309,16 @@ class PlanetConfigurator(BenchConfigurator):
                 "ip_mode": result.get("ip_mode") or MODE_FIXED,
                 "reached_at": result.get("reached_at", ""),
                 "firmware_note": result.get("firmware_note", ""),
-                # The power plan this switch left the bench with. Recorded
-                # because it is the site's power budget, and the next person to
-                # ask "why did a radar drop?" needs it without a bench log.
-                "poe_budget_w": self._poe_budget(),
-                "poe_allocated_w": self._poe_allocated(),
+                # What the bench did about power. The budget and the
+                # allocation are recorded only when the bench actually applied
+                # them — on a switch left to negotiate its own, "200 W
+                # allocated" would be a claim about a configuration nobody
+                # wrote, and the next person asking "why did a radar drop?"
+                # would chase it.
+                "poe_managed": self._poe_managed(),
+                **({"poe_budget_w": self._poe_budget(),
+                    "poe_allocated_w": self._poe_allocated()}
+                   if self._poe_managed() else {}),
                 # What the printed PORT MAP label says. Recorded with the run
                 # so a re-print months later cannot drift from what the
                 # installer actually stuck on the switch.

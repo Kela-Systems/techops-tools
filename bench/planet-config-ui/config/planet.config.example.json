@@ -33,8 +33,10 @@
     "reboot_wait": 300
   },
 
+  "_comment_poe_managed": "OFF since 2026-09-14 (Naor): the switch negotiates power per port on its own, so the bench sets no limits, no budget and no priorities, and verify checks none. Nothing below was deleted. TO RE-ENABLE: set managed to true — the run gains its poe step, verify gains its poe-port-N rows, the page shows the limits and the budget line, and the printed port map names the wattage per socket again. Check limit_w and budget_w still match the site first; they are the values as of the day it was turned off.",
   "_comment_poe": "The site's power plan. limit_w is in WATTS here and converted to the switch's deci-watts once, in code — do not pre-multiply. Limits are a CEILING, not a draw: an AR-300 pulls ~35 W and is capped at 45 W because 802.3bt Type 3 Class 5 sources 45 W to guarantee 40 W at the far end of 100 m of copper, and a 35 W cap browns the radar out on a long run or a cold start. In 'allocation' mode each enabled port's limit is reserved against budget_w, so 4x45 + 20 = 200 W against 240 W. budget_w may only exceed 240 if BOTH power inputs are wired (the switch reports PWR1/PWR2, and the tool warns when they disagree). Priorities decide who survives a shortfall: radars critical, speaker high. 'short' is what the printed PORT MAP label calls the socket (the wattage is appended from limit_w, so it is never written twice); 'description' is the longer name written into the switch itself.",
   "poe": {
+    "managed": false,
     "budget_w": 240,
     "limit_mode": "allocation",
     "ports": {

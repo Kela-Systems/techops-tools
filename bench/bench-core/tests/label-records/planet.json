@@ -15,8 +15,18 @@
   "verified": true,
   "verify_detail": null,
   "verification": [
-    {"item": "lan-ip", "expected": "192.168.88.3", "actual": "192.168.88.3", "ok": true},
-    {"item": "poe-port-1", "expected": "on @ 45.0W", "actual": "on @ 45.0W", "ok": true}
+    {
+      "item": "lan-ip",
+      "expected": "192.168.88.3",
+      "actual": "192.168.88.3",
+      "ok": true
+    },
+    {
+      "item": "port-name-1",
+      "expected": "Radar-AR300-1",
+      "actual": "Radar-AR300-1",
+      "ok": true
+    }
   ],
   "warnings": [],
   "steps": [],
@@ -26,21 +36,50 @@
     "ip_mode": "fixed",
     "reached_at": "192.168.0.100",
     "firmware_note": "arrived on 1.305b260324, at or above the configured floor",
-    "poe_budget_w": 240,
-    "poe_allocated_w": 200,
     "dual_power": false,
     "port_map": [
-      ["1", "RADAR 1 45W"],
-      ["2", "RADAR 2 45W"],
-      ["3", "RADAR 3 45W"],
-      ["4", "RADAR 4 45W"],
-      ["5", "SPARE"],
-      ["6", "SPARE"],
-      ["7", "SPARE"],
-      ["8", "SPEAKER 20W"],
-      ["9", "CAMERA"],
-      ["10", "MGMT"]
-    ]
+      [
+        "1",
+        "RADAR 1"
+      ],
+      [
+        "2",
+        "RADAR 2"
+      ],
+      [
+        "3",
+        "RADAR 3"
+      ],
+      [
+        "4",
+        "RADAR 4"
+      ],
+      [
+        "5",
+        "SPARE"
+      ],
+      [
+        "6",
+        "SPARE"
+      ],
+      [
+        "7",
+        "SPARE"
+      ],
+      [
+        "8",
+        "SPEAKER"
+      ],
+      [
+        "9",
+        "CAMERA"
+      ],
+      [
+        "10",
+        "MGMT"
+      ]
+    ],
+    "poe_managed": false
   },
   "operator": "Avi",
   "station_id": "bench-01",

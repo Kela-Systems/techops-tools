@@ -116,7 +116,20 @@ into `firmware/` (gitignored) and set `firmware.bix_path`. It is only needed for
 a switch that arrives below the floor, so a missing image warns on the page
 rather than blocking Configure.
 
-## The PoE plan
+## The port plan
+
+> **PoE is left to the switch (since 2026-09-14, Naor's call.)** The IGS-4215
+> negotiates power per port on its own, so the bench sets **no limits, no
+> budget and no priorities**, `verify` checks none, and the printed port map
+> names no wattage. Nothing was deleted: the plan below is still in the config,
+> `poe_cmds` still builds it, and the checks that read it still work.
+>
+> **To re-enable:** set `poe.managed` to `true` in `planet.config.json`. That is
+> the whole switch — the run gains its `poe` step, `verify` gains its
+> `poe-port-N` rows, the page shows the limits and the budget line again, and
+> the label names the wattage per socket. Check `limit_w` and `budget_w` still
+> match the site first; they are the values as of the day it was turned off.
+> The rest of this section describes what happens when it is on.
 
 Ports are configured in **watts** in `planet.config.json`. The switch's CLI
 takes **deci-watts** (`poe power-limit 450` is 45.0 W) and the conversion
@@ -165,7 +178,7 @@ reporting only one live power input — **360 W requires both PWR1 and PWR2**, a
 a site planned at 360 W on one supply browns out under load.
 
 **Priorities** decide who survives a shortfall: radars `critical`, speaker
-`high`.
+`high`. Like the limits, they are applied only with `poe.managed` on.
 
 ## Where the switch ends up
 

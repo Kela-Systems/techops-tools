@@ -178,15 +178,26 @@ def test_the_run_label_falls_back_to_the_mac(tool):
     assert tool.hostname_for({"mac": ""}) == "planet-unknown"
 
 
-def test_the_printed_port_map_names_every_socket_with_its_power(tool):
-    """What goes on the switch itself. The wattage comes from limit_w rather
-    than from the text, so the label and the switch cannot disagree."""
+def test_the_printed_port_map_names_every_socket(tool):
+    """What goes on the switch itself. With PoE left to the switch there is no
+    wattage to print: a label reading "RADAR 1 45W" would claim a cap the bench
+    never applied."""
+    rows = dict(tool._port_map_rows())
+    assert rows["1"] == "RADAR 1"
+    assert rows["8"] == "SPEAKER"
+    assert rows["5"] == "SPARE"
+    assert rows["9"] == "CAMERA" and rows["10"] == "MGMT"
+    assert len(rows) == 10
+
+
+def test_the_wattage_comes_back_on_the_label_when_the_bench_sets_poe(tool):
+    """The other half of the switch: re-enabling PoE re-labels the sockets with
+    the limits actually applied, from limit_w rather than from the text."""
+    tool.cfg["poe"]["managed"] = True
     rows = dict(tool._port_map_rows())
     assert rows["1"] == "RADAR 1 45W"
     assert rows["8"] == "SPEAKER 20W"
-    assert rows["5"] == "SPARE"          # no wattage on a port with PoE off
-    assert rows["9"] == "CAMERA" and rows["10"] == "MGMT"
-    assert len(rows) == 10
+    assert rows["5"] == "SPARE"          # a port with PoE off names no wattage
 
 
 def test_the_port_map_reaches_the_run_record(tool):
@@ -195,7 +206,7 @@ def test_the_port_map_reaches_the_run_record(tool):
     entry = tool.build_entry(
         {"identity": {"mac": "a8:f7:e0:f6:c4:3a"}, "ok": True, "error": None,
          "steps": [], "log": "", "verification": []}, {}, 30)
-    assert entry["device"]["port_map"][0] == ["1", "RADAR 1 45W"]
+    assert entry["device"]["port_map"][0] == ["1", "RADAR 1"]
 
 
 # --- the plan is stated in two places; they have to agree --------------------
@@ -239,3 +250,14 @@ def test_the_readme_plan_matches_the_shipped_config():
         assert row["poe"] == (port <= PSE_PORT_COUNT), f"gi{port}: PoE hardware"
         if spec["enabled"]:
             assert row["priority"] == spec["priority"], f"gi{port}: priority"
+
+
+def test_an_unapplied_power_budget_is_not_recorded_as_if_it_were(tool):
+    """With PoE left to the switch there is no allocation to record — a record
+    saying "200 W of 240 W" would describe a configuration nobody wrote."""
+    entry = tool.build_entry(
+        {"identity": {"mac": "a8:f7:e0:f6:c4:3a"}, "ok": True, "error": None,
+         "steps": [], "log": "", "verification": []}, {}, 30)
+    assert entry["device"]["poe_managed"] is False
+    assert "poe_allocated_w" not in entry["device"]
+    assert "poe_budget_w" not in entry["device"]

@@ -71,7 +71,7 @@
        pressed, because the per-port plan IS the site's power plan. -->
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-      <h3 style="margin:0;">PoE plan</h3>
+      <h3 style="margin:0;" id="poeTitle">Port plan</h3>
       <span id="poeBudget" class="pill"></span>
     </div>
     <table>
@@ -166,16 +166,25 @@ function renderPoe(s){
     $('poeBudget').textContent = '';
     return;
   }
+  // With PoE left to the switch the plan is still what each socket is FOR —
+  // the power columns are just no longer the bench's to state.
+  const managed = s.poe_managed !== false;
+  $('poeTitle').textContent = managed ? 'PoE plan' : 'Port plan';
   // gi9-12 have no PoE hardware at all — saying "off" would read as a choice
   // someone could reverse, which is why they get their own badge.
   body.innerHTML = plan.map(p=>`<tr>
     <td class="mono">gi${p.port}</td>
     <td>${p.poe === false ? '<span class="badge">no PoE</span>'
+       : !managed ? '<span class="badge">auto</span>'
        : p.enabled ? '<span class="badge badge-ok">on</span>'
                    : '<span class="badge">off</span>'}</td>
-    <td class="mono">${p.enabled ? p.limit_w.toFixed(1)+' W' : '—'}</td>
-    <td>${p.enabled ? esc(p.priority) : '—'}</td>
+    <td class="mono">${managed && p.enabled ? p.limit_w.toFixed(1)+' W' : '—'}</td>
+    <td>${managed && p.enabled ? esc(p.priority) : '—'}</td>
     <td class="mono">${esc(p.description||'—')}</td></tr>`).join('');
+  if (!managed){
+    $('poeBudget').textContent = 'PoE left to the switch';
+    return;
+  }
   // Over-allocation is the failure that shows up as "a radar randomly dropped"
   // weeks later, so it is called out here rather than only in the run log.
   const alloc = s.poe_allocated_w || 0, budget = s.poe_budget_w || 0;
@@ -240,7 +249,9 @@ function render(s){
     : (s.next_ip || '');
   $('namePreview').innerHTML =
     `<b>Configure</b> will bring the switch to <b>${esc(s.min_firmware||'—')}</b> if needed, `
-    + `set the shared password, apply the PoE plan above, name the ports, set NTP `
+    + `set the shared password, `
+    + (s.poe_managed === false ? '' : 'apply the PoE plan above, ')
+    + `name the ports, set NTP `
     + `<b>${esc(s.ntp_server||'—')}</b> and timezone <b>${esc(s.timezone||'—')}</b>, `
     + (s.disable_telnet ? 'disable telnet, ' : '')
     + `then move the switch to <b class="mono">${esc(willGet||'—')}</b> as the last step. `

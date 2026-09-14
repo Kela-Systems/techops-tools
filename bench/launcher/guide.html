@@ -249,9 +249,7 @@
      type and nothing to scan</b> — the factory password is worked out from the switch's own MAC
      address. Plug it in, wait for it to be detected, and click <b>Configure</b>.</p>
   <p>The tool brings the firmware up to the bench standard if needed, sets the shared password,
-     applies the <b>PoE plan</b> shown on the page (ports 1&ndash;4 radars at 45&nbsp;W,
-     port 8 speaker at 20&nbsp;W), names every port, sets the time
-     server and timezone, turns telnet off, and <b>moves the switch to
+     names every port, sets the time server and timezone, turns telnet off, and <b>moves the switch to
      <code>192.168.88.3</code> as the last step</b>.</p>
   <div class="note warn"><b>One switch at a time.</b> Every switch ends up on the <b>same</b>
     final address (<code>192.168.88.3</code>), so finish and unplug one before connecting the next.</div>
@@ -259,6 +257,9 @@
     has a broken SSH server — it accepts the connection and then refuses to open a session — and
     <b>cannot be configured at all</b> until it is flashed. The <i>Skip the firmware step</i>
     toggle is only for a switch you already know is at or above the version the page names.</div>
+  <div class="note"><b>The bench does not set PoE.</b> The switch works out how much power each
+    device needs on its own, so there is no power column to check and nothing to get wrong. The page
+    lists the ports so you know what plugs in where.</div>
   <div class="note"><b>Which socket does what.</b> 1&ndash;4 the radars, <b>8</b> the speaker,
     <b>9</b> the camera and <b>10</b> the management drop — 9 and 10 are the switch's two non-PoE
     copper sockets, and neither of those devices takes power from the switch. 11/12 are the SFP

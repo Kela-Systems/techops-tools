@@ -7,9 +7,13 @@ and a camera hang off it, so its per-port power plan IS the site's power plan.
 Pipeline for one switch:
 
   web login -> identity -> firmware floor (HTTP, dual-partition) -> SSH login
-    -> password -> PoE plan -> port descriptions -> SNTP -> timezone -> verify
+    -> password -> port descriptions -> SNTP -> timezone -> verify
     -> disable telnet -> move the management IP to 192.168.88.3 (LAST — drops
        the session; confirmed by reaching the switch on the new address)
+
+PoE is deliberately NOT in that list: the switch negotiates power per port
+itself, and the bench has set none since 2026-09-14. The plan and the code that
+applies it are intact behind one config flag — see `poe_is_managed`.
 
 Five things separate this from the Teltonika tools next door:
 
@@ -53,7 +57,8 @@ from the device rather than from PLANET's Command Guide:
 
 * `poe power-limit` takes **deci-watts**: `450` is 45.0 W. The Command Guide's
   own example (`poe power-limit 95 all`) reads as watts and is wrong. Ports are
-  configured here in watts and converted once, in `poe_cmds`.
+  configured here in watts and converted once, in `poe_cmds`. (Dormant while
+  PoE is left to the switch, and the trap that is waiting if it is re-enabled.)
 * `clock timezone <ACRONYM> <hours>` takes an acronym of **1-4 characters**.
   A longer one is accepted silently and does nothing, leaving the switch on its
   factory +8.
@@ -683,19 +688,24 @@ class PlanetClient:
             found_tz.group(1) if found_tz else "unknown", want_tz in clock)
 
         poe_cfg = settings.get("poe", {}) or {}
-        live = self.show_poe()
-        for port, want in sorted(pse_ports(poe_cfg).items()):
-            got = live.get(port)
-            if not got:
-                add(f"poe-port-{port}", "configured", "not reported", False)
-                continue
-            want_on = bool(want.get("enabled"))
-            ok = got["enabled"] == want_on
-            if want_on:
-                ok = ok and got["limit_w"] == float(want.get("limit_w", 0))
-            expected = "on @ %.1fW" % float(want.get("limit_w", 0)) if want_on else "off"
-            add(f"poe-port-{port}", expected,
-                f"{'on' if got['enabled'] else 'off'} @ {got['limit_w']:.1f}W", ok)
+        # Only checked when the bench sets PoE. Left to the switch, these rows
+        # would hold it to limits nobody applied — see `poe_is_managed`.
+        if poe_is_managed(poe_cfg):
+            live = self.show_poe()
+            for port, want in sorted(pse_ports(poe_cfg).items()):
+                got = live.get(port)
+                if not got:
+                    add(f"poe-port-{port}", "configured", "not reported", False)
+                    continue
+                want_on = bool(want.get("enabled"))
+                ok = got["enabled"] == want_on
+                if want_on:
+                    ok = ok and got["limit_w"] == float(want.get("limit_w", 0))
+                expected = ("on @ %.1fW" % float(want.get("limit_w", 0))
+                            if want_on else "off")
+                add(f"poe-port-{port}", expected,
+                    f"{'on' if got['enabled'] else 'off'} @ {got['limit_w']:.1f}W",
+                    ok)
 
         live_descriptions = self.show_descriptions()
         for port, want in sorted(ports_of(poe_cfg).items()):
@@ -827,6 +837,25 @@ def pse_ports(poe_cfg: dict) -> dict:
             if port <= PSE_PORT_COUNT}
 
 
+def poe_is_managed(poe_cfg: dict) -> bool:
+    """Whether the bench sets this switch's PoE at all.
+
+    OFF since 2026-09-14, at Naor's call: the IGS-4215 negotiates power per
+    port on its own (802.3bt classification), and a site has not needed the
+    bench to hold its hand. Nothing about the plan was deleted — `poe_cmds`,
+    the budget warnings, the per-port limits in the config and the checks that
+    read them all still work.
+
+    TO RE-ENABLE: set `poe.managed` to true in planet.config.json. That is the
+    whole switch. The run gains its `poe` step back, `verify` gains its
+    `poe-port-N` rows, the page shows limits and the budget line again, and the
+    printed port map goes back to naming the wattage per socket. Check the
+    per-port `limit_w` and `budget_w` still match the site before you do —
+    they are the values as of the day this was turned off.
+    """
+    return bool(poe_cfg.get("managed", False))
+
+
 def poe_cmds(poe_cfg: dict) -> list[str]:
     """The PoE plan as CLI commands.
 
@@ -879,6 +908,8 @@ def poe_budget_warnings(poe_cfg: dict, identity: dict) -> list[str]:
     and 360 W is only real with both supplies wired.
     """
     warnings: list[str] = []
+    if not poe_is_managed(poe_cfg):
+        return warnings      # nothing is allocated, so nothing over-allocates
     budget = int(poe_cfg.get("budget_w", SINGLE_SUPPLY_BUDGET_W))
     allocated = sum(float(spec.get("limit_w", 0))
                     for spec in pse_ports(poe_cfg).values() if spec.get("enabled"))
@@ -1019,7 +1050,12 @@ def configure_planet(client: PlanetClient, *, initial_password: str,
     else:
         log.info("Password is already the shared one — nothing to change.")
 
-    _step("poe", lambda: client.configure(poe_cmds(poe_cfg)))
+    # See `poe_is_managed` for why this is off and how to turn it back on.
+    if poe_is_managed(poe_cfg):
+        _step("poe", lambda: client.configure(poe_cmds(poe_cfg)))
+    else:
+        log.info("PoE is left to the switch — the bench sets no limits, "
+                 "budget or priorities (poe.managed is false).")
     _step("port-names", lambda: client.configure(description_cmds(poe_cfg)))
     _step("ntp", lambda: client.configure(["clock source sntp",
                                            f"sntp host {ntp_server}"]))
