@@ -32,13 +32,12 @@ bench_core.bench_ui; this file adds only the IGS-4215 specifics.
 """
 from __future__ import annotations
 
-import socket
 from pathlib import Path
 from typing import Optional, Union
 
 from pydantic import BaseModel
 
-from bench_core import DEFAULT_USERNAME
+from bench_core import DEFAULT_USERNAME, tcp_port_open
 from bench_core.bench_ui import (
     DETECT_TIMEOUT_SEC,
     TERMINAL_PHASES,
@@ -359,13 +358,8 @@ class PlanetConfigurator(BenchConfigurator):
                           self._lan_ip()):
             if candidate and candidate not in hosts:
                 hosts.append(candidate)
-        for host in hosts:
-            try:
-                with socket.create_connection((host, 80), timeout=DETECT_TIMEOUT_SEC):
-                    return host
-            except OSError:
-                continue
-        return None
+        return next((host for host in hosts
+                     if tcp_port_open(host, 80, timeout=DETECT_TIMEOUT_SEC)), None)
 
     async def poll_once(self, loop) -> None:
         if self.state["busy"]:

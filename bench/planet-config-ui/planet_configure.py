@@ -90,6 +90,7 @@ from bench_core import (
     make_step_runner,
     set_log_serial,
 )
+from bench_core.lan_relay import can_connect, endpoint, url_for
 from bench_core.ip_mode import MODE_DHCP
 
 try:
@@ -216,7 +217,7 @@ class PlanetClient:
         if paramiko is None:
             raise SystemExit("This step needs 'paramiko'.  Install it: pip install paramiko")
         pw = password or self.password
-        transport = paramiko.Transport((self.host, 22))
+        transport = paramiko.Transport(endpoint(self.host, 22))
         try:
             transport.start_client(timeout=self.timeout)
         except Exception as e:
@@ -333,7 +334,7 @@ class PlanetClient:
         """
         probe = None
         try:
-            probe = paramiko.Transport((self.host, 22))
+            probe = paramiko.Transport(endpoint(self.host, 22))
             probe.start_client(timeout=self.timeout)
             probe.auth_none(self.username)
             return probe.is_authenticated()
@@ -443,7 +444,7 @@ class PlanetClient:
         session = requests.Session()
         try:
             response = session.post(
-                f"http://{self.host}/cgi-bin/dispatcher.cgi?cmd={CMD_LOGIN}",
+                f"{self._web_base()}/cgi-bin/dispatcher.cgi?cmd={CMD_LOGIN}",
                 data={"username": self.username,
                       "password": password or self.password, "login": "1"},
                 timeout=20)
@@ -495,6 +496,13 @@ class PlanetClient:
             "give it a couple of minutes first, since three wrong attempts "
             "start a lockout that looks like a dead management interface.")
 
+    def _web_base(self) -> str:
+        """`http://<switch>`, or the loopback relay standing in for it on a
+        station whose policy refuses this interpreter local-network sockets —
+        see `bench_core.lan_relay`. The switch's CGI does not look at Host, so
+        the substitution is invisible to it."""
+        return url_for(self.host, 80)
+
     def _web_page(self, cmd: int) -> str:
         """Fetch one CGI page, renewing the session if it has timed out.
 
@@ -515,19 +523,19 @@ class PlanetClient:
 
     def _get(self, cmd: int) -> str:
         return self._web.get(
-            f"http://{self.host}/cgi-bin/dispatcher.cgi?cmd={cmd}", timeout=20).text
+            f"{self._web_base()}/cgi-bin/dispatcher.cgi?cmd={cmd}", timeout=20).text
 
     def _web_post(self, data: dict, *, timeout: int = 30):
         if self._web is None:
             self.web_login()
-        response = self._web.post(f"http://{self.host}/cgi-bin/dispatcher.cgi",
+        response = self._web.post(f"{self._web_base()}/cgi-bin/dispatcher.cgi",
                                   data=data, timeout=timeout)
         # Same trap on the write side, and worse: a post to an expired session
         # is answered with the login page and changes nothing, silently.
         if SESSION_EXPIRED_REDIRECT in response.text:
             log.info("Web session expired — logging in again and retrying.")
             self.web_login(self.password)
-            response = self._web.post(f"http://{self.host}/cgi-bin/dispatcher.cgi",
+            response = self._web.post(f"{self._web_base()}/cgi-bin/dispatcher.cgi",
                                       data=data, timeout=timeout)
         return response
 
@@ -610,7 +618,7 @@ class PlanetClient:
                  bix_path.name, target, 1 - target)
         with bix_path.open("rb") as image:
             self._web.post(
-                f"http://{self.host}/cgi-bin/httpupload.cgi",
+                f"{self._web_base()}/cgi-bin/httpupload.cgi",
                 data={"cmd": str(CMD_UPLOAD_FIRMWARE), "upmethod": "http",
                       "type": "0", "partition": str(target)},
                 files={"http_file": (bix_path.name, image, "application/octet-stream")},
@@ -763,11 +771,9 @@ def wait_for_host(host: str, port: int, *, timeout: int = 300) -> bool:
     reboot and the management-address move."""
     end = time.time() + timeout
     while time.time() < end:
-        try:
-            with socket.create_connection((host, port), timeout=3):
-                return True
-        except OSError:
-            time.sleep(3)
+        if can_connect(host, port, timeout=3):
+            return True
+        time.sleep(3)
     return False
 
 

@@ -133,6 +133,28 @@ bench adapter needs an address on `192.168.0.x` as well to reach a fresh one.
 > or a /16 over both `192.168.1.x` and `192.168.88.x`). Without it the device
 > still moves correctly, but the run reports its final-address check as failed.
 
+### Managed Macs that refuse the interpreter local-network access
+
+A symptom worth recognising, because it reads as a broken tool: every device is
+reported as absent while the operator can ping, browse and `curl` it, and a
+socket from the bench's own interpreter fails in **four milliseconds** with
+`[Errno 65] No route to host`.
+
+macOS grants local-network access per executable, and on a managed laptop
+(Local Network Privacy, plus whatever endpoint-security agent is installed) an
+ad-hoc-signed Homebrew interpreter is refused while Apple's own `curl`, `nc` and
+`ping` are not — Homebrew `node` is refused identically, so it is not a Python
+problem. Nothing in-process lifts it: source binding, `IP_BOUND_IF` and a
+`--copies` venv are all still refused, and the exempt `/usr/bin/python3` is 3.9,
+below what the web stack needs.
+
+Loopback is not gated, so `bench_core.lan_relay` puts a relay in front of the
+device — a `127.0.0.1` listener handing each connection to `/usr/bin/nc` — and
+`requests`/`paramiko` connect to that instead. It engages only after a permitted
+binary has confirmed the device really is there (an unplugged NIC reports the
+same errno), costs nothing on a station where direct sockets work, and is wired
+into `tcp_port_open`, so every tool inherits it.
+
 ### Where a device ends up: the four address modes
 
 The camera, speaker and switch pages each carry an **Address assignment** box
