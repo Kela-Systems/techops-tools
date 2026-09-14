@@ -63,6 +63,15 @@ bench/otd-config-ui/firmware/
 bench/rutm-config-ui/config/rutm.config.json
 bench/rutm-config-ui/firmware/
 
+# Magos radar tool — real secrets/config. This rule was MISSING while every
+# other bench tool had one, so the operator-editable config itself was
+# committed in ba0cea4 (2026-08-10). Nothing secret leaked: the committed
+# values are the documented factory defaults (admin/password). But the file
+# is edited per station, so the next operator to set a real password would
+# have committed it. Commit only the *.example.json variant.
+bench/magos-config-ui/config/magos.config.json
+bench/magos-config-ui/firmware/
+
 # TSW202 tool — real secrets/config + firmware images
 bench/tsw-config-ui/config/tsw.config.json
 bench/tsw-config-ui/firmware/
