@@ -1978,31 +1978,31 @@ window.SITE_DATA = {
       "name": "kela-fob-03",
       "status": "provisional",
       "subnet": "192.168.88.0/24",
-      "uplink": null,
+      "uplink": "router",
       "source_path": "sites/kela-fob-03.yaml",
       "nodes": {
         "router": {
           "name": "router",
           "kind": "router",
           "vendor": "Teltonika Networks",
-          "model": null,
-          "firmware": null,
-          "candidates": [
-            "RUTM08"
-          ],
-          "candidate_basis": "hostname rut-kela-fob-03.lan, address .1, and RUTM08 being the only RUT-M model in 52 rutm runs (no RUTM51 anywhere in the archive)",
+          "model": "RUTM08",
+          "firmware": "RUTM_R_00.07.24.3",
+          "candidates": [],
+          "candidate_basis": null,
           "mac": "20:97:27:36:55:ec",
           "evidence": {
-            "*": "arp"
+            "*": "arp",
+            "model": "device-api",
+            "firmware": "device-api"
           },
           "proven": {
             "vendor": true,
-            "model": false,
-            "firmware": false,
+            "model": true,
+            "firmware": true,
             "addr": true,
             "present": true
           },
-          "verified_at": null,
+          "verified_at": "2026-09-14",
           "addr": "192.168.88.1",
           "addr_source": "static-manual",
           "roles": [
@@ -2011,13 +2011,21 @@ window.SITE_DATA = {
             "default-gateway"
           ],
           "critical": true,
-          "notes": "Teltonika also makes the OTD500 and TSW202 on this same 20:97:27 prefix, so the OUI alone does not separate them — the model is still unread.\nWhat IS now settled is what this device DOES, read 2026-09-14 from the DHCP leases held on two independent hosts (the server at .10 and the operator station at .29). Both leases name SERVER_ADDRESS=192.168.88.1, ROUTER=192.168.88.1 and DNS=192.168.88.1, and `networkctl` on .29 reports \"Address: 192.168.88.29 (DHCP4 via 192.168.88.1)\". So this device is the subnet's DHCP server, its default gateway and its DNS resolver. That is two separate clients agreeing, not an inference from the .1 address.\n`addr_source` is therefore static-manual rather than static-bench: a DHCP server does not lease its own address, so .1 is configured on the device — but nothing shows the bench configured it, and static-bench would claim that.",
+          "notes": "Read off the device 2026-09-14 over SSH and REST. `ubus call system board` reports model \"Teltonika RUTM08\" outright, which settles what the OUI could not — Teltonika makes the OTD500 and TSW202 on this same 20:97:27 prefix. The inferred shortlist (RUTM08, from it being the only RUT-M model in 52 archived rutm runs) was RIGHT this time. Worth recording precisely because the radar and camera shortlists were both wrong: a shortlist is a lead, and a lead can be correct — which is why \"~\" has to stay visually distinct from \"✓\" in either direction.\nSerial 6008952997, hardware version 0004, batch 0037, bootloader 2.23.3. Self-reported LAN MAC 2097273655EC matches the ARP observation at .1 exactly; the WAN port is one higher at ...:ED. Running OpenWrt 21.02.0 (r16279-5cc0535800) on kernel 6.6.126, MediaTek MT7621. The hwinfo block reports mobile=false and dual_sim=false, consistent with the RUTM08 being the non-cellular RUT-M — so this site's path to the carrier is NOT through this device's own modem.\nFirmware RUTM_R_00.07.24.3 is already the version avis/tec-861-teltonika-firmware-upgrade-path-to-07243-security-across is written to roll out, so this unit needs nothing from that work.\nWhat IS now settled is what this device DOES, read 2026-09-14 from the DHCP leases held on two independent hosts (the server at .10 and the operator station at .29). Both leases name SERVER_ADDRESS=192.168.88.1, ROUTER=192.168.88.1 and DNS=192.168.88.1, and `networkctl` on .29 reports \"Address: 192.168.88.29 (DHCP4 via 192.168.88.1)\". So this device is the subnet's DHCP server, its default gateway and its DNS resolver. That is two separate clients agreeing, not an inference from the .1 address.\n`addr_source` is therefore static-manual rather than static-bench: a DHCP server does not lease its own address, so .1 is configured on the device — but nothing shows the bench configured it, and static-bench would claim that.",
           "addr_pool": null,
           "poe_budget_w": null,
           "poe_managed": false,
-          "device_model": null,
+          "device_model": "Teltonika RUTM08",
           "net_parents": [],
-          "net_children": [],
+          "net_children": [
+            {
+              "node": "teltonika_118",
+              "port": "lan3",
+              "peer_port": null,
+              "media": "ethernet",
+              "notes": "The router's bridge FDB learns EVERY site MAC on lan3, and lan1/lan2 have no carrier, so one cable leaves the router and the rest of the site is behind the .118 switch. This edge is the part that is proven. The port on the .118 end is unknown — `peer_port` is deliberately absent rather than guessed — and so is every device-to-switch-port pairing, because the router cannot see past its own port. The TSW202's own MAC table is what completes this, and that needs its credential."
+            }
+          ],
           "power_in": [],
           "power_out": []
         },
@@ -2228,7 +2236,7 @@ window.SITE_DATA = {
           "addr_source": "static-bench",
           "roles": [],
           "critical": true,
-          "notes": "COULD NOT BE IDENTIFIED, and the reason matters. This unit answers ICMP (3/3, 0% loss) and sits in the site server's neighbour table, so it is powered and on the network — but it serves NO TCP port at all. Re-checked 2026-09-14 with a full connect scan of ports 1-10240 run FROM THE SITE SERVER, on the same L2 segment as the radar: zero open ports. The same scan from the same host finds 22, 80 and 443 open on .130 and .131. So this is not a vantage-point artifact and not the 192.168.88.0/24 bench collision producing a false negative — it is the radar.\nThat settles a specific question: a port forward cannot help here. Forwarding needs something listening to forward to, and these two units are not listening on anything. The Magos dashboard API is plain HTTP on 80, so there is nothing to query and no credential would change the outcome.\nWorth an operator's attention on its own merits: two of four radars serving no management port is either a stopped web service, a host firewall or VLAN difference on these two, a management interface bound to an address on another subnet, or a genuinely different product variant. Detections may still be flowing — that rides a separate path — so this is NOT evidence the radar is down. Deciding between those needs the router's view of the subnet, or physical/console access.",
+          "notes": "COULD NOT BE IDENTIFIED, and the reason matters. This unit answers ICMP (3/3, 0% loss) and sits in the site server's neighbour table, so it is powered and on the network — but it serves NO TCP port at all. Re-checked 2026-09-14 with a full connect scan of ports 1-10240 run FROM THE SITE SERVER, on the same L2 segment as the radar: zero open ports. The same scan from the same host finds 22, 80 and 443 open on .130 and .131. So this is not a vantage-point artifact and not the 192.168.88.0/24 bench collision producing a false negative — it is the radar.\nThat settles a specific question: a port forward cannot help here. Forwarding needs something listening to forward to, and these two units are not listening on anything. The Magos dashboard API is plain HTTP on 80, so there is nothing to query and no credential would change the outcome.\nWorth an operator's attention on its own merits: two of four radars serving no management port is either a stopped web service, a host firewall or VLAN difference on these two, a management interface bound to an address on another subnet, or a genuinely different product variant. Detections may still be flowing — that rides a separate path — so this is NOT evidence the radar is down. Deciding between those needs the TSW202's per-port view, or physical/console access.\nThe router's view did narrow it. This MAC appears in the router's bridge FDB on lan3 (2026-09-14) exactly like every working device, so the unit is cabled and forwarding frames at layer 2. Cabling and power are therefore NOT the fault: it is up enough to answer ICMP and put frames on the wire, while serving nothing above that. Reads like a stopped service or a host firewall rather than a dead radar or a dead drop.",
           "addr_pool": null,
           "poe_budget_w": null,
           "poe_managed": false,
@@ -2264,7 +2272,7 @@ window.SITE_DATA = {
           "addr_source": "static-bench",
           "roles": [],
           "critical": true,
-          "notes": "COULD NOT BE IDENTIFIED, and the reason matters. This unit answers ICMP (3/3, 0% loss) and sits in the site server's neighbour table, so it is powered and on the network — but it serves NO TCP port at all. Re-checked 2026-09-14 with a full connect scan of ports 1-10240 run FROM THE SITE SERVER, on the same L2 segment as the radar: zero open ports. The same scan from the same host finds 22, 80 and 443 open on .130 and .131. So this is not a vantage-point artifact and not the 192.168.88.0/24 bench collision producing a false negative — it is the radar.\nThat settles a specific question: a port forward cannot help here. Forwarding needs something listening to forward to, and these two units are not listening on anything. The Magos dashboard API is plain HTTP on 80, so there is nothing to query and no credential would change the outcome.\nWorth an operator's attention on its own merits: two of four radars serving no management port is either a stopped web service, a host firewall or VLAN difference on these two, a management interface bound to an address on another subnet, or a genuinely different product variant. Detections may still be flowing — that rides a separate path — so this is NOT evidence the radar is down. Deciding between those needs the router's view of the subnet, or physical/console access.",
+          "notes": "COULD NOT BE IDENTIFIED, and the reason matters. This unit answers ICMP (3/3, 0% loss) and sits in the site server's neighbour table, so it is powered and on the network — but it serves NO TCP port at all. Re-checked 2026-09-14 with a full connect scan of ports 1-10240 run FROM THE SITE SERVER, on the same L2 segment as the radar: zero open ports. The same scan from the same host finds 22, 80 and 443 open on .130 and .131. So this is not a vantage-point artifact and not the 192.168.88.0/24 bench collision producing a false negative — it is the radar.\nThat settles a specific question: a port forward cannot help here. Forwarding needs something listening to forward to, and these two units are not listening on anything. The Magos dashboard API is plain HTTP on 80, so there is nothing to query and no credential would change the outcome.\nWorth an operator's attention on its own merits: two of four radars serving no management port is either a stopped web service, a host firewall or VLAN difference on these two, a management interface bound to an address on another subnet, or a genuinely different product variant. Detections may still be flowing — that rides a separate path — so this is NOT evidence the radar is down. Deciding between those needs the TSW202's per-port view, or physical/console access.\nThe router's view did narrow it. This MAC appears in the router's bridge FDB on lan3 (2026-09-14) exactly like every working device, so the unit is cabled and forwarding frames at layer 2. Cabling and power are therefore NOT the fault: it is up enough to answer ICMP and put frames on the wire, while serving nothing above that. Reads like a stopped service or a host firewall rather than a dead radar or a dead drop.",
           "addr_pool": null,
           "poe_budget_w": null,
           "poe_managed": false,
@@ -2339,18 +2347,41 @@ window.SITE_DATA = {
           "addr_source": "static-bench",
           "roles": [],
           "critical": false,
-          "notes": "If this is a TSW202 it is the site's managed switch, sitting on .118 rather than the documented .2 — and it would be the one device here that can answer the cabling question, since a managed switch holds a MAC address table. Worth probing first for that reason.",
+          "notes": "STILL A SHORTLIST, but only just, and the reason is worth being pedantic about. The router's DHCP lease table (read 2026-09-14) shows this MAC taking .118 with the hostname **TSW202**. That is the device announcing its own name over DHCP — far stronger than the OUI guess it replaces — but a hostname is not the model field. `dhcp-lease` evidence proves present/mac/vendor/addr and deliberately does NOT prove `model`, so this stays \"~\". Reading its model properly needs a login, which is blocked (see below).\nThat same lease is the answer to why the login fails. Every other provisioned device here carries a provisioned hostname (rut-kela-fob-03, kela-fob-03, kela-fob-03-operator); this one still carries the Teltonika factory default, \"TSW202\". So this switch was never run through the bench — which is also why the shared bench password is rejected on both SSH and REST (tried once each, 2026-09-14). It is presumably still on its per-device factory label password.\nAN UNPROVISIONED MANAGED SWITCH IN PRODUCTION is worth an operator's attention on its own: no hostname, no known credential, and nothing about its configuration has ever been verified. It is also the last thing standing between this map and a full cabling answer — a managed switch holds the per-port MAC table, and the router's own table (below) proves every device at this site sits behind it.",
           "addr_pool": null,
           "poe_budget_w": null,
           "poe_managed": false,
           "device_model": null,
-          "net_parents": [],
+          "net_parents": [
+            {
+              "node": "router",
+              "port": "lan3",
+              "peer_port": null,
+              "media": "ethernet",
+              "notes": "The router's bridge FDB learns EVERY site MAC on lan3, and lan1/lan2 have no carrier, so one cable leaves the router and the rest of the site is behind the .118 switch. This edge is the part that is proven. The port on the .118 end is unknown — `peer_port` is deliberately absent rather than guessed — and so is every device-to-switch-port pairing, because the router cannot see past its own port. The TSW202's own MAC table is what completes this, and that needs its credential."
+            }
+          ],
           "net_children": [],
           "power_in": [],
           "power_out": []
         }
       },
-      "net": [],
+      "net": [
+        {
+          "parent": "router",
+          "child": "teltonika_118",
+          "port": "lan3",
+          "peer_port": null,
+          "media": "ethernet",
+          "notes": "The router's bridge FDB learns EVERY site MAC on lan3, and lan1/lan2 have no carrier, so one cable leaves the router and the rest of the site is behind the .118 switch. This edge is the part that is proven. The port on the .118 end is unknown — `peer_port` is deliberately absent rather than guessed — and so is every device-to-switch-port pairing, because the router cannot see past its own port. The TSW202's own MAC table is what completes this, and that needs its credential.",
+          "evidence": {
+            "by_claim": {
+              "*": "switch-table"
+            }
+          },
+          "verified_at": "2026-09-14"
+        }
+      ],
       "power": [],
       "reservations": [
         {
@@ -2370,7 +2401,20 @@ window.SITE_DATA = {
           "label": "192.168.88.30-192.168.88.50"
         }
       ],
-      "tree": [],
+      "tree": [
+        {
+          "depth": 0,
+          "node": "router",
+          "port": null,
+          "peer_port": null
+        },
+        {
+          "depth": 1,
+          "node": "teltonika_118",
+          "port": "lan3",
+          "peer_port": null
+        }
+      ],
       "off_tree": [
         "camera_1",
         "camera_2",
@@ -2379,9 +2423,7 @@ window.SITE_DATA = {
         "radar_2",
         "radar_3",
         "radar_4",
-        "router",
-        "server",
-        "teltonika_118"
+        "server"
       ],
       "poe": {},
       "findings": [
@@ -2412,14 +2454,56 @@ window.SITE_DATA = {
         {
           "severity": "warn",
           "code": "model-narrowed-not-known",
-          "message": "could be RUTM08 (hostname rut-kela-fob-03.lan, address .1, and RUTM08 being the only RUT-M model in 52 rutm runs (no RUTM51 anywhere in the archive)). That is a shortlist, not the model — only the device or a bench record settles it.",
-          "where": "router"
+          "message": "could be TSW202 (the 209727a0 and 209727ca MAC blocks hold TSW202 units only (9 of 9 across the device-label store), while every OTD500 and RUTM08 sits in the 2097272b-20972749 range; n=1 for the a0 block specifically, so treat this as suggestive rather than settled. A read-only TCP check from the site server on 2026-09-14 found 22, 80 and 443 all open, which is the RutOS profile (SSH plus the HTTPS management UI) and is consistent with a TSW202 — but the router at .1 and any other RutOS device present the same three ports, so this narrows the family, not the model.). That is a shortlist, not the model — only the device or a bench record settles it.",
+          "where": "teltonika_118"
         },
         {
           "severity": "warn",
-          "code": "model-narrowed-not-known",
-          "message": "could be TSW202 (the 209727a0 and 209727ca MAC blocks hold TSW202 units only (9 of 9 across the device-label store), while every OTD500 and RUTM08 sits in the 2097272b-20972749 range; n=1 for the a0 block specifically, so treat this as suggestive rather than settled. A read-only TCP check from the site server on 2026-09-14 found 22, 80 and 443 all open, which is the RutOS profile (SSH plus the HTTPS management UI) and is consistent with a TSW202 — but the router at .1 and any other RutOS device present the same three ports, so this narrows the family, not the model.). That is a shortlist, not the model — only the device or a bench record settles it.",
-          "where": "teltonika_118"
+          "code": "net-orphan",
+          "message": "no data path back to the uplink 'router'",
+          "where": "camera_1"
+        },
+        {
+          "severity": "warn",
+          "code": "net-orphan",
+          "message": "no data path back to the uplink 'router'",
+          "where": "camera_2"
+        },
+        {
+          "severity": "warn",
+          "code": "net-orphan",
+          "message": "no data path back to the uplink 'router'",
+          "where": "operator_station"
+        },
+        {
+          "severity": "warn",
+          "code": "net-orphan",
+          "message": "no data path back to the uplink 'router'",
+          "where": "radar_1"
+        },
+        {
+          "severity": "warn",
+          "code": "net-orphan",
+          "message": "no data path back to the uplink 'router'",
+          "where": "radar_2"
+        },
+        {
+          "severity": "warn",
+          "code": "net-orphan",
+          "message": "no data path back to the uplink 'router'",
+          "where": "radar_3"
+        },
+        {
+          "severity": "warn",
+          "code": "net-orphan",
+          "message": "no data path back to the uplink 'router'",
+          "where": "radar_4"
+        },
+        {
+          "severity": "warn",
+          "code": "net-orphan",
+          "message": "no data path back to the uplink 'router'",
+          "where": "server"
         },
         {
           "severity": "warn",
@@ -2490,16 +2574,16 @@ window.SITE_DATA = {
           "pct": 100.0
         },
         "model": {
-          "proven": 6,
-          "claimed": 6,
+          "proven": 7,
+          "claimed": 7,
           "total": 10,
-          "pct": 60.0
+          "pct": 70.0
         },
         "firmware": {
-          "proven": 6,
-          "claimed": 6,
+          "proven": 7,
+          "claimed": 7,
           "total": 10,
-          "pct": 60.0
+          "pct": 70.0
         },
         "addr": {
           "proven": 10,
@@ -2508,10 +2592,10 @@ window.SITE_DATA = {
           "pct": 100.0
         },
         "link": {
-          "proven": 0,
-          "claimed": 0,
-          "total": 0,
-          "pct": null
+          "proven": 1,
+          "claimed": 1,
+          "total": 1,
+          "pct": 100.0
         },
         "power": {
           "proven": 0,
@@ -2527,16 +2611,17 @@ window.SITE_DATA = {
         },
         "by_source": {
           "arp": 10,
-          "device-api": 6
+          "device-api": 7,
+          "switch-table": 1
         },
         "survey_only_feeds": 0
       },
       "counts": {
         "nodes": 10,
-        "net": 0,
+        "net": 1,
         "power": 0,
         "errors": 0,
-        "warnings": 16
+        "warnings": 23
       }
     }
   ],

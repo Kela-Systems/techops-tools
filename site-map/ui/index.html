@@ -666,20 +666,43 @@ a { color: var(--data); }
       "confirmed</strong>, and <strong>no cabling and no power path is " +
       "confirmed for any device here at all.</strong></p>";
 
+    html += "<p><strong>The cabling question has its first answer.</strong> " +
+      "The router\u2019s own bridge forwarding table places <em>every</em> " +
+      "device at this site on one port, <code>lan3</code> \u2014 and its " +
+      "other two LAN ports have no carrier at all. So a single cable leaves " +
+      "the router and everything else hangs off the switch behind it. What " +
+      "the router cannot say is which switch port each device is on: those " +
+      "MACs are learned on lan3 because they arrive <em>through</em> the " +
+      "switch. That needs the switch\u2019s own table, which is the one " +
+      "thing still blocked.</p>";
+
+    html += "<p><strong>And the two silent radars are cabled and alive at " +
+      "layer 2.</strong> Both appear in that same forwarding table like " +
+      "every working device, so they are putting frames on the wire while " +
+      "serving nothing above it. Cabling and power are ruled out as the " +
+      "fault; a stopped service or a host firewall is not.</p>";
+
     html += "<p><strong>Why the other " + (cv.model.total - cv.model.proven) +
       " have no model, and the reasons are not the same.</strong> Every " +
       "offline route is exhausted: a MAC gives a vendor and never a model, " +
       "and no device here appears in bench-central, so there is no " +
       "provisioning record to read. That leaves each device's own API. " +
-      "<strong>Two of the four radars have nothing to query</strong> \u2014 " +
+      "<strong>The .118 switch was never provisioned</strong> \u2014 its " +
+      "DHCP lease still carries the factory hostname <code>TSW202</code> " +
+      "while every provisioned device carries a real one, and the shared " +
+      "bench password is refused on both channels. Its password is on a " +
+      "sticker on the unit. <strong>Two of the four radars have nothing to " +
+      "query</strong> \u2014 
       "they answer ping and sit in the router's neighbour table, but a full " +
       "scan of ports 1\u201310240, run from the site server on the same " +
       "network segment, found <strong>not one open port</strong>, in the " +
       "same run that found three open on each working radar. No credential " +
       "and no port forward can reach a service that is not listening; that " +
       "needs console or physical access. <strong>The two Teltonikas are a " +
-      "credential problem only</strong> \u2014 their bench configs hold " +
-      "example values, while the devices themselves are directly reachable.</p>";
+      "credential problem only</strong>, and the router half of that is now " +
+      "done \u2014 it reads as a <strong>RUTM08</strong> on " +
+      "<strong>RUTM_R_00.07.24.3</strong>, which is the third shortlist " +
+      "checked against hardware and the first one that was <em>right</em>.</p>";
 
     html += "<p><strong>Both readable radars are still on the vendor's " +
       "default password.</strong> The login that read their model and " +
@@ -730,16 +753,21 @@ a { color: var(--data); }
       "<span class=\"fglyph\">~</span><span class=\"fval\">like this</span>" +
       "</span> are narrowings from vendor correlation across the archive. " +
       "They are leads to confirm, not answers \u2014 and this site " +
-      "demonstrated it twice. The radars were shortlisted " +
+      "demonstrated both outcomes. The radars were shortlisted " +
       "AR-300 / SR1000-F / SR500-F and read as <strong>SR1000-I</strong>, a " +
       "variant the archive did not contain. The cameras were shortlisted " +
       "PC464A1 \u2014 every camera on their OUI in the archive reports that " +
       "\u2014 and read as <strong>SG-PTZ</strong>, a pan/tilt/zoom unit, " +
-      "a different class of device entirely. Both shortlists were derived " +
-      "correctly from real data and both were wrong. Treat every " +
+      "a different class of device entirely. The router, though, was " +
+      "shortlisted <strong>RUTM08</strong> and reads as RUTM08. All three " +
+      "were derived correctly from the same real data; two were wrong and " +
+      "one was right, and nothing about the shortlist itself told them " +
+      "apart. Treat every " +
       "<span class=\"fact narrowed\"><span class=\"fglyph\">~</span>" +
       "<span class=\"fval\">shortlist</span></span> on this page as a " +
-      "question, not an answer.</p></div>";
+      "question, not an answer \u2014 but the router\u2019s came out " +
+      "right, so treat them as questions, not as wrong answers either.</p>" +
+      "</div>";
     document.getElementById("banner").innerHTML = html;
   }
 
