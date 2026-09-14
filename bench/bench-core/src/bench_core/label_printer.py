@@ -6,6 +6,10 @@ finds the printer, and sends it. The two are split because the first is pure
 and the second is the half that can fail for reasons that have nothing to do
 with the device on the bench.
 
+Almost always one record, one label. The exception is the PoE switch, which
+also earns a port map for the switch itself — `qa_label.extra_contents` decides
+that, and both formats go out in a single job so they cannot be separated.
+
 The gate is one line — `should_print()` — and it is the whole point of the
 issue: "no label, it doesn't ship" only means something if the printer stays
 silent on a run that did not pass. A missing label is the signal, so there is
@@ -56,7 +60,7 @@ from typing import Optional
 
 from bench_core import tcp_port_open
 from bench_core.qa_label import (COPIES_RANGE, DEFAULT_COPIES, MEDIA_COMMAND,
-                                 label_content, render_content)
+                                 extra_contents, label_content, render_content)
 
 STATION_FILENAME = ".bench-station.json"
 DEFAULT_PORT = 9100                  # the raw-ZPL port on every network Zebra
@@ -508,13 +512,19 @@ class LabelPrinter:
 
     def _block(self, *, printed: bool, face: str = "",
                target: Optional[str] = None,
-               error: Optional[str] = None) -> dict:
+               error: Optional[str] = None,
+               extra_faces: Optional[list] = None) -> dict:
         # `copies` is how many labels exist, so it is 0 on every failure path
         # rather than the number that was intended. Someone reconciling a batch
-        # against a pile of labels wants the count that came out.
-        return {"printed": printed, "face": face, "target": target,
-                "copies": self.settings.copies if printed else 0,
-                "error": error, "at": datetime.now(timezone.utc).isoformat()}
+        # against a pile of labels wants the count that came out — which is why
+        # an extra face (the switch's port map) counts as one more label here.
+        extras = list(extra_faces or [])
+        block = {"printed": printed, "face": face, "target": target,
+                 "copies": (self.settings.copies + len(extras)) if printed else 0,
+                 "error": error, "at": datetime.now(timezone.utc).isoformat()}
+        if extras:
+            block["extra_faces"] = extras
+        return block
 
     def _failed(self, entry: dict, detail: str) -> None:
         """Record that a unit which passed did not get its label."""
@@ -525,7 +535,8 @@ class LabelPrinter:
                          "been asked to %s.", serial, detail, _HAND_LABEL)
 
     def print_run(self, entry: dict) -> Optional[dict]:
-        """Print `entry`'s QA label if it earned one.
+        """Print `entry`'s QA label if it earned one, plus any extra face the
+        tool earns beside it (the PoE switch's port map), as one job.
 
         Returns the `label` block, which it also attaches to `entry` — so the
         record on disk and the copy shipped to central both carry it. Returns
@@ -540,8 +551,15 @@ class LabelPrinter:
             return None
         try:
             content = label_content(entry)
+            # Sent as ONE job so the pair cannot be separated by a printer that
+            # died between them: a port map with no QA label beside it would
+            # read as a switch that passed.
+            extras = extra_contents(entry)
             zpl = render_content(content, copies=self.settings.copies,
                                  **self.settings.quality())
+            for extra in extras:
+                zpl += render_content(extra, copies=1,
+                                      **self.settings.quality())
         except Exception as e:  # noqa: BLE001 — a bad face must not fail a run
             self.log.exception("Could not build the QA label.")
             block = self._block(printed=False, error=f"label not built: {e}")
@@ -587,11 +605,12 @@ class LabelPrinter:
         self._warning = None
         self._last_fault = None
         self._available = True
-        self.log.info("%d QA label(s) printed for SN %s (%s face) on %s.",
+        self.log.info("%d QA label(s) printed for SN %s (%s face%s) on %s.",
                       self.settings.copies, entry.get("serial"), content.face,
-                      transport.target)
+                      "".join(f" + {e.face}" for e in extras), transport.target)
         block = self._block(printed=True, face=content.face,
-                            target=transport.target)
+                            target=transport.target,
+                            extra_faces=[e.face for e in extras])
         entry["label"] = block
         return block
 

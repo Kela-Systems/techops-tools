@@ -789,3 +789,33 @@ def test_status_reports_the_target_once_a_printer_is_found(tmp_path):
 def test_status_before_any_probe_says_unknown_rather_than_broken():
     p = LabelPrinter(PrinterSettings(sink="/dev/null"))
     assert p._available is None
+
+
+# ── the switch's extra label ─────────────────────────────────────────────────
+
+def test_the_switch_gets_its_port_map_in_the_same_job(tmp_path):
+    """QA label first, port map second, one send. Split across two jobs, a
+    printer that died between them could put a port map on a switch whose QA
+    label never came out."""
+    p = printer(tmp_path, copies=1)
+    p.print_run(record("planet"))
+    written = Path(p.settings.sink).read_text(encoding="ascii")
+    assert written.count("^XA") == 2
+    assert written.index("PORT MAP") > written.index("^BC")   # QA label first
+
+
+def test_the_port_map_is_counted_as_a_label_that_came_out(tmp_path):
+    """`copies` is what someone reconciling a pile of labels counts, so the
+    extra face is one more label, not a footnote."""
+    entry = record("planet")
+    block = printer(tmp_path, copies=2).print_run(entry)
+    assert block["extra_faces"] == ["port-map"]
+    assert block["copies"] == 3
+    assert entry["label"] is block
+
+
+def test_no_other_tool_grows_an_extra_label(tmp_path):
+    entry = record("tsw-static")
+    block = printer(tmp_path, copies=2).print_run(entry)
+    assert "extra_faces" not in block
+    assert block["copies"] == 2

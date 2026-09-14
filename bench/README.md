@@ -73,6 +73,7 @@ double-click launcher  →  dashboard  ┌────────────�
                                      │  ● Raythink Camera   :8005   192.168.1.x  │
                                      │  ● ISR Speaker       :8006   DHCP (scan)  │
                                      │  ● Teltonika TSW202  :8007   192.168.1.x  │
+                                     │  ● PLANET IGS-4215   :8008   192.168.0.x  │
                                      └───────────────────────────────────────────┘
 ```
 
@@ -105,11 +106,14 @@ window (Windows) or press Ctrl+C in the terminal (macOS/Linux).
 | `raythink-config-ui/` | Raythink **thermal camera**  | 8005 | factory `192.168.1.123`, RPC2 API                      |
 | `speaker-config-ui/`  | Provision-ISR **IP speaker** | 8006 | arrives on **DHCP** — auto-scans `192.168.1/2/88.0/24` |
 | `tsw-config-ui/`      | Teltonika **TSW202** switch  | 8007 | factory `192.168.1.**2**`; label scan                  |
+| `planet-config-ui/`   | PLANET **IGS-4215** PoE switch | 8008 | factory `192.168.**0**.100`; no scan; PoE plan + firmware floor |
 
 
 The ports are fixed and don't collide, so all the tools run side by side under
 the one launcher. The Teltonika subnet is shared without conflict: the OTD500 and
-RUTM08 arrive on `192.168.1.1`, the TSW202 on `192.168.1.2`.
+RUTM08 arrive on `192.168.1.1`, the TSW202 on `192.168.1.2`. The PLANET IGS-4215
+is the one device that arrives on a *different* `/24` — `192.168.0.100` — so the
+bench adapter needs an address on `192.168.0.x` as well to reach a fresh one.
 
 > **One exception, if the RUTM08's `wan` block is switched on** (TEC-857): that
 > step pins the router's WAN port to a static `192.168.1.2` — the same address a
@@ -120,13 +124,36 @@ RUTM08 arrive on `192.168.1.1`, the TSW202 on `192.168.1.2`.
 > the committed template; read the comments there before turning it on.
 
 > **Devices that end up on `192.168.88.x`.** The RUTM08 (`.1`), TSW202 (`.2`),
-> camera and speaker (`.70`) all move to that subnet as their last step, and the
+> PLANET IGS-4215 (`.3`), camera and speaker (`.70`) all move to that subnet as
+> their last step, and the
 > tool confirms the move by reaching the device on its new address. The RUTM08
 > case works anywhere because the router *serves* DHCP there and the tool renews
 > the station's lease. **A switch, a camera and a speaker do not**, so the bench
 > adapter has to carry an address on `192.168.88.x` itself (a second static IP,
 > or a /16 over both `192.168.1.x` and `192.168.88.x`). Without it the device
 > still moves correctly, but the run reports its final-address check as failed.
+
+### Managed Macs that refuse the interpreter local-network access
+
+A symptom worth recognising, because it reads as a broken tool: every device is
+reported as absent while the operator can ping, browse and `curl` it, and a
+socket from the bench's own interpreter fails in **four milliseconds** with
+`[Errno 65] No route to host`.
+
+macOS grants local-network access per executable, and on a managed laptop
+(Local Network Privacy, plus whatever endpoint-security agent is installed) an
+ad-hoc-signed Homebrew interpreter is refused while Apple's own `curl`, `nc` and
+`ping` are not — Homebrew `node` is refused identically, so it is not a Python
+problem. Nothing in-process lifts it: source binding, `IP_BOUND_IF` and a
+`--copies` venv are all still refused, and the exempt `/usr/bin/python3` is 3.9,
+below what the web stack needs.
+
+Loopback is not gated, so `bench_core.lan_relay` puts a relay in front of the
+device — a `127.0.0.1` listener handing each connection to `/usr/bin/nc` — and
+`requests`/`paramiko` connect to that instead. It engages only after a permitted
+binary has confirmed the device really is there (an unplugged NIC reports the
+same errno), costs nothing on a station where direct sockets work, and is wired
+into `tcp_port_open`, so every tool inherits it.
 
 ### Where a device ends up: the four address modes
 

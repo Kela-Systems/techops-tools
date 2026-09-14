@@ -19,6 +19,7 @@ REM    Teltonika RUTM08 -> http://127.0.0.1:8004   (adapter on 192.168.1.x)
 REM    Raythink Camera  -> http://127.0.0.1:8005   (adapter on 192.168.1.x)
 REM    ISR Speaker      -> http://127.0.0.1:8006   (DHCP - scans 192.168.1/2/88.x)
 REM    Teltonika TSW202 -> http://127.0.0.1:8007   (adapter on 192.168.1.x + .88.x)
+REM    PLANET IGS-4215  -> http://127.0.0.1:8008   (adapter on 192.168.0.x + .88.x)
 REM
 REM  All the tools share ONE .venv at the bench root.
 REM ===========================================================================
@@ -33,7 +34,7 @@ REM If a bench is already running, a second set would just fail to bind all the
 REM ports (errors scrolling past) while the dashboard shows the FIRST instance's
 REM green dots. Detect a listening tool port and only (re)open the dashboard.
 set "BENCH_ALREADY="
-for %%p in (8001 8002 8003 8004 8005 8006 8007) do (
+for %%p in (8001 8002 8003 8004 8005 8006 8007 8008) do (
   netstat -ano -p tcp 2>nul | findstr "LISTENING" | findstr /c:":%%p " >nul && set "BENCH_ALREADY=1"
 )
 if defined BENCH_ALREADY (
@@ -102,6 +103,7 @@ start "Teltonika RUTM08" /d "%ROOT%\rutm-config-ui"     /b "%ROOT%\.venv\Scripts
 start "Raythink Camera"  /d "%ROOT%\raythink-config-ui" /b "%ROOT%\.venv\Scripts\python.exe" raythink_app.py
 start "ISR Speaker"      /d "%ROOT%\speaker-config-ui"  /b "%ROOT%\.venv\Scripts\python.exe" speaker_app.py
 start "Teltonika TSW202" /d "%ROOT%\tsw-config-ui"      /b "%ROOT%\.venv\Scripts\python.exe" tsw_app.py
+start "PLANET IGS-4215"  /d "%ROOT%\planet-config-ui"   /b "%ROOT%\.venv\Scripts\python.exe" planet_app.py
 
 REM Open the dashboard immediately — it self-polls every few seconds, so any tool
 REM still doing its cold start shows a grey dot that flips green on its own.

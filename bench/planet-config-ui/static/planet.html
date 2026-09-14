@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PLANET IGS-4215 Configurator</title>
+<link rel="icon" type="image/png" href="/shared/favicon.png">
+<link rel="stylesheet" href="/shared/bench.css">
+</head>
+<body>
+<div class="container">
+  <header style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;">
+    <div class="brand">
+      <img class="brand-logo" src="/shared/favicon.png" alt="Kela Bench">
+      <h1>PLANET IGS-4215 PoE Switch<span class="sub">Plug in &rarr; Configure &rarr; unplug &rarr; repeat. Nothing to scan.</span></h1>
+    </div>
+    <span id="conn" class="conn">connecting…</span>
+  </header>
+
+  <div id="status" class="status s-waiting" aria-live="polite">
+    <span id="statusIcon" class="dot"></span>
+    <div class="txt">
+      <div class="phase" id="phaseText">Waiting</div>
+      <div class="msg" id="msgText">…</div>
+    </div>
+    <button id="dismissBtn" class="btn-outline hidden" onclick="dismiss()">Dismiss</button>
+  </div>
+
+  <!-- FIRMWARE BANNER — this switch's firmware is not a nicety: at or below
+       v1.305b251017 the SSH server refuses to open a CLI, so a run cannot
+       complete without the image on disk. Loud when it is missing. -->
+  <div id="fwWarn" class="card hidden" style="border-left:4px solid #c62828;">
+    <h3 style="margin-top:0;">Firmware image missing</h3>
+    <p id="fwWarnText" class="muted" style="margin:0;"></p>
+  </div>
+
+  <!-- ADDRESS ASSIGNMENT -->
+  <div class="card">
+    <h3>Address assignment</h3>
+    <div id="ipModes"></div>
+  </div>
+
+  <!-- DEVICE FORM (visible while a switch is detected and idle) -->
+  <div class="card form-card" id="formCard" style="display:none;">
+    <h3 id="formTitle">New switch</h3>
+    <!-- The shared `switch` toggle, not a bare checkbox: `.field input` in
+         bench.css is sized for text inputs (width:100%, height:40px), which
+         inflates a raw checkbox into a large empty square. -->
+    <div class="auto-row" id="skipFwRow">
+      <label class="switch"><input type="checkbox" id="skipFw" onchange="onSkipFw()"><span class="slider"></span></label>
+      <div style="flex:1;">
+        <div class="title">Skip the firmware step</div>
+        <div class="muted" id="skipFwHint">Only for a switch already known to be at or
+          above <span class="mono" id="skipFwFloor">the floor</span>. Below it the SSH CLI
+          does not work and the run stops at login.</div>
+      </div>
+    </div>
+
+    <div class="form-row" style="margin-top:12px;">
+      <div class="field field-actions">
+        <div class="btn-row">
+          <button id="goBtn" class="btn-primary" onclick="submitConfigure()">Configure</button>
+          <button id="verifyBtn" class="btn-outline" type="button">Verify</button>
+        </div>
+      </div>
+    </div>
+    <div class="preview" id="namePreview"></div>
+  </div>
+
+  <!-- POE PLAN — the reason this tool exists. Shown before anything is
+       pressed, because the per-port plan IS the site's power plan. -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <h3 style="margin:0;" id="poeTitle">Port plan</h3>
+      <span id="poeBudget" class="pill"></span>
+    </div>
+    <table>
+      <thead><tr><th>Port</th><th>PoE</th><th>Limit</th><th>Priority</th><th>Label</th></tr></thead>
+      <tbody id="poeBody"><tr><td colspan="5" class="muted">No config loaded.</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- LIVE PROGRESS -->
+  <div class="card" id="liveCard" style="display:none;">
+    <h3>Progress log</h3>
+    <pre id="liveLog" class="log" style="margin-top:0;max-height:300px;"></pre>
+  </div>
+
+  <!-- LAST RESULT -->
+  <div class="card" id="resultCard" style="display:none;">
+    <h3 id="resultTitle">Last switch</h3>
+    <div class="identity" id="identity"></div>
+    <table class="verify hidden" id="verifyTable">
+      <thead><tr><th>check</th><th>result</th></tr></thead>
+      <tbody id="verifyBody"></tbody>
+    </table>
+    <pre id="lastLog" class="log hidden"></pre>
+  </div>
+
+  <!-- SESSION HISTORY -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <h3 style="margin:0;">This session</h3>
+      <button class="btn-outline" onclick="reloadAll()">Reload config</button>
+    </div>
+    <div style="margin-bottom:8px;">
+      <span class="pill">done <b id="cDone">0</b></span>
+      <span class="pill">failed <b id="cErr">0</b></span>
+      <span class="pill">verified <b id="cVerified">0</b></span>
+      <span class="pill">verify failed <b id="cVerifyFailed">0</b></span>
+    </div>
+    <table>
+      <thead><tr><th>Status</th><th>Run</th><th>MAC</th><th>Address</th><th>FW</th><th>Firmware step</th><th>Took</th><th>Time</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="8" class="muted">No switches configured yet.</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- SETTINGS SUMMARY -->
+  <div class="card">
+    <h3>Shared settings (planet.config.json)</h3>
+    <div id="settingsSummary" class="settings-summary"><span class="muted">No config loaded.</span></div>
+    <p class="muted" style="margin-top:10px;">Per-switch logs are saved under <span class="mono">planet-config-ui/logs/</span> (one JSON per switch + a rolling <span class="mono">planet-config.log</span>).</p>
+  </div>
+</div>
+
+<script src="/shared/bench.js"></script>
+<script>
+let lastPhase = null;
+let curState = {};
+const verifyBtn = mountVerifyButton('verifyBtn');
+// No DHCP mode: this switch is configured with no default gateway, so a unit
+// that wandered off to a lease would be findable only by guesswork.
+const ipModes = mountIpModes('ipModes', {
+  noun: 'switch',
+  // Operators read the switch's address as the whole 192.168.88.3, not a bare
+  // last octet — this box shows and takes the full thing.
+  fullAddress: true,
+  onChange: (s) => render(s || curState),
+});
+
+function onSkipFw(){
+  $('skipFwRow').classList.toggle('on', $('skipFw').checked);
+}
+
+async function reloadAll(){ await postJSON('/api/reload'); }
+async function dismiss(){ await postJSON('/api/dismiss'); }
+
+async function submitConfigure(){
+  const body = { ip_mode: ipModes.mode(), octet: ipModes.octet(),
+                 skip_firmware: $('skipFw').checked };
+  if (ipModes.mode() === 'manual' && !body.octet){ ipModes.focusEntry(); return; }
+  $('goBtn').disabled = true;
+  await postJSON('/api/configure', body, {buttons: ['goBtn']});
+}
+
+function addrLabel(device){
+  const d = device || {};
+  return d.ip || d.reached_at || '—';
+}
+
+function renderPoe(s){
+  const plan = s.poe_plan || [];
+  const body = $('poeBody');
+  if (!plan.length){
+    body.innerHTML = '<tr><td colspan="5" class="muted">No config loaded.</td></tr>';
+    $('poeBudget').textContent = '';
+    return;
+  }
+  // With PoE left to the switch the plan is still what each socket is FOR —
+  // the power columns are just no longer the bench's to state.
+  const managed = s.poe_managed !== false;
+  $('poeTitle').textContent = managed ? 'PoE plan' : 'Port plan';
+  // gi9-12 have no PoE hardware at all — saying "off" would read as a choice
+  // someone could reverse, which is why they get their own badge.
+  body.innerHTML = plan.map(p=>`<tr>
+    <td class="mono">gi${p.port}</td>
+    <td>${p.poe === false ? '<span class="badge">no PoE</span>'
+       : !managed ? '<span class="badge">auto</span>'
+       : p.enabled ? '<span class="badge badge-ok">on</span>'
+                   : '<span class="badge">off</span>'}</td>
+    <td class="mono">${managed && p.enabled ? p.limit_w.toFixed(1)+' W' : '—'}</td>
+    <td>${managed && p.enabled ? esc(p.priority) : '—'}</td>
+    <td class="mono">${esc(p.description||'—')}</td></tr>`).join('');
+  if (!managed){
+    $('poeBudget').textContent = 'PoE left to the switch';
+    return;
+  }
+  // Over-allocation is the failure that shows up as "a radar randomly dropped"
+  // weeks later, so it is called out here rather than only in the run log.
+  const alloc = s.poe_allocated_w || 0, budget = s.poe_budget_w || 0;
+  const over = alloc > budget;
+  $('poeBudget').innerHTML = over
+    ? `<b style="color:#c62828;">${alloc.toFixed(0)} W allocated of ${budget} W — OVER BUDGET</b>`
+    : `${alloc.toFixed(0)} W allocated of ${budget} W`;
+}
+
+function render(s){
+  curState = s;
+  verifyBtn.update(s);
+  const st = $('status');
+  st.className = 'status s-' + s.phase;
+  const labels = { waiting:'Waiting', detected:'Switch detected',
+    configuring:'Configuring…', configured:'Configured ✓',
+    verifying:'Verifying…', verified:'Verified ✓', error:'Error' };
+  let phaseLabel = labels[s.phase] || s.phase;
+  if (isRunning(s) && s.run_seconds != null)
+    phaseLabel = `${labels[s.phase]} ${fmtDur(s.run_seconds)}`;
+  $('phaseText').textContent = phaseLabel;
+  $('msgText').textContent = s.message || '';
+
+  const icon = $('statusIcon');
+  icon.className = isRunning(s) ? 'spin'
+    : 'dot' + ((s.phase === 'waiting' || s.phase === 'detected') ? ' pulse' : '');
+
+  $('dismissBtn').classList.toggle('hidden', !isFinished(s));
+  ipModes.update(s);
+  renderPoe(s);
+
+  // Firmware banner: only a problem when the step is ON and the image is not
+  // on disk — that combination is the one that strands a switch at SSH login.
+  const fwMissing = s.firmware_enabled && !s.firmware_found;
+  $('fwWarn').classList.toggle('hidden', !fwMissing);
+  if (fwMissing){
+    $('fwWarnText').textContent =
+      `No firmware image on disk for the ${s.min_firmware} floor. A switch that `
+      + 'arrives at or below v1.305b251017 has a broken SSH server — it accepts '
+      + 'the connection and then refuses to open a CLI — and cannot be configured '
+      + 'until it is flashed. Drop the .bix into planet-config-ui/firmware/ and '
+      + 'press Reload config.';
+  }
+
+  // Name the floor the toggle would skip, so the risk is concrete.
+  $('skipFwFloor').textContent = s.min_firmware || 'the floor';
+
+  const showForm = s.phase === 'detected' && !s.busy;
+  const fc = $('formCard');
+  fc.style.display = showForm ? '' : 'none';
+  if (showForm) $('goBtn').disabled = false;
+
+  const finished = !!s.at_final_lan;
+  $('formTitle').textContent = finished ? 'Switch already provisioned' : 'New switch';
+  $('goBtn').className = finished ? 'btn-outline' : 'btn-primary';
+  $('verifyBtn').className = finished ? 'btn-primary' : 'btn-outline';
+
+  const cfg = s.config || {};
+  const typed = ipModes.octet();
+  const willGet = ipModes.mode() === 'manual'
+    ? (typed ? (typed.includes('.') ? typed : `${s.subnet_prefix||''}.${typed}`) : '')
+    : (s.next_ip || '');
+  $('namePreview').innerHTML =
+    `<b>Configure</b> will bring the switch to <b>${esc(s.min_firmware||'—')}</b> if needed, `
+    + `set the shared password, `
+    + (s.poe_managed === false ? '' : 'apply the PoE plan above, ')
+    + `name the ports, set NTP `
+    + `<b>${esc(s.ntp_server||'—')}</b> and timezone <b>${esc(s.timezone||'—')}</b>, `
+    + (s.disable_telnet ? 'disable telnet, ' : '')
+    + `then move the switch to <b class="mono">${esc(willGet||'—')}</b> as the last step. `
+    + `<b>Verify</b> checks all of that and changes nothing.`;
+
+  renderLiveLog(s);
+
+  if (s.phase === 'detected' && lastPhase !== 'detected')
+    st.animate([{transform:'scale(1)'},{transform:'scale(1.03)'},{transform:'scale(1)'}],{duration:450,easing:'ease-out'});
+  document.title = (s.phase === 'detected' ? '● ' : '') + 'PLANET IGS-4215 Configurator';
+  lastPhase = s.phase;
+
+  const c = s.counts || {done:0,error:0,verified:0,verify_failed:0};
+  $('cDone').textContent = c.done; $('cErr').textContent = c.error;
+  $('cVerified').textContent = c.verified || 0;
+  $('cVerifyFailed').textContent = c.verify_failed || 0;
+  const body = $('histBody');
+  const rows = s.history || [];
+  if (!rows.length){
+    body.innerHTML = '<tr><td colspan="8" class="muted">No switches configured yet.</td></tr>';
+  } else {
+    const badge = (r)=> r.kind === 'verify'
+      ? (r.status==='ok' ? '<span class="badge badge-ok">PASS</span>'
+                         : '<span class="badge badge-err">FAIL</span>')
+      : (r.status==='ok' ? '<span class="badge badge-ok">DONE</span>'
+                         : '<span class="badge badge-err">FAILED</span>');
+    body.innerHTML = rows.map(r=>`<tr>
+      <td>${badge(r)}</td>
+      <td class="muted">${r.kind === 'verify' ? 'verify' : 'configure'}</td>
+      <td class="mono">${esc(r.mac||'—')}</td>
+      <td class="mono">${esc(addrLabel(r.device))}</td>
+      <td>${esc(r.firmware||'—')}</td>
+      <td class="muted">${esc((r.device||{}).firmware_note||'—')}</td>
+      <td>${r.duration_s!=null?fmtDur(r.duration_s):'—'}</td>
+      <td class="muted">${esc(r.time||'')}</td></tr>`).join('');
+  }
+
+  const lr = s.last_result;
+  if (lr){
+    $('resultCard').style.display = '';
+    $('resultTitle').textContent = lr.kind === 'verify'
+      ? 'Last switch (verify — nothing was changed)' : 'Last switch';
+    // Power inputs are shown because 360 W of budget needs both, and a site
+    // planned above 240 W on one supply browns out under load.
+    const dual = (lr.device||{}).dual_power;
+    $('identity').innerHTML = `
+      <span>model <b>${esc(lr.model||'—')}</b></span>
+      <span>MAC <b class="mono">${esc(lr.mac||'—')}</b></span>
+      <span>address <b class="mono">${esc(addrLabel(lr.device))}</b></span>
+      <span>fw <b class="mono">${esc(lr.firmware||'—')}</b></span>
+      <span>power <b>${dual ? 'PWR1+PWR2' : 'single supply'}</b></span>` +
+      (lr.duration_s != null ? `<span>took <b>${fmtDur(lr.duration_s)}</b></span>` : '');
+    renderVerifyTable(lr.verification, 'verifyTable', 'verifyBody');
+    const lg = $('lastLog');
+    let txt = lr.log || '';
+    if (lr.error) txt += '\nERROR: ' + lr.error;
+    if (txt.trim()){ lg.textContent = txt.trim(); lg.classList.remove('hidden'); } else lg.classList.add('hidden');
+  } else { $('resultCard').style.display = 'none'; }
+
+  if (Object.keys(cfg).length){
+    const fwState = !s.firmware_enabled ? 'firmware step OFF'
+      : (s.firmware_found ? 'image ready' : 'image MISSING');
+    $('settingsSummary').innerHTML = `
+      <span>factory IP <b>${esc(cfg.host||'192.168.0.100')}</b></span>
+      <span>next switch <b class="mono">${esc(nextAddressLabel(s))}</b></span>
+      <span>NTP <b>${esc(s.ntp_server||'—')}</b></span>
+      <span>timezone <b>${esc(s.timezone||'—')}</b></span>
+      <span>password <b>${esc(cfg.new_password||'(unset)')}</b></span>
+      <span>firmware floor <b>${esc(s.min_firmware||'—')}</b></span>
+      <span>${esc(fwState)}</span>`;
+  }
+}
+connectBenchWS(render);
+</script>
+</body>
+</html>

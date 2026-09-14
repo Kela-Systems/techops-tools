@@ -43,6 +43,7 @@
   .pill.telt  { background: #14223a; color: #79c0ff; }
   .pill.cam   { background: #2d2418; color: #f0c674; }
   .pill.spk   { background: #2a1a2e; color: #d2a8ff; }
+  .pill.poe   { background: #2a2313; color: #e3b341; }
   .note { border-left: 3px solid var(--accent); background: #121722; padding: 10px 16px;
           border-radius: 0 8px 8px 0; margin: 12px 0; }
   .note.warn { border-left-color: var(--warn); }
@@ -84,9 +85,10 @@
     <a href="#camera">6. Raythink camera</a><br>
     <a href="#speaker">7. Provision-ISR speaker</a><br>
     <a href="#switch">8. Teltonika TSW202 switch</a><br>
-    <a href="#verify">9. Checking a finished device (Verify)</a><br>
-    <a href="#issues">10. Known issues &amp; fixes</a><br>
-    <a href="#help">11. When to call an engineer</a>
+    <a href="#poeswitch">9. PLANET IGS-4215 PoE switch</a><br>
+    <a href="#verify">10. Checking a finished device (Verify)</a><br>
+    <a href="#issues">11. Known issues &amp; fixes</a><br>
+    <a href="#help">12. When to call an engineer</a>
   </div>
 
   <!-- 1 -->
@@ -96,7 +98,7 @@
     <li>A black window opens and stays open — <b>leave it open all day.</b> Closing it stops every tool.
         It first checks for a tools update — if the engineers released one, it installs itself here;
         no internet at the bench just means it starts with what it has.</li>
-    <li>After a few seconds the <b>dashboard</b> opens in the browser with seven tool cards.</li>
+    <li>After a few seconds the <b>dashboard</b> opens in the browser with eight tool cards.</li>
     <li>Click the card for whatever you're about to plug in. A green
         <span class="dot up"></span> dot means that tool is ready.</li>
     <li><b>Enter your name</b> in the <b>Operator</b> box at the top of the tool page
@@ -140,7 +142,7 @@
   <p>Radar opens on its own card; APU on another. Plug the unit in, then choose its <b>channel</b>
      (radar) or which <b>APU</b> it is (0 or 1) and click configure. The tool sets the time and
      the device's permanent IP, then reads the unit back on its new address and shows a table of
-     checks — the same table the <b>Verify</b> button produces (section 9).</p>
+     checks — the same table the <b>Verify</b> button produces (section 10).</p>
 
   <h3>Radar: channel → address <span class="pill magos">4 radars per system</span></h3>
   <table>
@@ -242,7 +244,35 @@
     other switch that isn't detected is the usual causes (wrong port, not booted yet).</div>
 
   <!-- 9 -->
-  <h2 id="verify">9. Checking a finished device — Verify <span class="pill">no changes made</span></h2>
+  <h2 id="poeswitch">9. PLANET IGS-4215 PoE switch <span class="pill poe">network 192.168.0.x</span></h2>
+  <p>The PoE switch that powers the radars, the camera and the speaker at a site. <b>Nothing to
+     type and nothing to scan</b> — the factory password is worked out from the switch's own MAC
+     address. Plug it in, wait for it to be detected, and click <b>Configure</b>.</p>
+  <p>The tool brings the firmware up to the bench standard if needed, sets the shared password,
+     names every port, sets the time server and timezone, turns telnet off, and <b>moves the switch to
+     <code>192.168.88.3</code> as the last step</b>.</p>
+  <div class="note warn"><b>One switch at a time.</b> Every switch ends up on the <b>same</b>
+    final address (<code>192.168.88.3</code>), so finish and unplug one before connecting the next.</div>
+  <div class="note"><b>Leave the firmware step ON.</b> A switch that arrives on an older firmware
+    has a broken SSH server — it accepts the connection and then refuses to open a session — and
+    <b>cannot be configured at all</b> until it is flashed. The <i>Skip the firmware step</i>
+    toggle is only for a switch you already know is at or above the version the page names.</div>
+  <div class="note"><b>The bench does not set PoE.</b> The switch works out how much power each
+    device needs on its own, so there is no power column to check and nothing to get wrong. The page
+    lists the ports so you know what plugs in where.</div>
+  <div class="note"><b>Which socket does what.</b> 1&ndash;4 the radars, <b>8</b> the speaker,
+    <b>9</b> the camera and <b>10</b> the management drop — 9 and 10 are the switch's two non-PoE
+    copper sockets, and neither of those devices takes power from the switch. 11/12 are the SFP
+    slots. That leaves <b>5, 6 and 7</b> free as spare <i>powered</i> ports.</div>
+  <div class="note"><b>Two labels come out for a switch</b>, not one: the usual QA label, and a
+    <b>PORT MAP</b> label listing every socket and what plugs into it. The port map goes on the
+    switch itself, where the installer reads it; the QA label goes where the other tools' labels go.
+    If only one comes out, tell an engineer — the pair is printed as a single job.</div>
+  <div class="note"><b>Re-running a switch that was already configured?</b> Just run it again — the
+    page finds it on <code>192.168.88.3</code> and says so before you press anything.</div>
+
+  <!-- 10 -->
+  <h2 id="verify">10. Checking a finished device — Verify <span class="pill">no changes made</span></h2>
   <p>Next to <b>Configure</b> on every tool page there is a <b>Verify</b>
      button. It checks a device that has <b>already</b> been configured and <b>changes nothing</b> —
      no password, no IP, no reboot. Use it when you want to be sure a unit is right before it goes
@@ -308,8 +338,8 @@
   <div class="note warn">Verify needs the bench adapter to reach <code>192.168.88.x</code> (same as
     the last step of a normal run). If a finished unit is never detected, that's the usual cause.</div>
 
-  <!-- 10 -->
-  <h2 id="issues">10. Known issues &amp; quick fixes</h2>
+  <!-- 11 -->
+  <h2 id="issues">11. Known issues &amp; quick fixes</h2>
 
   <div class="card">
     <h3><span class="dot"></span> A tool card stays grey</h3>
@@ -347,8 +377,8 @@
        <i>tab</i> is fine — the tools keep running; reopen the tab from the dashboard.)</p>
   </div>
 
-  <!-- 11 -->
-  <h2 id="help">11. When to call an engineer</h2>
+  <!-- 12 -->
+  <h2 id="help">12. When to call an engineer</h2>
   <ul>
     <li>A tool card never turns green even after restarting <code>Start Bench Tools.bat</code>.</li>
     <li>The page reports a <b>missing firmware image</b>, <b>missing media file</b>, or missing configuration.</li>

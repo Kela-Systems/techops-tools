@@ -125,12 +125,15 @@ def make_step_runner(logger: logging.Logger, catch: type = SystemExit):
 
 def tcp_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
     """True if a TCP connection to host:port succeeds within `timeout` seconds.
-    Used by the detection loops to tell whether a device is plugged in."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+    Used by the detection loops to tell whether a device is plugged in.
+
+    Goes through `lan_relay`, which answers directly on every station where
+    that works and falls back to a permitted binary on a managed Mac that
+    refuses this interpreter local-network access — where a plain connect
+    reports every device as absent. See `bench_core.lan_relay`.
+    """
+    from bench_core.lan_relay import can_connect      # local: stdlib-only module
+    return can_connect(host, port, timeout)
 
 
 # --- OTD500 factory defaults ------------------------------------------------

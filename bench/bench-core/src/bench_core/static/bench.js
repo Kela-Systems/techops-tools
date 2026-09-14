@@ -135,8 +135,8 @@ function mountConfigWarn() {
 }
 
 // QA-label printer banner (TEC-352). Same shape as mountConfigWarn: injected
-// under the page header by connectBenchWS, so all seven tools surface it
-// without seven copies of the markup.
+// under the page header by connectBenchWS, so every tool surfaces it
+// without a copy of the markup each.
 //
 // Deliberately a banner and not an alert. A label that did not print does not
 // invalidate the run — the device passed and is still configured — so nothing
@@ -508,6 +508,9 @@ function nextAddressLabel(state) {
 //   noun       what the device is called in the hints ('camera', 'speaker', …)
 //   dhcpNote   the tool-specific half of the DHCP hint (how it re-finds the
 //              device), appended to the shared explanation
+//   fullAddress  show and take the whole address (192.168.88.3) in the entry
+//              box instead of a bare last octet. The server accepts either, so
+//              this is purely what the operator reads and types
 //   onChange   called after the operator changes anything, so the page can
 //              repaint its own preview line without waiting for the next
 //              frame. Gets the state the server answered with, or null when
@@ -521,6 +524,8 @@ function mountIpModes(containerId, opts) {
   const host = $(containerId);
   if (!host) return { update() {}, mode() { return ''; }, octet() { return ''; }, focusEntry() {} };
   const noun = opts.noun || 'device';
+  // Whole address in the box (192.168.88.3) vs a bare last octet.
+  const full = !!opts.fullAddress;
 
   host.classList.add('ipmode');
   host.innerHTML =
@@ -609,12 +614,15 @@ function mountIpModes(containerId, opts) {
     applyBtn.classList.toggle('hidden', mode !== 'fixed');
     if (!wants) return;
     entryLabel.textContent = mode === 'fixed'
-      ? 'Address for every ' + noun : 'Address for this ' + noun;
-    octetInput.placeholder = `${s.subnet_prefix || ''}.${s.octet_min ?? ''}–${s.octet_max ?? ''}`;
+      ? (full ? 'Address for ' + noun : 'Address for every ' + noun)
+      : 'Address for this ' + noun;
+    octetInput.placeholder = full
+      ? `${s.subnet_prefix || ''}.${s.octet_min ?? ''}`
+      : `${s.subnet_prefix || ''}.${s.octet_min ?? ''}–${s.octet_max ?? ''}`;
     // The fixed value is server state and is mirrored back; the manual one
     // belongs to the unit on the bench and is left exactly as typed.
     if (mode === 'fixed' && !touched && document.activeElement !== octetInput)
-      octetInput.value = s.fixed_octet ?? '';
+      octetInput.value = (full ? s.fixed_ip : s.fixed_octet) ?? '';
   }
 
   function renderHint(s) {
@@ -625,8 +633,8 @@ function mountIpModes(containerId, opts) {
       cycle: `Next ${noun} gets <b class="mono">${esc(prefix)}.${esc(s.cycle_next)}</b>, `
         + `then it advances on each success (wrapping ${esc(s.cycle_max)}&rarr;${esc(s.cycle_min)}).`,
       manual: `Type the address for each ${noun} `
-        + `(<span class="mono">${esc(prefix)}.${esc(s.octet_min)}&ndash;${esc(s.octet_max)}</span>, `
-        + 'or paste the whole address).',
+        + `(<span class="mono">${esc(prefix)}.${esc(s.octet_min)}&ndash;${esc(s.octet_max)}</span>`
+        + (full ? ').' : ', or paste the whole address).'),
       dhcp: `The ${noun} keeps the address its own DHCP server gives it and the `
         + 'bench assigns nothing. ' + (opts.dhcpNote || ''),
     };

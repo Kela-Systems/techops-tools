@@ -15,7 +15,7 @@ How to provision devices at the bench. Keep this open on the side screen.
 2. A black window opens and stays open — **leave it open all day.** Closing it stops every tool.
    It first checks for a tools update — if the engineers released one, it installs
    itself here; no internet at the bench just means it starts with what it has.
-3. After a few seconds the **dashboard** opens in the browser with seven tool cards.
+3. After a few seconds the **dashboard** opens in the browser with eight tool cards.
 4. Click the card for whatever you're about to plug in. A **green dot** means that tool is ready.
 5. **Enter your name** in the **Operator** box at the top of the tool page (scan your badge or
    type it, then press Enter). Do this once at the start of the day — it's shared by all the
@@ -64,7 +64,7 @@ Every tool works the same way:
 for that device — Magos uses a different network from the Teltonika and camera tools.
 - Each device ends up on a final `192.168.88.x` address. After that it will no longer answer on
 the factory address — that's expected, it means the move worked. The tools also *look* for
-finished units on those addresses, which is what makes **Verify** (section 9) work; on the radar
+finished units on those addresses, which is what makes **Verify** (section 10) work; on the radar
 and the APU that means the bench adapter needs to reach `192.168.88.x` for a QA sweep.
 
 
@@ -100,7 +100,7 @@ Not every tool offers all four — the switch has no **Cycle**, because a site t
 Radar opens on its own card; APU on another. Plug the unit in, then choose its **channel**
 (radar) or which **APU** it is (APU 0 or 1) and click configure. The tool sets the time and
 the device's permanent IP, then reads the unit back on its new address and shows a table of
-checks — the same table the **Verify** button produces (section 9).
+checks — the same table the **Verify** button produces (section 10).
 
 **Radar: channel → address** (4 radars per system)
 
@@ -264,7 +264,44 @@ Switches offer three of the four modes (no **Cycle**: a site takes one switch).
 
 
 
-## 9. Checking a finished device — **Verify**  *(nothing is changed)*
+## 9. PLANET IGS-4215 PoE switch  *(network 192.168.0.x)*
+
+The PoE switch that powers the radars, the camera and the speaker at a site. **Nothing to type and
+nothing to scan** — the factory password is worked out from the switch's own MAC address. Plug it
+in, wait for it to be detected, and click **Configure**.
+
+The tool brings the firmware up to the bench standard if needed, sets the shared password, names
+every port, sets the time server and timezone, turns telnet off, and
+**moves the switch to** `192.168.88.3` **as the last step**.
+
+> ⚠️ **One switch at a time.** Every switch ends up on the **same** final address, so finish and
+> unplug one before connecting the next.
+
+> **Leave the firmware step ON.** A switch that arrives on an older firmware has a broken SSH
+> server — it accepts the connection and then refuses to open a session — and **cannot be
+> configured at all** until it is flashed. The *Skip the firmware step* toggle is only for a switch
+> you already know is at or above the version the page names.
+
+> **The bench does not set PoE.** The switch works out how much power each device needs on its
+> own, so there is no power column to check and nothing to get wrong. The page lists the ports so
+> you know what plugs in where.
+
+> **Which socket does what.** 1–4 the radars, **8** the speaker, **9** the camera and **10** the
+> management drop — 9 and 10 are the switch's two non-PoE copper sockets, and neither of those
+> devices takes power from the switch. 11/12 are the SFP slots. That leaves **5, 6 and 7** free as
+> spare *powered* ports.
+
+> **Two labels come out for a switch**, not one: the usual QA label, and a **PORT MAP** label
+> listing every socket and what plugs into it. The port map goes on the switch itself, where the
+> installer reads it; the QA label goes wherever the other tools' labels go. If only one comes out,
+> tell an engineer — the pair is printed as a single job.
+
+> **Re-running a switch that was already configured?** Just run it again — the page finds it on
+> `192.168.88.3` and says so before you press anything.
+
+---
+
+## 10. Checking a finished device — **Verify**  *(nothing is changed)*
 
 Next to **Configure** on every tool page there is a **Verify** button. It
 checks a device that has **already** been configured and **changes nothing** — no password, no IP,
@@ -328,7 +365,7 @@ factory reset, which is their call, not a bench step.
 
 
 
-## 10. Known issues & quick fixes
+## 11. Known issues & quick fixes
 
 **A tool card stays grey**
 The tool isn't up yet. On the first start of the day it's still installing — wait a minute and it
@@ -422,7 +459,7 @@ station more than once.
 
 
 
-## 11. When to call an engineer
+## 12. When to call an engineer
 
 - A tool card never turns green even after restarting `Start Bench Tools.bat`.
 - The page reports a **missing firmware image**, **missing media file**, or missing configuration.

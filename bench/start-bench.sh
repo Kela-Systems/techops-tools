@@ -13,6 +13,7 @@
 #    Raythink Camera  -> http://127.0.0.1:8005   (adapter on 192.168.1.x)
 #    ISR Speaker      -> http://127.0.0.1:8006   (DHCP — scans 192.168.1/2/88.x)
 #    Teltonika TSW202 -> http://127.0.0.1:8007   (adapter on 192.168.1.x + .88.x)
+#    PLANET IGS-4215  -> http://127.0.0.1:8008   (adapter on 192.168.0.x + .88.x)
 #
 #  All the tools share ONE .venv in this folder. Every launch converges to the
 #  release pinned on bench-central (updater.py) and installs requirements
@@ -30,7 +31,7 @@ ROOT="$(pwd)"
 # The tools never auto-open their own browser tab (that's opt-in via
 # BENCH_OPEN_BROWSER=1); this launcher opens the one dashboard itself below.
 
-TOOL_PORTS="8001 8002 8003 8004 8005 8006 8007"
+TOOL_PORTS="8001 8002 8003 8004 8005 8006 8007 8008"
 DASH="$ROOT/launcher/index.html"
 
 # True if something is already listening on 127.0.0.1:$1 (bash /dev/tcp — no nc
@@ -96,6 +97,7 @@ start "Teltonika RUTM08" "rutm-config-ui"     "rutm_app.py"
 start "Raythink Camera"  "raythink-config-ui" "raythink_app.py"
 start "ISR Speaker"      "speaker-config-ui"  "speaker_app.py"
 start "Teltonika TSW202" "tsw-config-ui"      "tsw_app.py"
+start "PLANET IGS-4215"  "planet-config-ui"   "planet_app.py"
 
 # Open the dashboard immediately — it self-polls every few seconds, so any tool
 # still doing its ~5s cold start shows a grey dot that flips green on its own.

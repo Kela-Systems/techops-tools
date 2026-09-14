@@ -184,6 +184,27 @@ NTP, clock and networking rows are the radar's, read off the same dashboard API.
 | `controlled radars` | `GET /apu/v1/settings` — the assignment `set_radars` wrote — compared as a set against the radars in the configure record, since the firmware may hand the array back in any order. Confirmed answering on 3.1.2-rc5; amber on firmware where it doesn't. | read-back, degrades |
 | `reached at`, `NTP server`, `timezone`, `static IP`, `netmask`, `gateway`, `DNS` | As the radar table above. | see above |
 
+## PLANET IGS-4215 PoE switch
+
+`PlanetClient.verify_configuration` in
+[`planet-config-ui/planet_configure.py`](../planet-config-ui/planet_configure.py),
+plus the `lan-ip` row `configure_planet` adds when it moves the switch.
+
+| Row | Evidence | Class |
+| --- | --- | --- |
+| `firmware` | The web UI's system page against the floor, compared with this tool's own version parse — `bench_core.fw_version_at_least` reads `1.305b251017` and `1.305b260324` as the same `(1, 305)` and would pass a switch whose SSH server cannot open a CLI. The only row read over HTTP, so it is also the only one an expired web session can break; the session is renewed rather than parsed. | read-back |
+| `ntp-server` | `show sntp`. The switch cannot reach `192.168.88.10` from the bench subnet, so what is provable here is the configuration, not a synced clock. | read-back |
+| `timezone` | `show clock`, which prints the *offset* the switch is running on (`UTC+3`) rather than the acronym it was given. That matters: the acronym field silently ignores anything over 4 characters, and a rejected `local` leaves the factory `+8` — which this row catches. | effect-based |
+| `poe-port-N` (only with `poe.managed`) | **Not emitted since 2026-09-14**: the bench stopped setting PoE, so there is nothing of ours to read back and the switch is not asked. With `poe.managed` on: `show poe`, the switch's own PSE table: enable state, and the limit in the deci-watts the hardware holds. A plan sent in watts by mistake reads back as 4.5 W here, not 45 W. Only gi1–gi8 are checked — the switch has no PSE on the rest and never reports them. | effect-based |
+| `port-name-N` | `show running-config` (there is no `show interface description` on this firmware). Covers gi9–gi10 too, which are named but never powered. | read-back |
+| `telnet` | The absence of `ip telnet` in the running config. | read-back |
+| `lan-ip` (configure only) | The switch answered on `192.168.88.3` after the move — the session dies mid-command by design, so reaching it again is the evidence. | effect-based |
+
+**No password row, because the login is one.** The run authenticates with the
+shared password before any of the above can be read, and a switch still on its
+derived factory password refuses. That is the same argument the speaker's
+`admin password` row makes explicitly; here it is structural.
+
 ## The known gaps, and what would close each
 
 **`quota sync survives upgrade` (OTD500).** The effect — the script still being

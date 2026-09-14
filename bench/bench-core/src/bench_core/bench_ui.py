@@ -231,7 +231,7 @@ def bench_version(base_dir: Path) -> str:
 # code (TEC-345) — without this, "works on my bench" debugging and QA tracing
 # across 5+ stations is guesswork.
 
-# Station-level, not per-tool: the six tools run side by side on one bench PC,
+# Station-level, not per-tool: the tools run side by side on one bench PC,
 # so the operator name lives in ONE file at the bench root (the tool folders
 # are siblings under bench/) and setting it in any tool covers all of them.
 OPERATOR_FILENAME = ".bench-operator.json"
@@ -571,7 +571,7 @@ class BenchConfigurator:
         self.station_id = station_id()
         self.operator_store = OperatorStore(base_dir.parent / OPERATOR_FILENAME)
         # Prints the QA label on a verified-OK run (TEC-352). Station-level,
-        # like the operator name: one printer serves all seven tools.
+        # like the operator name: one printer serves every tool on the bench.
         self.label_printer = make_label_printer(base_dir.parent, self.logger)
         self.logger.info("%s starting — bench version %s, station %s",
                          self.title, self.bench_version, self.station_id)
