@@ -348,6 +348,20 @@ records upload when connectivity returns, with backoff, and a run never
 blocks or fails because the network is down. Raw Magos device payloads stay
 in the local per-run JSON only; they are never shipped. When the variable is
 unset (the default), nothing is spooled and no uploader runs.
+- **The shared password is configured, never compiled in:** the password a
+tool APPLIES to a device comes from `new_password` in that tool's
+`config/<tool>.config.json` (gitignored), or from `$KELA_NEW_PASSWORD` for CI
+and one-off runs. `bench_core.shared_new_password()` resolves it in that order
+and **refuses** if neither supplies one, rather than falling back to a default.
+There used to be a default — and because the same value also shipped in every
+`config/*.example.json`, every station copied it and nothing ever overrode it,
+so the "fallback" was the live password on deployed hardware while sitting in
+plaintext in 29 committed files. The examples now ship `"new_password":
+"SET-ME"`, which the resolver treats as unset, so a station that was never
+configured fails loudly on the first run instead of silently authenticating.
+Pass the real value to a new station out of band. Same rule in the rugged
+operator scripts: `KELA_PASSWORD` and `ANYDESK_PASS` come from `secrets.env`
+(gitignored) and both scripts exit rather than assume one.
 - **Factory passwords are kept (Teltonika only):** the OTD500, RUTM08 and
 TSW202 tools ship each unit's factory-label password to bench-central, keyed
 to its serial, so a device factory-reset in the field is still reachable

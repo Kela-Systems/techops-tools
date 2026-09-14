@@ -27,7 +27,7 @@ from bench_core import (
 ZONE = "Asia/Jerusalem"
 POSIX_ZONE = POSIX_TZ[ZONE]
 HOST = "otd-haifa"
-SHARED = "Kelasys123!"
+SHARED = "test-shared-pw"
 # What a device really on ZONE reports for `date +%z`, today. Computed rather
 # than fixed: Asia/Jerusalem is +0300 under IDT and +0200 in winter, so a
 # hard-coded expectation would fail the suite for half the year.

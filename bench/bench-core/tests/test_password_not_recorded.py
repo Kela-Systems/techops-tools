@@ -27,7 +27,7 @@ from bench_core import TeltonikaClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tsw-config-ui"))
 from tsw_configure import TswClient   # noqa: E402
 
-SHARED = "Kelasys123!"
+SHARED = "test-shared-pw"
 LABEL = "zZ?40*kA"          # a real OTD500 label password
 
 

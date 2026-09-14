@@ -18,3 +18,12 @@ def _isolate_config_file(tmp_path, monkeypatch):
                         tmp_path / "magos.config.json")
     monkeypatch.setattr(apu_app.configurator, "config_path",
                         tmp_path / "magos.config.json")
+
+
+# The shared bench password is no longer compiled into the code, so a pipeline
+# under test has to get one from somewhere — exactly like a real station, which
+# reads it from its gitignored config. Supplying it through the environment
+# keeps every suite honest about that without putting a password in the repo.
+@pytest.fixture(autouse=True)
+def _shared_bench_password(monkeypatch):
+    monkeypatch.setenv("KELA_NEW_PASSWORD", "test-shared-pw")

@@ -26,7 +26,7 @@ import requests
 from bench_core import TeltonikaClient
 
 LABEL = "Lbl-9xQ2!"
-SHARED = "Kelasys123!"
+SHARED = "test-shared-pw"
 
 FIRSTLOGIN = "/system/actions/change_password_firstlogin"
 

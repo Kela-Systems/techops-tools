@@ -12,7 +12,11 @@ import pytest
 import requests
 
 import bench_core
-from bench_core import DEFAULT_NEW_PASSWORD, expected_utc_offset
+from bench_core import expected_utc_offset
+
+# A fake on purpose: what the suite checks is that the pipeline applies the
+# CONFIGURED shared password, which needs a value rather than THE value.
+DEFAULT_NEW_PASSWORD = "test-shared-pw"
 
 import tsw_configure as mod
 from tsw_configure import TswClient, apply_firmware_floor, configure_tsw

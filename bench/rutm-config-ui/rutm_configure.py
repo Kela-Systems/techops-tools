@@ -7,7 +7,7 @@ the device label and forces a password change on first login. Pipeline for one
 device (devices are done one at a time, no manifest — the site name and label
 password are typed in per device):
 
-  login(label_pw) -> set password "Kelasys123!" -> hostname rut-<site>
+  login(label_pw) -> set password <shared> -> hostname rut-<site>
     -> timezone Asia/Jerusalem -> NTP client -> firmware (latest-stable)
     -> enable+register RMS -> join Tailscale
     -> [optional] NTP forward + static WAN (ENDS internet — everything above
@@ -39,7 +39,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 from bench_core import (
     DEFAULT_HOST,
-    DEFAULT_NEW_PASSWORD,
+    shared_new_password,
     DEFAULT_SCHEME,
     DEFAULT_TIMEZONE,
     DEFAULT_USERNAME,
@@ -151,7 +151,7 @@ def configure_rutm(client: RutmClient, *, site_name: str, initial_password: str,
     the shared 'teltonika' logger. Returns identity + per-step failures + verification.
     Raises SystemExit on a hard failure (login, password change, firmware)."""
     name = device_name(site_name, settings.get("name_prefix", DEFAULT_RUTM_PREFIX))
-    new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_password = shared_new_password(settings)
 
     # Let SSH fall back to the shared password for the whole run, so a device
     # left half-changed by an earlier failed run still provisions cleanly.
@@ -344,7 +344,7 @@ def verify_rutm(client: RutmClient, *, settings: dict, resolve=None,
     DHCP lease may be stale. Here the router is in front of us at a known
     address, so `lan_ip_check` reports a fact instead of a maybe.
     """
-    new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_password = shared_new_password(settings)
     rms = settings.get("rms", {}) or {}
     ts = settings.get("tailscale", {}) or {}
     fw = settings.get("firmware", {}) or {}

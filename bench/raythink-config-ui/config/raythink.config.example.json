@@ -10,7 +10,7 @@
 
   "_comment_pw": "Factory login is admin/admin; the tool changes it to new_password. A re-run of a half-configured camera falls back to new_password automatically.",
   "initial_password": "admin",
-  "new_password": "Kelafield123!",
+  "new_password": "SET-ME",
 
   "ntp_server": "192.168.88.10",
 

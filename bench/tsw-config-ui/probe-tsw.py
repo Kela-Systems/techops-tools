@@ -21,7 +21,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 
 from bench_core import (
-    DEFAULT_NEW_PASSWORD,
+    shared_new_password,
     DEFAULT_SCHEME,
     DEFAULT_USERNAME,
     load_settings,
@@ -44,7 +44,7 @@ def main() -> int:
     if config.exists():
         settings = load_settings(str(config))
     host = args.host or settings.get("host", DEFAULT_TSW_HOST)
-    password = args.password or settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    password = args.password or shared_new_password(settings)
 
     print(f"Probing {host} (read-only) ...\n")
     client = TswClient(host=host,

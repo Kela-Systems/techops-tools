@@ -88,7 +88,8 @@ You also need:
 
    Optional flags:
    - `--password '<plaintext>'` — override the kela password
-     (default `Kelasys123!`, matching `setup.sh`).
+     (no default — set `KELA_PASSWORD` in `secrets.env`, or pass
+     `--password`; the builder refuses without one).
    - `--volid 'My Label'` — change the ISO volume label.
 
 3. Write the resulting ISO to the USB stick.

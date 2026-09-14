@@ -38,7 +38,7 @@ from apu_configure import APUClient        # noqa: E402
 from magos_configure import MagosClient    # noqa: E402
 import magos_verify as magos               # noqa: E402
 
-SHARED = "Kelasys123!"
+SHARED = "test-shared-pw"
 
 
 class FakeDevice:
@@ -159,7 +159,7 @@ BLOCKED_WRITES = [
     "reboot",
     "sysupgrade /tmp/firmware.bin",
     "sysupgrade -n /tmp/firmware.bin",
-    "echo 'root:Kelasys123!' | chpasswd",
+    "echo 'root:test-shared-pw' | chpasswd",
     "echo otd-haifa > /proc/sys/kernel/hostname",
     "echo 'IST-2IDT' > /etc/TZ",
     "echo 'IST-2IDT' > /tmp/TZ",

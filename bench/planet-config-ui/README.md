@@ -67,7 +67,8 @@ faults when you meet them by hand.
 1. Read identity over the **web UI** (model, firmware, MAC, power inputs).
 2. **Firmware floor** — flashed if the switch is below it. See below; this step
    is the reason the tool exists and is **on by default**.
-3. Set the admin password to the shared default (`Kelasys123!`).
+3. Set the admin password to the shared bench password (`new_password` in
+   `config/planet.config.json`, or `$KELA_NEW_PASSWORD`).
 4. Apply the **PoE plan**: global budget and limit mode, then per-port
    enable/disable, power limit and priority.
 5. **Name every port** (`description`), so `gi1` reads `Radar-AR300-1` rather
@@ -247,7 +248,7 @@ is no history lookup — the config is the whole expectation.
 ## CLI (without the UI)
 
 ```bash
-python3 planet_configure.py --password 'Kelasys123!'
+python3 planet_configure.py --password "$KELA_NEW_PASSWORD"
 python3 planet_configure.py --verify          # change nothing
 python3 planet_configure.py --no-firmware     # skip the floor for one run
 ```

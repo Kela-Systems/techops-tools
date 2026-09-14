@@ -57,7 +57,6 @@ except ImportError:
 from raythink_base import (
     DEFAULT_HOST,
     DEFAULT_INITIAL_PASSWORD,
-    DEFAULT_NEW_PASSWORD,
     DEFAULT_NTP_SERVER,
     DEFAULT_SCHEME,
     DEFAULT_USERNAME,
@@ -596,7 +595,7 @@ class RaythinkCameraClient(BaseRaythinkClient):
 # Re-exported so the pipeline, the UI and the tests keep importing the shared
 # names from here, as they did when this file was the only client.
 __all__ = [
-    "DEFAULT_HOST", "DEFAULT_INITIAL_PASSWORD", "DEFAULT_NEW_PASSWORD",
+    "DEFAULT_HOST", "DEFAULT_INITIAL_PASSWORD",
     "DEFAULT_NTP_SERVER", "DEFAULT_SCHEME", "DEFAULT_USERNAME",
     "MUTATING_RPC_METHODS", "CameraError", "MutationBlocked", "NetworkView",
     "RaythinkCameraClient", "format_verification", "log", "set_log_serial",

@@ -220,10 +220,10 @@ def test_an_expired_web_session_is_renewed_not_parsed():
             logins.append(password)
             self._web = object()
 
-    client = Client("192.168.0.100", password="Kelasys123!")
+    client = Client("192.168.0.100", password="test-shared-pw")
     client._web = object()
     assert "MAC Address" in client._web_page(mod.CMD_SYSTEM_INFO)
-    assert logins == ["Kelasys123!"], "should have logged in again exactly once"
+    assert logins == ["test-shared-pw"], "should have logged in again exactly once"
 
 
 def test_a_live_session_is_not_re_logged_in():
@@ -316,7 +316,7 @@ def test_a_connection_error_becomes_a_readable_message(monkeypatch):
 
 @pytest.mark.parametrize("host, first", [
     ("192.168.0.100", "swf6c43a"),      # factory address -> factory password
-    ("192.168.88.3", "Kelasys123!"),    # management address -> shared password
+    ("192.168.88.3", "test-shared-pw"),    # management address -> shared password
 ])
 def test_the_first_password_tried_follows_where_the_switch_answered(
         host, first, monkeypatch):
@@ -342,7 +342,7 @@ def test_the_first_password_tried_follows_where_the_switch_answered(
     with pytest.raises(SystemExit):
         mod.configure_planet(Client(host), initial_password="",
                              settings={"host": "192.168.0.100",
-                                       "new_password": "Kelasys123!",
+                                       "new_password": "test-shared-pw",
                                        "firmware": {"enabled": False},
                                        "poe": {"ports": {}}})
     assert order[0] == first
@@ -350,7 +350,7 @@ def test_the_first_password_tried_follows_where_the_switch_answered(
 
 def test_the_shared_password_is_tried_before_the_factory_one():
     """Within web_login_any the order given is respected exactly."""
-    shared, order = "Kelasys123!", []
+    shared, order = "test-shared-pw", []
 
     class Client(mod.PlanetClient):
         def web_login(self, password=None):
@@ -454,9 +454,9 @@ def test_the_forced_password_change_is_completed():
     """A factory switch will not open a CLI until its password is changed; the
     dialogue is Enter -> new -> verify -> 'Success.' and the prompt."""
     client = _client_at_forced_change()
-    client._change_password_at_login("Kelasys123!")
-    assert client._ch.sent == ["\n", "Kelasys123!\n", "Kelasys123!\n"]
-    assert client.password == "Kelasys123!"
+    client._change_password_at_login("test-shared-pw")
+    assert client._ch.sent == ["\n", "test-shared-pw\n", "test-shared-pw\n"]
+    assert client.password == "test-shared-pw"
 
 
 def test_a_password_the_switch_rejects_fails_before_anything_is_configured():

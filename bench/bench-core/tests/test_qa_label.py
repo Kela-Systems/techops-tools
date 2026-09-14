@@ -380,10 +380,10 @@ def test_no_face_leaks_the_firmware_operator_or_station(name):
 @pytest.mark.parametrize("name", ALL_RECORDS)
 def test_no_face_leaks_a_password_or_where_it_came_from(name):
     entry = record(name)
-    entry["device"]["password"] = "Kelasys123!"
+    entry["device"]["password"] = "test-shared-pw"
     entry["device"]["password_source"] = "scan"
     zpl = render_zpl(entry)
-    assert "Kelasys123!" not in zpl
+    assert "test-shared-pw" not in zpl
     assert "scan" not in zpl.lower()
 
 
