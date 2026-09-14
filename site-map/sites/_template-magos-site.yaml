@@ -1,0 +1,309 @@
+# The cookie-cutter Magos site, as the bench actually provisions it.
+#
+# Copy to <site-slug>.yaml and adjust. Every address here is the one the bench
+# tool assigns as its last step, so this file and the tool configs have to
+# agree — that agreement is what `sitemap.py lint` exists to check.
+#
+# Sources for each fact, so the next person can tell what is documented from
+# what is guessed:
+#   addresses      bench/OPERATOR-GUIDE.md tables, and each tool's config
+#   PLANET ports   bench/planet-config-ui/config/planet.config.json  (poe.ports)
+#   PoE state      commit c736bfc — the bench stopped setting PoE 2026-09-14
+#   anything marked `unconfirmed:` below is NOT documented anywhere and needs
+#   an eyeball at a real site before it is trusted
+version: 1
+site: _template-magos-site
+subnet: 192.168.88.0/24
+uplink: cellular_network
+
+# Named slices of the subnet. These are what the bench tools hand out, and
+# declaring them lets the linter catch two tools whose ranges overlap.
+reservations:
+  infra:
+    range: 1-3
+    owner: bench
+  servers:
+    range: 10-20
+    owner: bench
+  # raythink-config-ui cycles its last octet 30 -> 50 INCLUSIVE
+  # (config/raythink.config.example.json: octet_min 30, octet_max 50).
+  cameras:
+    range: 30-50
+    owner: camera_thermal
+    # dynamic: the tool CYCLES this range (30 -> 31 -> ... -> 50 -> 30) across
+    # cameras, so any address in it can land on any camera in turn.
+    dynamic: true
+  # magos-config-ui pins radars by RF channel: 0->.50, 1->.51, 2->.52, 3->.53
+  # (bench/OPERATOR-GUIDE.md). Note where this starts against the range above.
+  radars:
+    range: 50-53
+    owner: bench
+  apus:
+    range: 60-61
+    owner: bench
+  speakers:
+    range: 70
+    owner: bench
+
+# EVIDENCE. Everything below is `config` or `assumed` by default, and that is
+# the honest state of this template: it was written from bench tool configs
+# and runbook tables, not read off hardware. `sitemap.py lint` reports 0%
+# verified for it, which is correct. A real site file earns better evidence
+# one source at a time - see README, "How certain is any of this".
+nodes:
+  # -- what comes in from outside -------------------------------------
+  cellular_network:
+    kind: cellular-network
+    notes: Carrier SIM. Off-site, nothing here powers or addresses it.
+
+  mains:
+    kind: mains
+    roles: [power-source]
+    notes: Site mains feed.
+
+  psu_main:
+    kind: psu
+    roles: [power-source]
+    model: DC PSU / DIN rail
+    notes: >-
+      unconfirmed: make, rating and how many outputs. The IGS-4215 takes two
+      DC inputs (PWR1/PWR2) and the tool warns when they disagree, so whether
+      the second one is wired is worth recording here.
+
+  # -- the network chain ---------------------------------------------
+  otd500:
+    kind: modem
+    model: Teltonika OTD500
+    addr_source: none
+    notes: >-
+      Outdoor unit, provides the WAN feed to the router. Arrives on the bench
+      at 192.168.1.1 and does not end up on this subnet.
+
+  router:
+    kind: router
+    model: Teltonika RUTM08
+    addr: 192.168.88.1
+    addr_source: static-bench
+    critical: true
+    roles: [gateway, dhcp-server]
+    notes: >-
+      The site's gateway AND its only DHCP server — this is the answer to
+      "who gives IP to who". Moved to .1 as the last bench step.
+
+  switch_mgmt:
+    kind: switch
+    model: Teltonika TSW202
+    addr: 192.168.88.2
+    addr_source: static-bench
+    critical: true
+
+  switch_poe:
+    kind: poe-switch
+    model: PLANET IGS-4215-8UP2T2S
+    addr: 192.168.88.3
+    addr_source: static-bench
+    critical: true
+    # 240 W is the switch's own budget, and may only be treated as higher if
+    # BOTH power inputs are wired. `poe_managed: false` since 2026-09-14: the
+    # bench sets no limits or priorities and the switch negotiates per port,
+    # so the draw figures below are measured/typical, not enforced ceilings.
+    poe_budget_w: 240
+    poe_managed: false
+
+  server:
+    kind: server
+    addr: 192.168.88.10
+    addr_source: static-bench
+    critical: true
+    roles: [ntp-server]
+    notes: >-
+      Every bench tool points its NTP at 192.168.88.10, so this node is the
+      site's time source as well as its application server.
+
+  # -- the sensors ----------------------------------------------------
+  radar_0:
+    kind: radar
+    model: Magos AR-300
+    addr: 192.168.88.50
+    addr_source: static-bench
+    critical: true
+    notes: RF channel 0. Controlled by apu_0.
+  radar_1:
+    kind: radar
+    model: Magos AR-300
+    addr: 192.168.88.51
+    addr_source: static-bench
+    critical: true
+    notes: RF channel 1. Controlled by apu_0.
+  radar_2:
+    kind: radar
+    model: Magos AR-300
+    addr: 192.168.88.52
+    addr_source: static-bench
+    critical: true
+    notes: RF channel 2. Controlled by apu_1.
+  radar_3:
+    kind: radar
+    model: Magos AR-300
+    addr: 192.168.88.53
+    addr_source: static-bench
+    critical: true
+    notes: RF channel 3. Controlled by apu_1.
+
+  apu_0:
+    kind: apu
+    model: Magos APU
+    addr: 192.168.88.60
+    addr_source: static-bench
+    critical: true
+    notes: >-
+      Controls radar_0 and radar_1 (a control relationship, not a cable —
+      everything is on the one subnet). Firmware floor 3.1.2.
+      unconfirmed: which switch and port the APUs actually plug into.
+  apu_1:
+    kind: apu
+    model: Magos APU
+    addr: 192.168.88.61
+    addr_source: static-bench
+    critical: true
+    notes: "Controls radar_2 and radar_3. unconfirmed: switch and port."
+
+  camera_thermal:
+    kind: camera
+    model: Raythink PC464A1
+    addr: 192.168.88.30
+    addr_source: static-bench
+    addr_pool: cameras
+    notes: >-
+      Data on the PoE switch's gi9, but gi9 is one of the IGS-4215's two
+      NON-PoE copper sockets — the camera takes its power from psu_main, not
+      from the switch.
+
+  speaker:
+    kind: speaker
+    model: Provision-ISR PR-HS15W-IP
+    addr: 192.168.88.70
+    addr_source: static-bench
+
+# Data links. `port` is the socket on `from`, `peer_port` the socket on `to`.
+net:
+  - from: cellular_network
+    to: otd500
+    media: cellular
+  - from: otd500
+    to: router
+    peer_port: wan
+    media: ethernet
+  - from: router
+    to: switch_mgmt
+    port: lan1
+    media: ethernet
+    notes: "unconfirmed: which router LAN port"
+  - from: switch_mgmt
+    to: switch_poe
+    peer_port: gi10
+    media: ethernet
+    notes: >-
+      gi10 is the PLANET's management drop and takes no power from the switch.
+      unconfirmed: which TSW202 port feeds it.
+  - from: switch_mgmt
+    to: server
+    media: ethernet
+    notes: "unconfirmed: which port"
+
+  # The PLANET port map — this half IS documented (planet.config.json).
+  - from: switch_poe
+    to: radar_0
+    port: gi1
+  - from: switch_poe
+    to: radar_1
+    port: gi2
+  - from: switch_poe
+    to: radar_2
+    port: gi3
+  - from: switch_poe
+    to: radar_3
+    port: gi4
+  - from: switch_poe
+    to: speaker
+    port: gi8
+  - from: switch_poe
+    to: camera_thermal
+    port: gi9
+    notes: Non-PoE copper socket — data only.
+
+  - from: switch_mgmt
+    to: apu_0
+    media: ethernet
+    notes: "unconfirmed: which switch and port"
+  - from: switch_mgmt
+    to: apu_1
+    media: ethernet
+    notes: "unconfirmed: which switch and port"
+
+# Power feeds. `via: poe` is the only kind a switch can report on its own;
+# everything else has to be declared, because no protocol carries it.
+power:
+  - from: mains
+    to: psu_main
+    via: mains
+
+  - from: psu_main
+    to: switch_poe
+    inlet: PWR1
+    via: dc
+    notes: >-
+      unconfirmed whether PWR2 is also wired. If it is, add the second edge —
+      the 240 W budget may only be exceeded when both inputs are live.
+  - from: psu_main
+    to: switch_mgmt
+    via: dc
+  - from: psu_main
+    to: router
+    via: dc
+  - from: psu_main
+    to: server
+    via: dc
+  - from: psu_main
+    to: otd500
+    via: dc
+    notes: "unconfirmed: the OTD500 may be PoE-fed instead."
+  - from: psu_main
+    to: apu_0
+    via: dc
+  - from: psu_main
+    to: apu_1
+    via: dc
+  - from: psu_main
+    to: camera_thermal
+    via: dc
+    notes: gi9 is non-PoE, so the camera is externally powered.
+
+  # PoE. draw_w is what the device actually pulls — an AR-300 is ~35 W. The
+  # 45 W figure in planet.config.json is a port *ceiling* that nothing is
+  # currently applying (poe_managed is false), so it does not belong here.
+  - from: switch_poe
+    to: radar_0
+    outlet: gi1
+    via: poe
+    draw_w: 35
+  - from: switch_poe
+    to: radar_1
+    outlet: gi2
+    via: poe
+    draw_w: 35
+  - from: switch_poe
+    to: radar_2
+    outlet: gi3
+    via: poe
+    draw_w: 35
+  - from: switch_poe
+    to: radar_3
+    outlet: gi4
+    via: poe
+    draw_w: 35
+  - from: switch_poe
+    to: speaker
+    outlet: gi8
+    via: poe
+    draw_w: 20

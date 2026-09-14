@@ -1,0 +1,67 @@
+name: site-map lint
+
+# Offline checks over every site model: address collisions, overlapping
+# pools, orphaned nodes, unpowered devices, PoE budgets. No device is
+# contacted and no credentials are needed, which is why this can run on
+# every push — see site-map/README.md.
+
+on:
+  push:
+    paths:
+      - "site-map/**"
+      - ".github/workflows/site-map-lint.yml"
+  pull_request:
+    paths:
+      - "site-map/**"
+      - ".github/workflows/site-map-lint.yml"
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint site models
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site-map
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r requirements-dev.txt
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Lint every site model
+        run: |
+          shopt -s nullglob
+          files=(sites/*.yaml)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No site models to lint."
+            exit 0
+          fi
+          # Templates ship with two KNOWN errors — the camera pool ends on the
+          # radar's .50 (see README) — so they are linted for output but not
+          # allowed to fail the build until that is resolved upstream in the
+          # bench tool configs. Real site files are held to a clean bill.
+          #
+          # A site whose own file says `status: provisional` is half-surveyed
+          # on purpose; `lint` already downgrades its gaps to warnings, so it
+          # is checked here the same as any other file. Only contradictions —
+          # an address collision, a loop — can fail it.
+          real=()
+          for f in "${files[@]}"; do
+            case "$(basename "$f")" in
+              _*) echo "::group::$f (template, advisory)"
+                  python sitemap.py lint "$f" || true
+                  echo "::endgroup::" ;;
+              *)  real+=("$f") ;;
+            esac
+          done
+          if [ ${#real[@]} -gt 0 ]; then
+            python sitemap.py lint "${real[@]}"
+          fi

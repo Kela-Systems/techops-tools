@@ -1,0 +1,493 @@
+# kela-fob-03 — re-assessed 2026-09-14 against bench-central (284 run
+# records, 33 device labels) at techops-automations-host:8100, and against a
+# read-only ICMP sweep of the subnet run from the site server (.10).
+#
+# WHAT THE RE-ASSESSMENT ESTABLISHED
+#
+#   proven   8 devices answered at 8 addresses; their MACs; their vendors
+#   NOT      the model of ANY of them
+#   NOT      the firmware of ANY of them
+#   NOT      what is plugged into what
+#   NOT      what powers what
+#
+# WHAT CHANGED SINCE — 2026-09-14, by reading devices' own APIs from the site
+# server (never from a bench station), each reading accepted only after the
+# device's self-reported MAC matched the router's ARP observation:
+#
+#   proven   model + firmware on 6 of 10: two radars (SR1000-I), two cameras
+#            (SG-PTZ), the server and the operator station (both Dell)
+#   proven   .1 is the subnet's DHCP server, DNS resolver and gateway, from
+#            the leases held by two independent clients
+#   proven   .10 and .29 hold DHCP LEASES, not statics
+#   still    NOT the model of .1, .118, .132 or .133 — three distinct
+#   NOT      reasons, spelled out at the foot of this file
+#   still    NOT what is plugged into what, and NOT what powers what
+#   NOT
+#
+# Two inferred shortlists were checked against hardware and BOTH were wrong:
+# the radars were shortlisted AR-300/SR1000-F/SR500-F and read as SR1000-I;
+# the cameras were shortlisted PC464A1 and read as SG-PTZ. Both shortlists
+# were derived correctly from real archive data. `candidates:` is a
+# shortlist, and a shortlist is not a model.
+#
+# None of these 8 MACs appears in bench-central, in either MAC spelling the
+# archive uses. There is also no `kela-fob-03` site in it at all (it holds
+# kela-fob-09-new, -11, -22..-26 and -backup). So this site was either never
+# provisioned through the bench, provisioned before central shipping was
+# switched on, or filed under another label. A miss is NOT evidence of
+# anything: central shipping is opt-in per station (BENCH_CENTRAL_URL).
+#
+# `candidates:` below is a SHORTLIST, never a model. It comes from vendor
+# correlation across the archive's 284 runs, which narrows the field without
+# settling anything. Only the device's own API, or a bench record of it, can
+# fill in `model:`.
+version: 1
+site: kela-fob-03
+status: provisional
+subnet: 192.168.88.0/24
+
+# No `uplink:` — which device faces the CARRIER is still not established.
+# What is established (2026-09-14, from the DHCP leases on .10 and .29) is
+# that .1 is this subnet's default gateway, DHCP server and DNS resolver, so
+# .1 is the LAN's way out. What sits beyond it is not: a Tailscale peer named
+# otd-kela-fob-03 exists and did not answer on this subnet, so an OTD500
+# probably sits upstream on the WAN side — but "probably" is not a topology,
+# and `uplink:` stays empty until something reads it.
+
+reservations:
+  infra:
+    range: 1-3
+    owner: bench
+  cameras:
+    range: 30-50
+    owner: bench
+    dynamic: true
+    # Worth noting: this site's Magos units are on .130-.133, so the
+    # camera/radar overlap at .50 that the template trips on does not arise
+    # here. The documented .50-.53 radar plan is not what this site uses.
+
+nodes:
+  router:
+    kind: router
+    vendor: Teltonika Networks
+    mac: 20:97:27:36:55:ec
+    addr: 192.168.88.1
+    addr_source: static-manual
+    evidence: arp
+    critical: true
+    roles: [dhcp-server, dns-resolver, default-gateway]
+    candidates: ["RUTM08"]
+    candidate_basis: >-
+      hostname rut-kela-fob-03.lan, address .1, and RUTM08 being the only
+      RUT-M model in 52 rutm runs (no RUTM51 anywhere in the archive)
+    notes: >-
+      Teltonika also makes the OTD500 and TSW202 on this same 20:97:27
+      prefix, so the OUI alone does not separate them — the model is still
+      unread.
+
+      What IS now settled is what this device DOES, read 2026-09-14 from the
+      DHCP leases held on two independent hosts (the server at .10 and the
+      operator station at .29). Both leases name
+      SERVER_ADDRESS=192.168.88.1, ROUTER=192.168.88.1 and DNS=192.168.88.1,
+      and `networkctl` on .29 reports "Address: 192.168.88.29 (DHCP4 via
+      192.168.88.1)". So this device is the subnet's DHCP server, its
+      default gateway and its DNS resolver. That is two separate clients
+      agreeing, not an inference from the .1 address.
+
+      `addr_source` is therefore static-manual rather than static-bench: a
+      DHCP server does not lease its own address, so .1 is configured on the
+      device — but nothing shows the bench configured it, and static-bench
+      would claim that.
+
+  operator_station:
+    kind: operator-station
+    vendor: Dell Inc.
+    model: Dell Pro Micro QCM1250
+    firmware: 1.4.4
+    mac: e8:cf:83:3f:f3:83
+    addr: 192.168.88.29
+    addr_source: dhcp-lease
+    evidence:
+      "*": arp
+      vendor: device-api
+      model: device-api
+      firmware: device-api
+    verified_at: 2026-09-14
+    notes: >-
+      Hostname kela-fob-03-operator. Identity read on the host itself
+      2026-09-14 from /sys/class/dmi/id, which is world-readable and needed
+      no sudo: vendor Dell Inc., model Dell Pro Micro QCM1250, board 04C6CY,
+      chassis type 3 (desktop). `firmware` holds the BIOS version (1.4.4,
+      dated 2025-05-08), the firmware analogue on a PC. product_serial reads
+      empty — that DMI field is root-only here, so the serial is genuinely
+      unread rather than absent. The OS is Ubuntu 22.04.5 LTS on kernel
+      6.8.0-101-generic; that is software on its own schedule, so it is
+      recorded here rather than in the firmware field. Worth noting for
+      patching: the server at .10 is on 24.04.4, so the two PCs are a
+      release apart.
+
+      The MAC the host reports for enp128s31f6 is e8:cf:83:3f:f3:83, which
+      matches the router's ARP observation exactly — the cross-check that
+      rules out having read a bench machine over the colliding
+      192.168.88.0/24.
+
+      Reached by forwarding a local port to .29:22 through the site server,
+      so nothing was written to either box. SSH keys do NOT work here and
+      the reason is on the far end: this sshd advertises only password auth
+      (`Authentications that can continue: password`), so a key installed by
+      ssh-copy-id is never offered and never used. Fixing that is an sshd
+      config change, which is a write to production and was not made.
+
+      `addr_source` is dhcp-lease, read off the interface itself: the
+      address carries `scope global dynamic` with a finite valid_lft, and
+      /run/systemd/netif/leases names .1 as the server. Not a static.
+
+      Still no candidates list, and that is correct: operator stations do
+      not go through a bench tool, so bench-central will never hold one.
+
+  camera_1:
+    kind: camera
+    vendor: HangZhou JuRu Technology
+    mac: bc:74:d7:81:17:b1
+    addr: 192.168.88.30
+    addr_source: static-bench
+    addr_pool: cameras
+    model: SG-PTZ
+    firmware: 1.000.0000.0.R
+    evidence:
+      "*": arp
+      model: device-api
+      firmware: device-api
+    verified_at: 2026-09-14
+    notes: >-
+      Model and firmware read off the camera's own RPC2 API on 2026-09-14
+      (read-only client armed after login). Serial KC0500PAZ00052, which
+      matches the ARP hostname KC0500PAZ00052.lan exactly, and the camera
+      reported its own MAC as bc:74:d7:81:17:b1 — identical to the ARP
+      observation at .30. Those two independent matches are what rule out
+      having reached a bench camera on the same address.
+
+      The shortlist was PC464A1 and it was WRONG: every BC:74:D7 camera in
+      the archive reports PC464A1, and this one is an SG-PTZ — a pan/tilt/zoom
+      unit, a different class of device from the fixed PC464A1. So the OUI
+      correlation that produced that shortlist does not hold at this site.
+      The old note about the serial prefix
+      differs from camera_2 (KC vs HF) and nothing maps that prefix to a
+      model, so the two are not necessarily identical units.
+
+  camera_2:
+    kind: camera
+    vendor: HangZhou JuRu Technology
+    mac: bc:74:d7:80:c6:4d
+    addr: 192.168.88.31
+    addr_source: static-bench
+    addr_pool: cameras
+    model: SG-PTZ
+    firmware: 1.000.0000.0.R
+    evidence:
+      "*": arp
+      model: device-api
+      firmware: device-api
+    verified_at: 2026-09-14
+    notes: >-
+      Read off the device 2026-09-14, same as camera_1. Serial
+      HF0428PAZ00055, matching its ARP hostname; self-reported MAC matched
+      the ARP observation at .31. Same model and firmware as camera_1
+      despite a different serial prefix (HF0428 vs KC0500) — which settles
+      an open question in this file: the serial prefix does NOT encode the
+      model, so it can never be used to narrow one.
+
+  # The four Magos units. The MA-S block 8C:1F:64:E7:4 is a Magosys Systems
+  # assignment, and the archive splits radars from APUs cleanly by OUI: across
+  # 65 runs carrying a MAC, 44/44 radars are on Magosys prefixes and 21/21
+  # APUs are on NVIDIA ones (an APU is Jetson-based). So these are radars
+  # rather than APUs — a strong inference from 65 records with no
+  # counterexample, and still not a reading off these devices.
+  radar_1:
+    kind: radar
+    vendor: Magosys Systems
+    mac: 8c:1f:64:e7:4c:46
+    addr: 192.168.88.130
+    addr_source: static-bench
+    model: SR1000-I
+    firmware: 1.1.4
+    evidence:
+      "*": arp
+      model: device-api
+      firmware: device-api
+    verified_at: 2026-09-14
+    critical: true
+    notes: >-
+      Model and firmware read off the radar's own dashboard API on
+      2026-09-14 (read-only client, one login) — and the login that worked
+      was admin/password, the Magos FACTORY DEFAULT. See the SECURITY FINDING
+      at the foot of this file; that is a fact about this site, not a detail
+      of the probe. Serial 12510000-082. The
+      radar reported its own MAC as 8c:1f:64:e7:4c:46, identical to the MAC
+      the site server's ARP table observed at .130 — that match is what
+      proves this was THIS site's radar and not a bench unit, since
+      192.168.88.0/24 is also the bench subnet. Firmware is the System
+      Software version; the unit separately reports Dashboard 2.4.3, DSP
+      1.2.4 and FPGA 1.2.6, and those move independently.
+      Outside the documented .50-.53 radar plan. Radar rather than APU by the
+      Magosys-vs-NVIDIA OUI split, not by reading the unit.
+  radar_2:
+    kind: radar
+    vendor: Magosys Systems
+    mac: 8c:1f:64:e7:47:d3
+    addr: 192.168.88.131
+    addr_source: static-bench
+    model: SR1000-I
+    firmware: 1.1.4
+    evidence:
+      "*": arp
+      model: device-api
+      firmware: device-api
+    verified_at: 2026-09-14
+    critical: true
+    notes: >-
+      Read off the device 2026-09-14, same as radar_1 — including the
+      factory-default admin/password login; see the SECURITY FINDING at the
+      foot of this file. Serial 12510000-005.
+      Self-reported MAC matched the ARP observation at .131. Component
+      versions identical to radar_1 (Dashboard 2.4.3, DSP 1.2.4, FPGA 1.2.6).
+  radar_3:
+    kind: radar
+    vendor: Magosys Systems
+    mac: 8c:1f:64:e7:48:c7
+    addr: 192.168.88.132
+    addr_source: static-bench
+    evidence: arp
+    critical: true
+    candidates: ["SR1000-I"]
+    candidate_basis: >-
+      its two neighbours at .130 and .131 both read as SR1000-I off their own
+      API, and all four share the Magosys OUI and were installed together —
+      so this is the likeliest model, but it was NOT read off this unit
+    notes: >-
+      COULD NOT BE IDENTIFIED, and the reason matters. This unit answers
+      ICMP (3/3, 0% loss) and sits in the site server's neighbour table, so
+      it is powered and on the network — but it serves NO TCP port at all.
+      Re-checked 2026-09-14 with a full connect scan of ports 1-10240 run
+      FROM THE SITE SERVER, on the same L2 segment as the radar: zero open
+      ports. The same scan from the same host finds 22, 80 and 443 open on
+      .130 and .131. So this is not a vantage-point artifact and not the
+      192.168.88.0/24 bench collision producing a false negative — it is the
+      radar.
+
+      That settles a specific question: a port forward cannot help here.
+      Forwarding needs something listening to forward to, and these two
+      units are not listening on anything. The Magos dashboard API is plain
+      HTTP on 80, so there is nothing to query and no credential would
+      change the outcome.
+
+      Worth an operator's attention on its own merits: two of four radars
+      serving no management port is either a stopped web service, a host
+      firewall or VLAN difference on these two, a management interface bound
+      to an address on another subnet, or a genuinely different product
+      variant. Detections may still be flowing — that rides a separate path
+      — so this is NOT evidence the radar is down. Deciding between those
+      needs the router's view of the subnet, or physical/console access.
+  radar_4:
+    kind: radar
+    vendor: Magosys Systems
+    mac: 8c:1f:64:e7:48:d3
+    addr: 192.168.88.133
+    addr_source: static-bench
+    evidence: arp
+    critical: true
+    candidates: ["SR1000-I"]
+    candidate_basis: >-
+      its two neighbours at .130 and .131 both read as SR1000-I off their own
+      API, and all four share the Magosys OUI and were installed together —
+      so this is the likeliest model, but it was NOT read off this unit
+    notes: >-
+      COULD NOT BE IDENTIFIED, and the reason matters. This unit answers
+      ICMP (3/3, 0% loss) and sits in the site server's neighbour table, so
+      it is powered and on the network — but it serves NO TCP port at all.
+      Re-checked 2026-09-14 with a full connect scan of ports 1-10240 run
+      FROM THE SITE SERVER, on the same L2 segment as the radar: zero open
+      ports. The same scan from the same host finds 22, 80 and 443 open on
+      .130 and .131. So this is not a vantage-point artifact and not the
+      192.168.88.0/24 bench collision producing a false negative — it is the
+      radar.
+
+      That settles a specific question: a port forward cannot help here.
+      Forwarding needs something listening to forward to, and these two
+      units are not listening on anything. The Magos dashboard API is plain
+      HTTP on 80, so there is nothing to query and no credential would
+      change the outcome.
+
+      Worth an operator's attention on its own merits: two of four radars
+      serving no management port is either a stopped web service, a host
+      firewall or VLAN difference on these two, a management interface bound
+      to an address on another subnet, or a genuinely different product
+      variant. Detections may still be flowing — that rides a separate path
+      — so this is NOT evidence the radar is down. Deciding between those
+      needs the router's view of the subnet, or physical/console access.
+
+  # The site server, and the box the ARP table was taken from — which is why
+  # it did not appear in its own output. Confirmed by reading its addresses.
+  server:
+    kind: server
+    vendor: Dell Inc.
+    model: Dell Pro Max Tower T2 FCT2250
+    firmware: 1.6.1
+    addr: 192.168.88.10
+    addr_source: dhcp-lease
+    evidence:
+      "*": arp
+      vendor: device-api
+      model: device-api
+      firmware: device-api
+    verified_at: 2026-09-14
+    critical: true
+    roles: [ntp-server]
+    notes: >-
+      Hostname kela-fob-03, a Linux host on enp128s31f6 also carrying
+      tailscale0 and a k3s flannel/cni0 bridge. Every bench tool points its
+      NTP at .10, so this is the site's time source as well as its
+      application server. Not a bench-managed device, so bench-central will
+      never hold a model for it. Address confirmed on the host itself
+      (2026-09-14, `ip -4 addr`): 192.168.88.10/24 on enp128s31f6, held as a
+      DHCP lease rather than a static — `scope global dynamic` with a finite
+      valid_lft, and /run/systemd/netif/leases names SERVER_ADDRESS=
+      192.168.88.1. `addr_source` was corrected from static-bench to
+      dhcp-lease on 2026-09-14 to match. This is worth an operator's
+      attention rather than just a field fix: every bench tool points its
+      NTP at .10, and a site time source on a lease can move. The fix is a
+      static reservation on the router, which is a write and was not made.
+
+      Identity read on the host itself 2026-09-14 from /sys/class/dmi/id,
+      which is world-readable and needed no sudo and no extra credential —
+      the SSH access already in use was enough. Vendor Dell Inc., model
+      Dell Pro Max Tower T2 FCT2250, board 0D8XDK. `firmware` holds the BIOS
+      version (1.6.1), since that is the firmware analogue on a PC; the OS is
+      Ubuntu 24.04.4 LTS on kernel 6.8.0-139-generic, which is software and
+      moves on its own schedule, so it is recorded here rather than in the
+      firmware field.
+
+  # Found only by the ICMP sweep — it is NOT in the ARP table the site
+  # originally produced, which is the clearest possible demonstration that an
+  # ARP table lists only recent conversations rather than the site.
+  teltonika_118:
+    kind: network-device
+    vendor: Teltonika Networks
+    mac: 20:97:27:a0:ec:70
+    addr: 192.168.88.118
+    addr_source: static-bench
+    evidence: arp
+    candidates: ["TSW202"]
+    candidate_basis: >-
+      the 209727a0 and 209727ca MAC blocks hold TSW202 units only (9 of 9
+      across the device-label store), while every OTD500 and RUTM08 sits in
+      the 2097272b-20972749 range; n=1 for the a0 block specifically, so
+      treat this as suggestive rather than settled. A read-only TCP check
+      from the site server on 2026-09-14 found 22, 80 and 443 all open,
+      which is the RutOS profile (SSH plus the HTTPS management UI) and is
+      consistent with a TSW202 — but the router at .1 and any other RutOS
+      device present the same three ports, so this narrows the family, not
+      the model.
+    notes: >-
+      If this is a TSW202 it is the site's managed switch, sitting on .118
+      rather than the documented .2 — and it would be the one device here
+      that can answer the cabling question, since a managed switch holds a
+      MAC address table. Worth probing first for that reason.
+
+# SWEEP RESULT — a read-only ICMP sweep of all 254 addresses, run from the
+# site server, then re-reading its neighbour table. Nine devices answered:
+# .1, .10, .29, .30, .31, .118, .130, .131, .132, .133.
+#
+# These addresses did NOT answer:
+#   192.168.88.2    where the bench puts a TSW202
+#   192.168.88.3    where the bench puts the PLANET IGS-4215 PoE switch
+#   192.168.88.70   where the bench puts the speaker
+#
+# A sweep is much stronger evidence of absence than an ARP table, because it
+# solicits every address rather than reporting past conversations. So this
+# site most likely has NO PLANET PoE switch and NO speaker. Which raises the
+# question the model cannot answer: if there is no PoE switch, what powers
+# four radars? Either an unmanaged injector or midspan (invisible to every
+# protocol) or the .118 device. That is a survey question.
+#
+# Tailscale also lists peers otd-kela-fob-03, kela-fob-03-operator and
+# kela-fob-03 at this site. The OTD500 did not answer on this subnet at all,
+# so it is presumably upstream of the router on the WAN side.
+#
+# NO net: OR power: BLOCK. An ARP sweep proves no cable and no feed. The
+# PLANET's MAC-address table would establish the cabling; its PoE port status
+# would establish the powered half. The DC and mains side cannot be
+# established by any protocol and needs a survey.
+
+# PORT PROFILES — read-only TCP connect checks from the site server,
+# 2026-09-14. Not a model, but it does corroborate each device's family and
+# tells us which transport a probe would have to use:
+#
+#   .1    22/80/443 open   RutOS: SSH + HTTPS management
+#   .118  22/80/443 open   same profile — see teltonika_118's basis note
+#   .130  22/80/443 open   Magos dashboard API over HTTP
+#   .131  22/80/443 open   same
+#   .132  NOTHING OPEN     full connect scan of 1-10240, zero ports
+#   .133  NOTHING OPEN     same
+#   .30   80 only          Raythink RPC2 is HTTP-only; no SSH, no TLS
+#   .29   22 only          sshd offering password auth ONLY, no publickey
+#
+# The .132/.133 result is the load-bearing one, so it was taken the strongest
+# way available: all 10240 ports, from the site server, on the same segment,
+# in the same run that found three open ports on .130 and .131. Those two
+# radars are not listening on anything, which is why no port forward and no
+# credential can reach them.
+#
+# WHAT IS STILL UNREAD, AND WHY — 2026-09-14. Six of ten devices now carry a
+# model and a firmware read off the device's own API. The remaining four are
+# blocked for three different reasons, and the difference matters because
+# only one of them is a credential problem:
+#
+#   .132, .133  radar_3, radar_4 — NOTHING TO QUERY. Alive on the network,
+#      serving no TCP port at all (see PORT PROFILES above). No credential,
+#      tunnel or port forward can reach a service that is not listening.
+#      This needs console or physical access, or the router's view.
+#
+#   .1, .118  router, teltonika_118 — NO CREDENTIAL ON THIS MACHINE. The
+#      rutm/tsw/otd bench configs hold example values only. The transport
+#      that once looked like a second blocker is NOT one: both devices are
+#      Tailscale peers (rut-kela-fob-03, and the site's otd-kela-fob-03),
+#      so they are directly addressable and the SOCKS-proxy problem —
+#      paramiko ignores ALL_PROXY, and TeltonikaClient takes a bare host
+#      with no port override — never arises. A real RutOS password is the
+#      only thing missing. .118 is the highest-value target left: if it is a
+#      TSW202 it holds the MAC address table that answers the cabling
+#      question, which nothing else here can.
+#
+# The bench-station hazard still applies to every probe and is not a blocker
+# so much as a standing rule: this subnet is 192.168.88.0/24 at every site
+# AND on the bench, and a bench Mac carries a 192.168.88.10 alias on its USB
+# NIC. Probing .130 from there reaches whatever is on the bench — the same
+# address, a different device, and an answer that looks perfectly valid.
+# Every probe runs from the site server or through a tunnel to it, and every
+# reading recorded above was accepted only after the device's self-reported
+# MAC matched the router's ARP observation. That cross-check is what makes
+# these device-api claims trustworthy rather than merely plausible.
+#
+# Contacting a production device with a credential still needs explicit
+# operator approval each time.
+
+# SECURITY FINDING — 2026-09-14. Both readable radars (.130, .131) accepted
+# the Magos FACTORY DEFAULT login, admin/password. This was not guessed: it is
+# the value in the bench tool's own magos config, whose comment documents it
+# as what a fresh AR-300 boots with, and it authenticated on the first attempt
+# against both units. So these radars were never moved off the vendor default
+# after installation.
+#
+# Why this sits here rather than in a node note: it is a property of the site,
+# it applies to every Magos unit installed the same way (so other sites are
+# worth checking), and the two unreachable radars at .132/.133 cannot be
+# checked at all. Nothing was changed — rotating a live radar password is a
+# write to production and is the operator's call.
+#
+# A much smaller related point, already fixed on 2026-09-14: the bench repo
+# tracked bench/magos-config-ui/config/magos.config.json, because magos was
+# the one tool with no gitignore rule for its live config. The committed
+# values are these same factory defaults, so nothing secret leaked — but the
+# file is edited per station, and the next real password would have been
+# committed silently.

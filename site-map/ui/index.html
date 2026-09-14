@@ -1,0 +1,1055 @@
+<title>Site Wiring Map</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* ---------------------------------------------------------------------------
+   Tokens.
+
+   This page's job is to be honest about what is known, so certainty gets the
+   dominant visual language, not the topology. Three states, distinguishable
+   without colour (weight, dash, glyph) as well as with it:
+
+     proven     read off the hardware            solid, green, check
+     narrowed   a shortlist, not an answer       solid amber, tilde
+     unknown    nobody has checked               dashed, grey, dash
+
+   Teal still means the data graph and copper the power graph, as in the
+   Mermaid renders, so the two views read as one system.
+--------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+
+  --ground: #f3f6f7;
+  --surface: #ffffff;
+  --surface-2: #e9eef0;
+  --surface-3: #dde5e8;
+  --line: #d0d9dd;
+  --line-strong: #aab8be;
+
+  --ink: #141a1e;
+  --ink-2: #47555c;
+  --ink-3: #71818a;
+
+  --data: #12706c;
+  --data-soft: #d6ebea;
+  --power: #a95c27;
+  --power-soft: #f3e2d3;
+
+  --proven: #1c6b41;
+  --proven-soft: #d8ebe0;
+  --narrowed: #855c07;
+  --narrowed-soft: #f6ead1;
+  --unknown: #71818a;
+  --unknown-soft: #e9eef0;
+  --alarm: #b32d26;
+  --alarm-soft: #f6dedc;
+
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-cond: "IBM Plex Sans Condensed", "IBM Plex Sans", ui-sans-serif, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --r: 3px;
+  --r-lg: 5px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground: #0e1215;
+    --surface: #161c20;
+    --surface-2: #1e262b;
+    --surface-3: #273137;
+    --line: #2a343a;
+    --line-strong: #43525a;
+    --ink: #e7eef1;
+    --ink-2: #a2b0b7;
+    --ink-3: #75848c;
+    --data: #4cc0b7;
+    --data-soft: #10312f;
+    --power: #e19553;
+    --power-soft: #35220f;
+    --proven: #5fbd85;
+    --proven-soft: #12301f;
+    --narrowed: #d9b158;
+    --narrowed-soft: #322710;
+    --unknown: #75848c;
+    --unknown-soft: #1e262b;
+    --alarm: #ea6259;
+    --alarm-soft: #3a1a17;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #0e1215;
+  --surface: #161c20;
+  --surface-2: #1e262b;
+  --surface-3: #273137;
+  --line: #2a343a;
+  --line-strong: #43525a;
+  --ink: #e7eef1;
+  --ink-2: #a2b0b7;
+  --ink-3: #75848c;
+  --data: #4cc0b7;
+  --data-soft: #10312f;
+  --power: #e19553;
+  --power-soft: #35220f;
+  --proven: #5fbd85;
+  --proven-soft: #12301f;
+  --narrowed: #d9b158;
+  --narrowed-soft: #322710;
+  --unknown: #75848c;
+  --unknown-soft: #1e262b;
+  --alarm: #ea6259;
+  --alarm-soft: #3a1a17;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.wrap {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding-block: 24px 56px;
+  padding-left: 20px;
+  padding-right: 20px;
+}
+
+.eyebrow {
+  font-family: var(--font-cond);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* --- masthead ---------------------------------------------------------- */
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px 24px;
+  padding-bottom: 14px;
+  border-bottom: 2px solid var(--ink);
+}
+.masthead h1 {
+  margin: 2px 0 0;
+  font-size: clamp(23px, 3.6vw, 32px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-family: var(--font-mono);
+}
+.masthead .sub { margin: 5px 0 0; color: var(--ink-2); font-size: 13px; }
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: var(--r);
+  font-family: var(--font-cond);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  border: 1px solid var(--narrowed);
+  background: var(--narrowed-soft);
+  color: var(--narrowed);
+}
+
+/* --- the headline verdict --------------------------------------------- */
+
+.verdict {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1px;
+  margin-top: 22px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.vcell { background: var(--surface); padding: 13px 15px; }
+.vcell b {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 25px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.vcell .vlabel {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--font-cond);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.vcell .vnote { display: block; margin-top: 5px; font-size: 12px; color: var(--ink-2); }
+.vcell.good b { color: var(--proven); }
+.vcell.mid b { color: var(--narrowed); }
+.vcell.none b { color: var(--unknown); }
+
+.banner {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--narrowed);
+  border-left-width: 3px;
+  border-radius: var(--r);
+  background: var(--narrowed-soft);
+}
+.banner h2 {
+  margin: 0 0 5px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--narrowed);
+}
+.banner p { margin: 0; font-size: 13px; color: var(--ink-2); max-width: 74ch; }
+.banner p + p { margin-top: 7px; }
+
+/* --- coverage ---------------------------------------------------------- */
+
+.cov { display: flex; flex-direction: column; gap: 2px; }
+.covrow {
+  display: grid;
+  grid-template-columns: 86px 52px minmax(90px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.covrow:last-child { border-bottom: none; }
+.covrow .cname {
+  font-family: var(--font-cond);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.covrow .cpct { font-family: var(--font-mono); font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+.covrow .cdetail { font-size: 12px; color: var(--ink-3); text-align: right; }
+.track {
+  height: 8px;
+  background: var(--unknown-soft);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.track > i { display: block; height: 100%; }
+.covrow.full .cpct { color: var(--proven); }
+.covrow.full .track > i { background: var(--proven); }
+.covrow.part .cpct { color: var(--narrowed); }
+.covrow.part .track > i { background: var(--narrowed); }
+.covrow.zero .cpct { color: var(--unknown); }
+.covrow.absent .cpct { color: var(--unknown); }
+.covrow.absent .track {
+  border-style: dashed;
+  background: repeating-linear-gradient(135deg, var(--unknown-soft) 0 4px, transparent 4px 8px);
+}
+
+/* --- panels ------------------------------------------------------------ */
+
+.cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 330px;
+  gap: 22px;
+  align-items: start;
+  margin-top: 22px;
+}
+.main, .rail { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.rail { position: sticky; top: 16px; }
+
+@media (max-width: 1000px) {
+  .cols { grid-template-columns: minmax(0, 1fr); }
+  .rail { position: static; }
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  min-width: 0;
+}
+.panel > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.panel > header h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.panel > header .hint { font-size: 11.5px; color: var(--ink-3); text-align: right; }
+.panel > .body { padding: 14px; }
+.panel > .body.flush { padding: 0; }
+
+/* --- certainty chips --------------------------------------------------- */
+
+.fact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: var(--r);
+  font-size: 11.5px;
+  border: 1px solid;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.fact .fglyph { font-family: var(--font-mono); font-weight: 600; flex: none; }
+.fact .fval { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; }
+.fact.proven { border-color: var(--proven); background: var(--proven-soft); color: var(--proven); }
+.fact.narrowed { border-color: var(--narrowed); background: var(--narrowed-soft); color: var(--narrowed); }
+.fact.unknown {
+  border-color: var(--line-strong);
+  border-style: dashed;
+  background: transparent;
+  color: var(--ink-3);
+}
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.legend div { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-2); }
+
+/* --- device list ------------------------------------------------------- */
+
+.devs { list-style: none; margin: 0; padding: 0; }
+.devs > li { border-bottom: 1px solid var(--line); }
+.devs > li:last-child { border-bottom: none; }
+
+.devrow {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 4px 14px;
+  align-items: start;
+  width: 100%;
+  padding: 11px 14px;
+  background: none;
+  border: none;
+  border-left: 3px solid transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.devrow:hover { background: var(--surface-2); }
+.devrow[aria-current="true"] { background: var(--data-soft); border-left-color: var(--data); }
+.devrow:focus-visible { outline: 2px solid var(--data); outline-offset: -2px; }
+
+.devrow .daddr { font-family: var(--font-mono); font-size: 13px; font-weight: 500; }
+.devrow .dmac { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+.devrow .dname { font-weight: 500; overflow-wrap: anywhere; }
+.devrow .dkind {
+  font-family: var(--font-cond);
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.devrow .dfacts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+
+/* --- not-established panels ------------------------------------------- */
+
+.gap {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 15px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r);
+  background: repeating-linear-gradient(135deg, var(--unknown-soft) 0 6px, transparent 6px 12px);
+}
+.gap .gtitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.gap p { margin: 0; font-size: 12.5px; color: var(--ink-2); max-width: 70ch; }
+.gap .gfix {
+  margin: 0;
+  padding: 9px 11px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font-size: 12.5px;
+}
+.gap .gfix b { font-family: var(--font-cond); letter-spacing: 0.05em; text-transform: uppercase; font-size: 10.5px; color: var(--ink-3); display: block; margin-bottom: 3px; }
+.gap code, .prose code, .gfix code { font-family: var(--font-mono); font-size: 11.5px; }
+
+/* --- tables ------------------------------------------------------------ */
+
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+th {
+  font-family: var(--font-cond);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+tr:last-child td { border-bottom: none; }
+td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* --- inspector --------------------------------------------------------- */
+
+.kv { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: 12.5px; }
+.kv dt { font-family: var(--font-cond); font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-3); padding-top: 2px; }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+
+.insp-sec { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.insp-sec > .eyebrow { display: block; margin-bottom: 7px; }
+.insp h3 { margin: 0; font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.prose { margin: 0; font-size: 12.5px; color: var(--ink-2); }
+.prose + .prose { margin-top: 6px; }
+a { color: var(--data); }
+
+.chip {
+  display: inline-flex;
+  padding: 1px 6px;
+  border-radius: var(--r);
+  font-size: 11px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+.chip.crit { border-color: var(--alarm); background: var(--alarm-soft); color: var(--alarm); }
+
+.findings { list-style: none; margin: 0; padding: 0; }
+.findings li { display: grid; grid-template-columns: 3px minmax(0, 1fr); gap: 10px; padding: 9px 13px; border-bottom: 1px solid var(--line); }
+.findings li:last-child { border-bottom: none; }
+.findings .stripe { border-radius: 2px; background: var(--narrowed); }
+.findings li.error .stripe { background: var(--alarm); }
+.findings .fcode { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--narrowed); }
+.findings li.error .fcode { color: var(--alarm); }
+.findings .fwhere { font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--ink); }
+.findings .fmsg { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+
+.foot { margin-top: 26px; font-size: 11.5px; color: var(--ink-3); max-width: 80ch; }
+.foot code { font-family: var(--font-mono); font-size: 11px; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <div>
+      <p class="eyebrow" id="eyebrow">Site model</p>
+      <h1 id="site-name">Site Wiring Map</h1>
+      <p class="sub" id="site-sub"></p>
+    </div>
+    <div id="status-wrap"></div>
+  </header>
+
+  <section class="verdict" id="verdict"></section>
+  <div id="banner"></div>
+
+  <div class="cols">
+    <main class="main">
+      <section class="panel">
+        <header>
+          <h2>Devices found</h2>
+          <span class="hint">Every fact carries how it was established</span>
+        </header>
+        <div class="body" style="padding-bottom:0">
+          <div class="legend" id="legend"></div>
+        </div>
+        <div class="body flush">
+          <ul class="devs" id="devs"></ul>
+        </div>
+      </section>
+
+      <section class="panel">
+        <header>
+          <h2>Not established</h2>
+          <span class="hint">What is missing, and what would settle it</span>
+        </header>
+        <div class="body" id="gaps" style="display:flex;flex-direction:column;gap:14px"></div>
+      </section>
+
+      <section class="panel">
+        <header>
+          <h2>Why the shortlists say what they say</h2>
+          <span class="hint" id="archive-hint"></span>
+        </header>
+        <div class="body" id="archive"></div>
+      </section>
+    </main>
+
+    <aside class="rail">
+      <section class="panel">
+        <header><h2>Coverage</h2><span class="hint">Proven against hardware</span></header>
+        <div class="body"><div class="cov" id="cov"></div></div>
+      </section>
+
+      <section class="panel">
+        <header><h2>Device</h2><span class="hint">Click a row</span></header>
+        <div class="body insp" id="insp"></div>
+      </section>
+
+      <section class="panel">
+        <header><h2>Checks</h2><span class="hint" id="findings-hint"></span></header>
+        <div class="body flush" id="findings"></div>
+      </section>
+    </aside>
+  </div>
+
+  <p class="foot" id="foot"></p>
+</div>
+
+<script src="site-data.js"></script>
+<script src="archive-data.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var DATA = window.SITE_DATA || { sites: [] };
+  var SITE = DATA.sites && DATA.sites[0];
+  var ARCHIVE = window.ARCHIVE_CONTEXT || null;
+
+  if (!SITE) {
+    document.getElementById("site-sub").textContent =
+      "No site model loaded. Run: sitemap.py export sites/<site>.yaml -o ui/site-data.js";
+    return;
+  }
+
+  var selected = null;
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function node(name) { return SITE.nodes[name] || null; }
+
+  // Every source name, and what it means in one clause. Kept in step with
+  // evidence.py; the page must never imply more than the source proves.
+  var SOURCES = {
+    "arp": "an ARP entry plus an OUI lookup",
+    "device-api": "read off the device's own API",
+    "bench-record": "a bench-central run record",
+    "switch-table": "a switch MAC-address table",
+    "lldp": "an LLDP neighbour",
+    "dhcp-lease": "the DHCP server's lease table",
+    "poe-status": "the switch's PoE port status",
+    "survey": "traced on site by a person",
+    "config": "a bench tool's config - intent, not observation",
+    "doc": "written in a runbook",
+    "assumed": "nobody has checked"
+  };
+
+  /* One fact's certainty. Three states, each carrying a glyph as well as a
+     colour so the distinction survives greyscale and colour blindness. */
+  function fact(label, value, proven, source, candidates) {
+    var cls, glyph, shown;
+    if (value && proven) {
+      cls = "proven"; glyph = "✓"; shown = value;
+    } else if (candidates && candidates.length) {
+      cls = "narrowed"; glyph = "~";
+      shown = candidates.length === 1
+        ? candidates[0] + "?"
+        : candidates.length + " candidates";
+    } else if (value) {
+      // A value with evidence that does not cover it is the dangerous case:
+      // it looks like knowledge. Flag it rather than showing it plainly.
+      cls = "narrowed"; glyph = "!"; shown = value + " (unbacked)";
+    } else {
+      cls = "unknown"; glyph = "—"; shown = "unknown";
+    }
+    var why = source ? " — " + (SOURCES[source] || source) : "";
+    return '<span class="fact ' + cls + '" title="' + esc(label + ": " + shown + why) +
+      '"><span class="fglyph">' + glyph + '</span><span class="fval">' +
+      esc(label) + " " + esc(shown) + "</span></span>";
+  }
+
+  // -- masthead ---------------------------------------------------------
+
+  function renderHead() {
+    document.getElementById("eyebrow").textContent =
+      SITE.source_path || "Site model";
+    document.getElementById("site-name").textContent = SITE.name;
+
+    var sub = "Subnet " + SITE.subnet + " · " + SITE.counts.nodes +
+      " devices seen";
+    if (ARCHIVE) {
+      sub += " · checked against bench-central (" +
+        ARCHIVE.runs_total + " run records) on " +
+        String(ARCHIVE.queried_at).slice(0, 10);
+    }
+    document.getElementById("site-sub").textContent = sub;
+
+    if (SITE.status === "provisional") {
+      document.getElementById("status-wrap").innerHTML =
+        '<span class="status-pill" title="Gaps are expected and are reported ' +
+        'as warnings; contradictions are still errors.">Provisional · ' +
+        'part surveyed</span>';
+    }
+
+    document.getElementById("foot").innerHTML =
+      "Generated from <code>" + esc(SITE.source_path || "the site model") +
+      "</code> by <code>sitemap.py export</code>, and from the bench-central " +
+      "archive by <code>make_archive_context.py</code>. Both are read-only. " +
+      "Nothing on this page was written to a device. Where a fact is marked " +
+      "unknown, that is the finding — not a rendering gap.";
+  }
+
+  // -- the verdict ------------------------------------------------------
+
+  function renderVerdict() {
+    var cov = SITE.coverage;
+    var nodes = Object.keys(SITE.nodes).map(node);
+    var narrowed = nodes.filter(function (n) {
+      return !n.model && n.candidates && n.candidates.length;
+    }).length;
+
+    function cell(cls, big, label, note) {
+      return '<div class="vcell ' + cls + '"><b>' + big + '</b><span class="vlabel">' +
+        esc(label) + '</span><span class="vnote">' + note + "</span></div>";
+    }
+
+    var cells = [
+      cell("good", cov.vendor.proven + "/" + cov.vendor.total,
+           "vendors proven", "From the MAC prefix. A vendor is not a model."),
+      cell(cov.model.proven ? "mid" : "none",
+           cov.model.proven + "/" + cov.model.total, "models proven",
+           narrowed
+             ? narrowed + " narrowed to a shortlist, none confirmed"
+             : "Nothing read off a device, nothing in the archive."),
+      cell(cov.firmware.proven ? "mid" : "none",
+           cov.firmware.proven + "/" + cov.firmware.total, "firmware proven",
+           "Only the device or a bench record ever knew."),
+      cell("none", "0", "cables proven",
+           "An ARP sweep proves no cable."),
+      cell("none", "0", "power feeds proven",
+           "An ARP sweep proves no feed.")
+    ];
+    document.getElementById("verdict").innerHTML = cells.join("");
+  }
+
+  function renderBanner() {
+    var matched = 0;
+    Object.keys(SITE.nodes).forEach(function (name) {
+      if (node(name).source_for_model === "bench-record") matched++;
+    });
+
+    var html = '<div class="banner"><h2>What this page cannot tell you</h2>';
+    // Counts come from the data, not from prose. The previous wording said
+    // "eight devices" and "no model" and was wrong on both within a day.
+    var nDev = Object.keys(SITE.nodes).length;
+    var cv = SITE.coverage;
+    html += "<p>" + nDev + " devices were found, and their <strong>addresses " +
+      "and vendors are established</strong>. <strong>" + cv.model.proven +
+      " of " + cv.model.total + "</strong> have had a model read off the " +
+      "device itself, and the same " + cv.firmware.proven + " a firmware " +
+      "version. For the rest: <strong>no model and no firmware is " +
+      "confirmed</strong>, and <strong>no cabling and no power path is " +
+      "confirmed for any device here at all.</strong></p>";
+
+    html += "<p><strong>Why the other " + (cv.model.total - cv.model.proven) +
+      " have no model, and the reasons are not the same.</strong> Every " +
+      "offline route is exhausted: a MAC gives a vendor and never a model, " +
+      "and no device here appears in bench-central, so there is no " +
+      "provisioning record to read. That leaves each device's own API. " +
+      "<strong>Two of the four radars have nothing to query</strong> \u2014 " +
+      "they answer ping and sit in the router's neighbour table, but a full " +
+      "scan of ports 1\u201310240, run from the site server on the same " +
+      "network segment, found <strong>not one open port</strong>, in the " +
+      "same run that found three open on each working radar. No credential " +
+      "and no port forward can reach a service that is not listening; that " +
+      "needs console or physical access. <strong>The two Teltonikas are a " +
+      "credential problem only</strong> \u2014 their bench configs hold " +
+      "example values, while the devices themselves are directly reachable.</p>";
+
+    html += "<p><strong>Both readable radars are still on the vendor's " +
+      "default password.</strong> The login that read their model and " +
+      "firmware was <code>admin</code>/<code>password</code> \u2014 the " +
+      "documented Magos factory default, which authenticated on the first " +
+      "attempt against both units. Nothing was guessed and nothing was " +
+      "changed. It is worth checking the other Magos sites for the same " +
+      "thing; the two radars that serve no port here cannot be checked at " +
+      "all.</p>";
+
+    html += "<p><strong>What did get settled along the way.</strong> The " +
+      "router at .1 is this subnet's <strong>DHCP server, DNS resolver and " +
+      "default gateway</strong> \u2014 read from the leases held by two " +
+      "independent clients, not inferred from its address. The same read " +
+      "showed that the server and the operator station <strong>hold DHCP " +
+      "leases rather than static addresses</strong>. That is worth an " +
+      "operator's attention rather than a footnote: every bench tool points " +
+      "its NTP at the server, and a site time source on a lease can move. " +
+      "The fix is a static reservation on the router, which is a change and " +
+      "was not made.</p>";
+
+    html += "<p><strong>One caution about how these facts were obtained.</strong> " +
+      "192.168.88.0/24 is the subnet at every site <em>and</em> on the " +
+      "bench, and a bench station carries a 192.168.88.10 alias of its own. " +
+      "A probe run from the wrong machine reaches bench hardware at the " +
+      "same address and returns an answer that looks entirely valid. Every " +
+      "confirmed reading here is trusted for one specific reason: the " +
+      "device <strong>reported the same MAC that the site router had " +
+      "already observed</strong> at that address. The two cameras cleared " +
+      "a second check as well \u2014 each serial matched its own DNS " +
+      "hostname.</p>";
+
+    if (ARCHIVE) {
+      var hasSite = (ARCHIVE.sites || []).some(function (s) {
+        return s.toLowerCase().indexOf("fob-03") >= 0;
+      });
+      html += "<p>All " + nDev + " MACs were looked up in bench-central (" +
+        ARCHIVE.runs_total + " run records, both MAC spellings tried) and " +
+        "<strong>none of them is there</strong>." +
+        (hasSite ? "" : " There is no <code>" + esc(SITE.name) +
+          "</code> site in the archive at all.") +
+        " So this site was either never provisioned through the bench, " +
+        "provisioned before central shipping was switched on, or filed under " +
+        "another label. A miss is not evidence of anything — central " +
+        "shipping is opt-in per station.</p>";
+    }
+    html += "<p>Shortlists marked <span class=\"fact narrowed\">" +
+      "<span class=\"fglyph\">~</span><span class=\"fval\">like this</span>" +
+      "</span> are narrowings from vendor correlation across the archive. " +
+      "They are leads to confirm, not answers \u2014 and this site " +
+      "demonstrated it twice. The radars were shortlisted " +
+      "AR-300 / SR1000-F / SR500-F and read as <strong>SR1000-I</strong>, a " +
+      "variant the archive did not contain. The cameras were shortlisted " +
+      "PC464A1 \u2014 every camera on their OUI in the archive reports that " +
+      "\u2014 and read as <strong>SG-PTZ</strong>, a pan/tilt/zoom unit, " +
+      "a different class of device entirely. Both shortlists were derived " +
+      "correctly from real data and both were wrong. Treat every " +
+      "<span class=\"fact narrowed\"><span class=\"fglyph\">~</span>" +
+      "<span class=\"fval\">shortlist</span></span> on this page as a " +
+      "question, not an answer.</p></div>";
+    document.getElementById("banner").innerHTML = html;
+  }
+
+  // -- coverage ---------------------------------------------------------
+
+  function renderCoverage() {
+    var cov = SITE.coverage;
+    var rows = [
+      ["vendor", cov.vendor], ["model", cov.model], ["firmware", cov.firmware],
+      ["address", cov.addr], ["cabling", cov.link], ["power", cov.power],
+      ["watts", cov.draw]
+    ];
+    document.getElementById("cov").innerHTML = rows.map(function (pair) {
+      var name = pair[0], c = pair[1];
+      if (c.pct === null) {
+        return '<div class="covrow absent"><span class="cname">' + name +
+          '</span><span class="cpct">—</span><span class="track"></span>' +
+          '<span class="cdetail">none recorded</span></div>';
+      }
+      var cls = c.pct === 100 ? "full" : (c.pct > 0 ? "part" : "zero");
+      var detail = c.proven + "/" + c.total;
+      if (c.claimed !== c.total) {
+        detail += " · " + (c.total - c.claimed) + " blank";
+      }
+      return '<div class="covrow ' + cls + '"><span class="cname">' + name +
+        '</span><span class="cpct">' + c.pct + '%</span>' +
+        '<span class="track"><i style="width:' + c.pct + '%"></i></span>' +
+        '<span class="cdetail">' + detail + "</span></div>";
+    }).join("");
+  }
+
+  // -- devices ----------------------------------------------------------
+
+  function renderLegend() {
+    document.getElementById("legend").innerHTML = [
+      ['<span class="fact proven"><span class="fglyph">✓</span>' +
+       '<span class="fval">proven</span></span>', "read off hardware"],
+      ['<span class="fact narrowed"><span class="fglyph">~</span>' +
+       '<span class="fval">shortlist</span></span>', "narrowed, not confirmed"],
+      ['<span class="fact unknown"><span class="fglyph">—</span>' +
+       '<span class="fval">unknown</span></span>', "nobody has checked"]
+    ].map(function (pair) {
+      return "<div>" + pair[0] + "<span>" + pair[1] + "</span></div>";
+    }).join("");
+  }
+
+  function renderDevices() {
+    var names = Object.keys(SITE.nodes).sort(function (a, b) {
+      var na = node(a), nb = node(b);
+      if (!na.addr) return 1;
+      if (!nb.addr) return -1;
+      return Number(na.addr.split(".").pop()) - Number(nb.addr.split(".").pop());
+    });
+
+    document.getElementById("devs").innerHTML = names.map(function (name) {
+      var n = node(name);
+      var ev = n.evidence || {};
+      var srcOf = function (claim) { return ev[claim] || ev["*"] || "assumed"; };
+
+      var facts = [
+        fact("vendor", n.vendor, n.proven.vendor, srcOf("vendor")),
+        fact("model", n.model, n.proven.model, srcOf("model"), n.candidates),
+        fact("firmware", n.firmware, n.proven.firmware, srcOf("firmware")),
+        fact("cabling", null, false, null),
+        fact("power", null, false, null)
+      ].join("");
+
+      return '<li><button class="devrow" type="button" data-node="' + esc(name) +
+        '"' + (name === selected ? ' aria-current="true"' : "") +
+        '><span><span class="daddr">' + esc(n.addr || "—") +
+        '</span><br><span class="dmac">' + esc(n.mac || "") + "</span></span>" +
+        '<span><span class="dname">' + esc(name) + "</span> " +
+        '<span class="dkind">' + esc(n.kind) + "</span>" +
+        (n.critical ? ' <span class="chip crit">critical</span>' : "") +
+        '<span class="dfacts">' + facts + "</span></span></button></li>";
+    }).join("");
+  }
+
+  // -- the gaps ---------------------------------------------------------
+
+  function renderGaps() {
+    var missing = [
+      ["192.168.88.2", "TSW202 managed switch", "did not answer the sweep"],
+      ["192.168.88.3", "PLANET IGS-4215 PoE switch", "did not answer the sweep"],
+      ["192.168.88.70", "speaker", "did not answer the sweep"]
+    ];
+
+    var html = "";
+
+    html += '<div class="gap"><div class="gtitle">' +
+      '<span class="fact unknown"><span class="fglyph">—</span>' +
+      '<span class="fval">cabling</span></span> No link on this site is ' +
+      'established</div>' +
+      "<p>The ARP table proves these devices share a broadcast domain. It " +
+      "says nothing about which socket any of them is in, or which switch " +
+      "they hang off. No <code>net:</code> edges are declared, deliberately " +
+      "— a plausible-looking guess here is the one thing that would make " +
+      "this map confidently wrong.</p>" +
+      '<p class="gfix"><b>What would settle it</b>The PoE switch’s ' +
+      'MAC-address table places each MAC on a numbered port; LLDP confirms ' +
+      'switch-to-switch links. Both are single read-only commands over the ' +
+      'SSH session the bench tool already opens.</p></div>';
+
+    html += '<div class="gap"><div class="gtitle">' +
+      '<span class="fact unknown"><span class="fglyph">—</span>' +
+      '<span class="fval">power</span></span> No power feed on this site is ' +
+      'established</div>' +
+      "<p>Nothing is known about what powers any of these eight devices.</p>" +
+      '<p class="gfix"><b>What would settle it — partly</b>The switch’s ' +
+      'PoE port status gives measured watts per port, and it reports whether ' +
+      'each of its own DC inputs has voltage.</p>' +
+      '<p class="gfix"><b>What no protocol can settle</b>Which PSU, breaker ' +
+      'or UPS feeds a device. A switch can say an input is live; nothing can ' +
+      'say what is at the other end of that wire. This half needs a person ' +
+      'on site, and the model only accepts <code>survey</code> evidence for ' +
+      'it.</p></div>';
+
+    html += '<div class="gap"><div class="gtitle">' +
+      '<span class="fact unknown"><span class="fglyph">—</span>' +
+      '<span class="fval">who hands out addresses</span></span> Unverified' +
+      "</div>" +
+      "<p>Every address here is recorded as bench-assigned, but nothing has " +
+      "confirmed which device serves DHCP. The router at <code>.1</code> is " +
+      "the obvious candidate and remains a candidate.</p>" +
+      '<p class="gfix"><b>What would settle it</b>The router’s own DHCP ' +
+      'lease table, in one read.</p></div>';
+
+    html += '<div class="gap"><div class="gtitle">Expected but not in the ' +
+      'sweep</div><p>These addresses carry known roles in the bench plan and ' +
+      'did not appear. <strong>That is not evidence they are absent</strong> ' +
+      '— ARP lists only what the host it ran on has recently exchanged ' +
+      'traffic with, and a switch that has talked to nothing never shows up.' +
+      '</p><div class="tablewrap"><table><thead><tr><th>Address</th>' +
+      '<th>Expected role</th><th>Seen</th></tr></thead><tbody>' +
+      missing.map(function (row) {
+        return '<tr><td class="num">' + esc(row[0]) + "</td><td>" +
+          esc(row[1]) + '</td><td><span class="fact unknown">' +
+          '<span class="fglyph">—</span><span class="fval">no</span>' +
+          "</span></td></tr>";
+      }).join("") +
+      "</tbody></table></div></div>";
+
+    document.getElementById("gaps").innerHTML = html;
+  }
+
+  // -- archive basis ----------------------------------------------------
+
+  function renderArchive() {
+    var target = document.getElementById("archive");
+    if (!ARCHIVE) {
+      target.innerHTML = '<p class="prose">No bench-central snapshot was ' +
+        "loaded, so no shortlist has a basis to show.</p>";
+      return;
+    }
+
+    document.getElementById("archive-hint").textContent =
+      ARCHIVE.runs_total + " run records · " +
+      String(ARCHIVE.queried_at).slice(0, 10);
+
+    var rows = Object.keys(ARCHIVE.by_tool).sort().map(function (tool) {
+      var t = ARCHIVE.by_tool[tool];
+      var models = [];
+      Object.keys(t.models).forEach(function (vendor) {
+        if (vendor.indexOf("unresolved") >= 0) return;
+        t.models[vendor].forEach(function (m) {
+          if (m !== "unknown") models.push(m);
+        });
+      });
+      var vendors = Object.keys(t.vendors).map(function (v) {
+        return v + " (" + t.vendors[v] + ")";
+      });
+      return "<tr><td>" + esc(tool) + '</td><td class="num">' +
+        esc(vendors.join(", ") || "—") + "</td><td>" +
+        esc(models.length ? models.sort().join(", ") : "—") + "</td></tr>";
+    }).join("");
+
+    target.innerHTML =
+      '<p class="prose">A shortlist comes from correlating this site’s ' +
+      "MAC prefixes against every device the bench has configured. The two " +
+      "correlations doing the work here:</p>" +
+      '<p class="prose" style="margin-top:8px"><strong>Radar or APU?</strong> ' +
+      "Across 65 archived runs carrying a MAC the split is absolute: every " +
+      "radar sits on a Magosys prefix, every APU on an NVIDIA one, because an " +
+      "APU is Jetson-based. This site’s four Magos units are on a " +
+      "Magosys prefix, so they are radars rather than APUs — a strong " +
+      "inference from 65 records with no counterexample, and still not a " +
+      "reading off these units.</p>" +
+      '<p class="prose"><strong>Which camera?</strong> The archive holds two ' +
+      "camera generations under two different prefixes: BC:74:D7 units report " +
+      "PC464A1, AC:86:D1 units report XX-MVP-PC4-V100. This site’s " +
+      "cameras are BC:74:D7.</p>" +
+      '<div class="tablewrap" style="margin-top:12px"><table><thead><tr>' +
+      "<th>Bench tool</th><th>MAC vendors seen (runs)</th>" +
+      "<th>Models reported</th></tr></thead><tbody>" + rows +
+      "</tbody></table></div>";
+  }
+
+  // -- inspector --------------------------------------------------------
+
+  function renderInspector() {
+    var n = node(selected);
+    var target = document.getElementById("insp");
+    if (!n) { target.innerHTML = '<p class="prose">Select a device.</p>'; return; }
+
+    var ev = n.evidence || {};
+    var srcOf = function (claim) { return ev[claim] || ev["*"] || "assumed"; };
+    var html = "";
+
+    html += '<span class="dkind">' + esc(n.kind) + "</span><h3>" +
+      esc(selected) + "</h3>";
+    if (n.critical) html += '<span class="chip crit">critical</span>';
+
+    html += '<dl class="kv" style="margin-top:11px">';
+    html += "<dt>Address</dt><dd>" + fact("", n.addr, n.proven.addr, srcOf("addr")) + "</dd>";
+    html += "<dt>MAC</dt><dd><span class=\"mono\" style=\"font-size:12px\">" +
+      esc(n.mac || "—") + "</span></dd>";
+    html += "<dt>Vendor</dt><dd>" + fact("", n.vendor, n.proven.vendor, srcOf("vendor")) + "</dd>";
+    html += "<dt>Model</dt><dd>" +
+      fact("", n.model, n.proven.model, srcOf("model"), n.candidates) + "</dd>";
+    html += "<dt>Firmware</dt><dd>" +
+      fact("", n.firmware, n.proven.firmware, srcOf("firmware")) + "</dd>";
+    html += "</dl>";
+
+    if (n.candidates && n.candidates.length) {
+      html += '<div class="insp-sec"><span class="eyebrow">Could be</span>';
+      html += '<p class="prose"><strong>' + esc(n.candidates.join(" · ")) +
+        "</strong></p>";
+      if (n.candidate_basis) {
+        html += '<p class="prose">Basis: ' + esc(n.candidate_basis) + ".</p>";
+      }
+      html += '<p class="prose">This is a shortlist. Only the device’s ' +
+        "own API, or a bench-central record of it, fills in the model.</p></div>";
+    }
+
+    html += '<div class="insp-sec"><span class="eyebrow">How each fact was ' +
+      'established</span><dl class="kv">';
+    ["vendor", "model", "firmware", "addr"].forEach(function (claim) {
+      var src = srcOf(claim);
+      html += "<dt>" + claim + "</dt><dd>" + esc(SOURCES[src] || src) + "</dd>";
+    });
+    html += "<dt>cabling</dt><dd>" + esc(SOURCES.assumed) + "</dd>";
+    html += "<dt>power</dt><dd>" + esc(SOURCES.assumed) + "</dd>";
+    html += "</dl></div>";
+
+    if (n.notes) {
+      html += '<div class="insp-sec"><span class="eyebrow">Notes</span>' +
+        '<p class="prose">' + esc(n.notes) + "</p></div>";
+    }
+
+    var mine = (SITE.findings || []).filter(function (f) { return f.where === selected; });
+    if (mine.length) {
+      html += '<div class="insp-sec"><span class="eyebrow">Checks</span>';
+      mine.forEach(function (f) {
+        html += '<p class="prose"><span class="fcode" style="color:var(--' +
+          (f.severity === "error" ? "alarm" : "narrowed") + ')">' +
+          esc(f.code) + "</span> " + esc(f.message) + "</p>";
+      });
+      html += "</div>";
+    }
+
+    target.innerHTML = html;
+  }
+
+  // -- findings ---------------------------------------------------------
+
+  function renderFindings() {
+    var f = SITE.findings || [];
+    document.getElementById("findings-hint").textContent =
+      SITE.counts.errors + " error, " + SITE.counts.warnings + " warning";
+    document.getElementById("findings").innerHTML =
+      '<ul class="findings">' + f.map(function (x) {
+        return '<li class="' + (x.severity === "error" ? "error" : "warn") +
+          '"><span class="stripe"></span><div><span class="fcode">' +
+          esc(x.code) + "</span>" +
+          (x.where ? ' <span class="fwhere">' + esc(x.where) + "</span>" : "") +
+          '<div class="fmsg">' + esc(x.message) + "</div></div></li>";
+      }).join("") + "</ul>";
+  }
+
+  // -- selection --------------------------------------------------------
+
+  function select(name) {
+    if (!SITE.nodes[name] || name === selected) return;
+    selected = name;
+    renderDevices();
+    renderInspector();
+  }
+
+  document.addEventListener("click", function (ev) {
+    var t = ev.target.closest ? ev.target.closest("[data-node]") : null;
+    if (t) select(t.getAttribute("data-node"));
+  });
+
+  // Open on a device whose model is only a shortlist, since that is the
+  // state this page exists to make visible.
+  var opener = Object.keys(SITE.nodes).filter(function (name) {
+    var n = node(name);
+    return !n.model && n.candidates && n.candidates.length;
+  })[0] || Object.keys(SITE.nodes)[0];
+
+  renderHead();
+  renderVerdict();
+  renderBanner();
+  renderCoverage();
+  renderLegend();
+  selected = opener;
+  renderDevices();
+  renderGaps();
+  renderArchive();
+  renderInspector();
+  renderFindings();
+})();
+</script>
