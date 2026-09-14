@@ -36,6 +36,13 @@ jobs:
       - name: Tests
         run: python -m pytest -q
 
+      # The dashboard is one HTML file with a large inline script. A syntax
+      # error in it means the browser runs none of it and the page renders an
+      # empty shell — which looks like a data-loading failure, not a typo, and
+      # reached a published dashboard once before this step existed.
+      - name: Dashboard script parses
+        run: python -m pytest -q tests/test_ui_page.py
+
       - name: Lint every site model
         run: |
           shopt -s nullglob
