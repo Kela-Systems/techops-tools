@@ -567,7 +567,7 @@ a label, `printed: false` means it earned one and did not get it. Only the
 second needs someone to act.
 
 **In the UI**, as an amber banner under the header, from `mountPrinterWarn()`
-in the shared `bench.js` — so all seven tools get it without seven edits:
+in the shared `bench.js` — so every tool gets it without an edit each:
 
 - at startup, if no printer answers: *"No label printer detected — units must
   be labelled by hand before they ship."*

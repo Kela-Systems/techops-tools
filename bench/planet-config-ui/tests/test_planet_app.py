@@ -11,9 +11,10 @@ import pytest
 
 import planet_app
 from planet_app import PlanetConfigurator
-from planet_configure import DEFAULT_PLANET_MIN_FIRMWARE
+from planet_configure import DEFAULT_PLANET_MIN_FIRMWARE, PSE_PORT_COUNT
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "config/planet.config.example.json"
+README = Path(__file__).resolve().parent.parent / "README.md"
 
 
 @pytest.fixture
@@ -195,3 +196,46 @@ def test_the_port_map_reaches_the_run_record(tool):
         {"identity": {"mac": "a8:f7:e0:f6:c4:3a"}, "ok": True, "error": None,
          "steps": [], "log": "", "verification": []}, {}, 30)
     assert entry["device"]["port_map"][0] == ["1", "RADAR 1 45W"]
+
+
+# --- the plan is stated in two places; they have to agree --------------------
+
+def _readme_plan() -> dict:
+    """The README's port table, parsed back out of the Markdown.
+
+    The plan lives in the config; the README restates it for anyone reading the
+    tool rather than running it. That is a second place to be wrong — a table
+    saying gi6 is the speaker while the config powers gi8 sends an installer to
+    the wrong socket — so the restatement is checked rather than trusted.
+    """
+    plan = {}
+    for line in README.read_text().splitlines():
+        cells = [c.strip().strip("`") for c in line.strip().strip("|").split("|")]
+        if len(cells) != 7 or not cells[0].startswith("gi") or not cells[0][2:].isdigit():
+            continue
+        port, poe, state, limit, priority, description, short = cells
+        plan[int(port[2:])] = {
+            "poe": poe == "yes",
+            "enabled": state == "on",
+            "limit_w": 0 if limit == "—" else int(limit.split()[0]),
+            "priority": "low" if priority == "—" else priority,
+            "description": description,
+            "short": short,
+        }
+    return plan
+
+
+def test_the_readme_plan_matches_the_shipped_config():
+    ports = json.loads(EXAMPLE.read_text())["poe"]["ports"]
+    readme = _readme_plan()
+    assert set(readme) == {int(p) for p in ports}, "the README lists other ports"
+    for port, row in sorted(readme.items()):
+        spec = ports[str(port)]
+        assert row["enabled"] == spec["enabled"], f"gi{port}: state"
+        assert row["limit_w"] == (spec["limit_w"] if spec["enabled"] else 0), \
+            f"gi{port}: limit"
+        assert row["description"] == spec["description"], f"gi{port}: switch label"
+        assert row["short"] == spec["short"], f"gi{port}: printed label"
+        assert row["poe"] == (port <= PSE_PORT_COUNT), f"gi{port}: PoE hardware"
+        if spec["enabled"]:
+            assert row["priority"] == spec["priority"], f"gi{port}: priority"

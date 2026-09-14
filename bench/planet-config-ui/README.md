@@ -2,7 +2,7 @@
 
 Bench tool for provisioning PLANET **IGS-4215-8UP2T2S** industrial PoE++
 switches, one at a time. This is the switch that powers a Magos site — four
-AR-300 radars, a speaker and a camera hang off its eight PoE ports — so its
+AR-300 radars, a speaker and a camera hang off its twelve ports — so its
 per-port power plan **is** the site's power plan, and it lives in this tool's
 config rather than in someone's head.
 
@@ -122,13 +122,33 @@ Ports are configured in **watts** in `planet.config.json`. The switch's CLI
 takes **deci-watts** (`poe power-limit 450` is 45.0 W) and the conversion
 happens once, in code — do not pre-multiply.
 
-| Port | State | Limit | Priority | Label |
-|---|---|---|---|---|
-| gi1–gi4 | on | 45 W | critical | `Radar-AR300-1` … `-4` |
-| gi5 | off | — | — | `Camera-RAYTHINK-PC464A1` |
-| gi6 | on | 20 W | high | `Speaker-PR-HS15W-IP` |
-| gi7 | off | — | — | `Unused` |
-| gi8 | off | — | — | `Management` |
+Only **gi1–gi8** have PoE hardware. gi9–gi10 are plain copper and gi11–gi12 are
+SFP, so the camera and the management drop — neither of which takes power from
+the switch — go there and leave three powered ports spare. A `poe` command
+naming gi9 is rejected by the switch (`Unknown command`), so the tool never
+sends one; naming a port there `enabled` stops the run instead.
+
+This table is the shipped `poe.ports` plan, and
+`test_the_readme_plan_matches_the_shipped_config` fails if it drifts from it.
+
+| Port | PoE | State | Limit | Priority | Switch label | Printed as |
+|---|---|---|---|---|---|---|
+| gi1 | yes | on | 45 W | critical | `Radar-AR300-1` | `RADAR 1` |
+| gi2 | yes | on | 45 W | critical | `Radar-AR300-2` | `RADAR 2` |
+| gi3 | yes | on | 45 W | critical | `Radar-AR300-3` | `RADAR 3` |
+| gi4 | yes | on | 45 W | critical | `Radar-AR300-4` | `RADAR 4` |
+| gi5 | yes | off | — | — | `Spare-PoE-1` | `SPARE` |
+| gi6 | yes | off | — | — | `Spare-PoE-2` | `SPARE` |
+| gi7 | yes | off | — | — | `Spare-PoE-3` | `SPARE` |
+| gi8 | yes | on | 20 W | high | `Speaker-PR-HS15W-IP` | `SPEAKER` |
+| gi9 | no | — | — | — | `Camera-RAYTHINK-PC464A1` | `CAMERA` |
+| gi10 | no | — | — | — | `Management` | `MGMT` |
+
+**Two names per port, one plan.** `description` is written into the switch and
+is what `show running-config` reports; `short` is what the printed PORT MAP
+label calls the socket. The wattage on the label is appended from `limit_w`
+rather than typed into either name, so a label cannot claim a power a port was
+never given.
 
 **Why 45 W for a 35 W radar.** The AR-300 draws 35 W *at the radar*; the
 switch's limit is measured *at its own port*, with up to 100 m of copper in

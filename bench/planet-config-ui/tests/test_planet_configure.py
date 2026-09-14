@@ -32,9 +32,9 @@ SITE_POE = {
     "ports": {
         "1": {"enabled": True, "limit_w": 45, "priority": "critical",
               "description": "Radar-AR300-1"},
-        "5": {"enabled": False, "limit_w": 0, "priority": "low",
-              "description": "Spare-PoE-1"},
-        "6": {"enabled": True, "limit_w": 20, "priority": "high",
+        "6": {"enabled": False, "limit_w": 0, "priority": "low",
+              "description": "Spare-PoE-2"},
+        "8": {"enabled": True, "limit_w": 20, "priority": "high",
               "description": "Speaker-PR-HS15W-IP"},
         "9": {"enabled": False, "limit_w": 0, "priority": "low",
               "description": "Camera-RAYTHINK-PC464A1"},
@@ -49,14 +49,14 @@ def test_power_limits_are_sent_in_deci_watts():
     wrong: the switch accepts `poe power-limit 45` and quietly caps at 4.5 W."""
     cmds = poe_cmds(SITE_POE)
     assert "poe power-limit 450 1" in cmds
-    assert "poe power-limit 200 6" in cmds
+    assert "poe power-limit 200 8" in cmds
     assert "poe power-limit 45 1" not in cmds
 
 
 def test_disabled_ports_get_no_limit_or_priority():
     cmds = poe_cmds(SITE_POE)
-    assert "poe port disable 5" in cmds
-    assert not [c for c in cmds if c.endswith(" 5") and "power-limit" in c]
+    assert "poe port disable 6" in cmds
+    assert not [c for c in cmds if c.endswith(" 6") and "power-limit" in c]
 
 
 def test_the_non_poe_ports_are_named_but_never_powered():
@@ -86,13 +86,13 @@ def test_the_global_plan_comes_before_any_port():
 def test_priorities_are_carried_through():
     cmds = poe_cmds(SITE_POE)
     assert "poe priority critical 1" in cmds
-    assert "poe priority high 6" in cmds
+    assert "poe priority high 8" in cmds
 
 
 def test_json_string_port_keys_become_integers():
     """Port numbers arrive from JSON as strings and are sorted numerically —
     otherwise "10" would order before "2"."""
-    assert sorted(ports_of(SITE_POE)) == [1, 5, 6, 9]
+    assert sorted(ports_of(SITE_POE)) == [1, 6, 8, 9]
 
 
 # --- port descriptions --------------------------------------------------------

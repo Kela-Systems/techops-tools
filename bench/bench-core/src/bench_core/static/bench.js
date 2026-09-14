@@ -135,8 +135,8 @@ function mountConfigWarn() {
 }
 
 // QA-label printer banner (TEC-352). Same shape as mountConfigWarn: injected
-// under the page header by connectBenchWS, so all seven tools surface it
-// without seven copies of the markup.
+// under the page header by connectBenchWS, so every tool surfaces it
+// without a copy of the markup each.
 //
 // Deliberately a banner and not an alert. A label that did not print does not
 // invalidate the run — the device passed and is still configured — so nothing

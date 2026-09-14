@@ -119,7 +119,7 @@ BODY_W = LABEL_W - 2 * MARGIN
 # The vertical budget, named rather than scattered through the faces, because
 # on this stock there is no slack to absorb a face that drifts: 232 dots hold a
 # header, a hero and two rows above the barcode and nothing else. Every face
-# uses these, so a change here moves all seven together and the geometry tests
+# uses these, so a change here moves every face together and the geometry tests
 # check the result against the media rather than against these numbers.
 HERO_KEY_Y = 40
 HERO_Y = 53
