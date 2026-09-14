@@ -159,9 +159,9 @@ This table is the shipped `poe.ports` plan, and
 
 **Two names per port, one plan.** `description` is written into the switch and
 is what `show running-config` reports; `short` is what the printed PORT MAP
-label calls the socket. The wattage on the label is appended from `limit_w`
-rather than typed into either name, so a label cannot claim a power a port was
-never given.
+label calls the socket — `RADAR 1`, `SPEAKER`, `MGMT`. Neither name carries a
+wattage: with `poe.managed` on it is appended from `limit_w`, and with it off
+the label says nothing about power, because the bench applied none.
 
 **Why 45 W for a 35 W radar.** The AR-300 draws 35 W *at the radar*; the
 switch's limit is measured *at its own port*, with up to 100 m of copper in
