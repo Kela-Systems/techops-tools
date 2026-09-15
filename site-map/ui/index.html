@@ -223,6 +223,69 @@ body {
 .banner p { margin: 0; font-size: 13px; color: var(--ink-2); max-width: 74ch; }
 .banner p + p { margin-top: 7px; }
 
+/* The banner is a lede plus one collapsed line per item. Everything that used
+   to be eight paragraphs is still here, behind a disclosure, so the page can
+   be scanned in a few seconds and still read in full. */
+.banner .lede { color: var(--ink); }
+.banner .blist {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.banner .blist > li { border-top: 1px solid color-mix(in srgb, var(--narrowed) 28%, transparent); }
+.banner summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 2px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--ink);
+  list-style: none;
+}
+.banner summary::-webkit-details-marker { display: none; }
+.banner summary::after {
+  content: "+";
+  margin-left: auto;
+  padding-left: 10px;
+  font-family: var(--font-mono);
+  color: var(--narrowed);
+  font-size: 14px;
+  line-height: 1;
+}
+.banner details[open] > summary::after { content: "\2013"; }
+.banner details[open] > summary { font-weight: 600; }
+.banner summary:hover { color: var(--narrowed); }
+.banner summary:focus-visible { outline: 2px solid var(--narrowed); outline-offset: 2px; }
+.banner .bbody {
+  padding: 0 2px 10px 0;
+  font-size: 13px;
+  color: var(--ink-2);
+  max-width: 74ch;
+}
+.btag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r);
+  font-family: var(--font-cond);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border: 1px solid currentColor;
+}
+.btag.action  { color: var(--alarm);    background: var(--alarm-soft); }
+.btag.blocked { color: var(--unknown);  background: var(--unknown-soft); }
+.btag.caution { color: var(--narrowed); background: var(--surface); }
+
+@media (max-width: 520px) {
+  .banner summary { flex-wrap: wrap; }
+  .banner summary::after { margin-left: 0; }
+}
+
 /* --- coverage ---------------------------------------------------------- */
 
 .cov { display: flex; flex-direction: column; gap: 2px; }
@@ -524,12 +587,25 @@ a { color: var(--data); }
   "use strict";
 
   var DATA = window.SITE_DATA || { sites: [] };
-  var SITE = DATA.sites && DATA.sites[0];
   var ARCHIVE = window.ARCHIVE_CONTEXT || null;
 
+  // Pick the site DELIBERATELY, not by array position. `sites[0]` used to be
+  // enough, and then `export sites/*.yaml` began globbing in the schema
+  // template — which sorts before every real site name, so the dashboard
+  // rendered a fictional 16-device site for several published versions with
+  // prose about a real one wrapped around it. The exporter now drops templates
+  // too; this is the second line of defence, because the failure was silent
+  // and the page is the thing a person actually looks at.
+  var ALL_SITES = (DATA.sites || []).filter(function (s) {
+    return s && s.name && s.name.charAt(0) !== "_";
+  });
+  var SITE = ALL_SITES[0];
+
   if (!SITE) {
-    document.getElementById("site-sub").textContent =
-      "No site model loaded. Run: sitemap.py export sites/<site>.yaml -o ui/site-data.js";
+    document.getElementById("site-sub").textContent = (DATA.sites || []).length
+      ? "Only template sites were exported, and a template is invented data. " +
+        "Run: sitemap.py export sites/<site>.yaml -o ui/site-data.js"
+      : "No site model loaded. Run: sitemap.py export sites/<site>.yaml -o ui/site-data.js";
     return;
   }
 
@@ -647,127 +723,151 @@ a { color: var(--data); }
     document.getElementById("verdict").innerHTML = cells.join("");
   }
 
+  // -- the banner --------------------------------------------------------
+  //
+  // Every item is DATA, not string concatenation. The previous version built
+  // eight paragraphs by `+`-joining a few hundred string literals, which made
+  // it unreadable on the page AND made a dropped quote able to blank the whole
+  // dashboard (it did, once). One object per item, one string per field.
+  //
+  // `body` is only read when an item is opened, so the page opens scannable:
+  // a two-line summary of what is NOT known, then one line per item. Nothing
+  // was deleted to get there — the detail moved behind a disclosure.
+
+  var BANNER_TAGS = {
+    action:  "needs action",
+    blocked: "blocked",
+    caution: "read this"
+  };
+
+  function bannerItems(cv) {
+    var unread = cv.model.total - cv.model.proven;
+    return [
+      {
+        tag: "action",
+        head: "Both readable radars are on the vendor's default password",
+        body: "The login that read their model and firmware was " +
+              "<code>admin</code>/<code>password</code> — the documented Magos " +
+              "factory default, which authenticated on the first attempt " +
+              "against both units. Nothing was guessed and nothing was changed. " +
+              "Worth checking the other Magos sites for the same thing; the two " +
+              "radars that serve no port here cannot be checked at all."
+      },
+      {
+        tag: "action",
+        head: "The .118 switch was never provisioned",
+        body: "Its DHCP lease still carries the Teltonika factory hostname " +
+              "<code>TSW202</code>, while every provisioned device here carries " +
+              "a real one — and the shared bench password is refused on both " +
+              "SSH and REST. So it is still on its per-device factory label " +
+              "password, which means an unprovisioned managed switch is sitting " +
+              "in production with nothing about its configuration verified. " +
+              "Reading its label is also the last blocker on a complete cabling " +
+              "answer."
+      },
+      {
+        tag: "caution",
+        head: "Cabling: one cable is proven, and that is all",
+        body: "The router's own bridge forwarding table places <em>every</em> " +
+              "device at this site on one port, <code>lan3</code>, and its other " +
+              "two LAN ports have no carrier at all. So a single cable leaves " +
+              "the router and everything else hangs off the switch behind it. " +
+              "What the router cannot say is which switch port each device is " +
+              "on: those MACs are learned on lan3 because they arrive " +
+              "<em>through</em> the switch. That needs the switch's own table. " +
+              "<strong>No power path is established for any device at all</strong> " +
+              "— PoE status would prove half of it and the mains side needs a " +
+              "person on site."
+      },
+      {
+        tag: "caution",
+        head: "Two radars answer ping but serve nothing, and are cabled fine",
+        body: "A full connect scan of ports 1–10240, run from the site server " +
+              "on the same network segment, found <strong>not one open " +
+              "port</strong> on either — in the same run that found three open " +
+              "on each working radar. Both still appear in the router's " +
+              "forwarding table like every healthy device, so they are putting " +
+              "frames on the wire. Cabling and power are ruled out as the fault; " +
+              "a stopped service or a host firewall is not. No credential and no " +
+              "port forward can reach a service that is not listening."
+      },
+      {
+        tag: "blocked",
+        head: unread + " of " + cv.model.total + " devices have no model, for two different reasons",
+        body: "A MAC gives a vendor and never a model, and no device here " +
+              "appears in bench-central, so there is no provisioning record to " +
+              "read either — which is not evidence of anything, since central " +
+              "shipping is opt-in per station. That leaves each device's own " +
+              "API. The two silent radars have <strong>nothing to query</strong>; " +
+              "the .118 switch is a <strong>credential</strong> problem. The " +
+              "router half of that is now done — it reads as a RUTM08 on " +
+              "RUTM_R_00.07.24.3."
+      },
+      {
+        tag: "caution",
+        head: "A shortlist is a lead: two were wrong here, one was right",
+        body: "The radars were shortlisted AR-300 / SR1000-F / SR500-F and read " +
+              "as <strong>SR1000-I</strong>. The cameras were shortlisted " +
+              "PC464A1 and read as <strong>SG-PTZ</strong>, a different class of " +
+              "device. The router was shortlisted RUTM08 and <em>is</em> a " +
+              "RUTM08. All three came from the same archive data by the same " +
+              "method, and nothing about the shortlist told them apart. So treat " +
+              "every ~ on this page as a question — not as an answer, and not as " +
+              "a wrong answer either."
+      },
+      {
+        tag: "caution",
+        head: "Why these readings are trusted: the MACs matched",
+        body: "192.168.88.0/24 is the subnet at every site <em>and</em> on the " +
+              "bench, and a bench station carries a 192.168.88.10 alias of its " +
+              "own, so a probe run from the wrong machine reaches bench hardware " +
+              "at the same address and returns an answer that looks entirely " +
+              "valid. Every confirmed reading here was accepted only after the " +
+              "device reported the <strong>same MAC the router had already " +
+              "observed</strong> at that address. The cameras cleared a second " +
+              "check too: each serial matched its own DNS hostname."
+      },
+      {
+        tag: "caution",
+        head: "Two machines hold DHCP leases, and one of them is the time source",
+        body: "The router at .1 is this subnet's DHCP server, DNS resolver and " +
+              "default gateway — read from the leases held by two independent " +
+              "clients, not inferred from its address. The same read showed the " +
+              "server and the operator station on <strong>leases rather than " +
+              "static addresses</strong>. Every bench tool points its NTP at the " +
+              "server, and a site time source on a lease can move. The fix is a " +
+              "static reservation on the router, which is a change and was not " +
+              "made."
+      }
+    ];
+  }
+
   function renderBanner() {
-    var matched = 0;
-    Object.keys(SITE.nodes).forEach(function (name) {
-      if (node(name).source_for_model === "bench-record") matched++;
-    });
+    var cv = SITE.coverage;
+    var nDev = Object.keys(SITE.nodes).length;
+    var items = bannerItems(cv);
+    var acts = items.filter(function (i) { return i.tag === "action"; }).length;
 
     var html = '<div class="banner"><h2>What this page cannot tell you</h2>';
-    // Counts come from the data, not from prose. The previous wording said
-    // "eight devices" and "no model" and was wrong on both within a day.
-    var nDev = Object.keys(SITE.nodes).length;
-    var cv = SITE.coverage;
-    html += "<p>" + nDev + " devices were found, and their <strong>addresses " +
-      "and vendors are established</strong>. <strong>" + cv.model.proven +
-      " of " + cv.model.total + "</strong> have had a model read off the " +
-      "device itself, and the same " + cv.firmware.proven + " a firmware " +
-      "version. For the rest: <strong>no model and no firmware is " +
-      "confirmed</strong>, and <strong>no cabling and no power path is " +
-      "confirmed for any device here at all.</strong></p>";
 
-    html += "<p><strong>The cabling question has its first answer.</strong> " +
-      "The router\u2019s own bridge forwarding table places <em>every</em> " +
-      "device at this site on one port, <code>lan3</code> \u2014 and its " +
-      "other two LAN ports have no carrier at all. So a single cable leaves " +
-      "the router and everything else hangs off the switch behind it. What " +
-      "the router cannot say is which switch port each device is on: those " +
-      "MACs are learned on lan3 because they arrive <em>through</em> the " +
-      "switch. That needs the switch\u2019s own table, which is the one " +
-      "thing still blocked.</p>";
+    // The lede carries live numbers, never prose counts. An earlier version
+    // hardcoded "eight devices" and "no model" and was wrong on both inside a
+    // day.
+    html += '<p class="lede">' + nDev + " devices are here, with " +
+      "<strong>addresses and vendors established</strong> for all of them and " +
+      "<strong>model and firmware read off " + cv.model.proven + " of " +
+      cv.model.total + "</strong>. One cabling fact is proven and " +
+      "<strong>no power path is proven at all</strong>. " + acts +
+      " things below need someone to act.</p>";
 
-    html += "<p><strong>And the two silent radars are cabled and alive at " +
-      "layer 2.</strong> Both appear in that same forwarding table like " +
-      "every working device, so they are putting frames on the wire while " +
-      "serving nothing above it. Cabling and power are ruled out as the " +
-      "fault; a stopped service or a host firewall is not.</p>";
+    html += '<ul class="blist">';
+    items.forEach(function (item) {
+      html += '<li><details><summary><span class="btag ' + item.tag + '">' +
+        esc(BANNER_TAGS[item.tag]) + "</span>" + item.head +
+        "</summary><div class=\"bbody\">" + item.body + "</div></details></li>";
+    });
+    html += "</ul></div>";
 
-    html += "<p><strong>Why the other " + (cv.model.total - cv.model.proven) +
-      " have no model, and the reasons are not the same.</strong> Every " +
-      "offline route is exhausted: a MAC gives a vendor and never a model, " +
-      "and no device here appears in bench-central, so there is no " +
-      "provisioning record to read. That leaves each device's own API. " +
-      "<strong>The .118 switch was never provisioned</strong> \u2014 its " +
-      "DHCP lease still carries the factory hostname <code>TSW202</code> " +
-      "while every provisioned device carries a real one, and the shared " +
-      "bench password is refused on both channels. Its password is on a " +
-      "sticker on the unit. <strong>Two of the four radars have nothing to " +
-      "query</strong> \u2014 " +
-      "they answer ping and sit in the router's neighbour table, but a full " +
-      "scan of ports 1\u201310240, run from the site server on the same " +
-      "network segment, found <strong>not one open port</strong>, in the " +
-      "same run that found three open on each working radar. No credential " +
-      "and no port forward can reach a service that is not listening; that " +
-      "needs console or physical access. <strong>The two Teltonikas are a " +
-      "credential problem only</strong>, and the router half of that is now " +
-      "done \u2014 it reads as a <strong>RUTM08</strong> on " +
-      "<strong>RUTM_R_00.07.24.3</strong>, which is the third shortlist " +
-      "checked against hardware and the first one that was <em>right</em>.</p>";
-
-    html += "<p><strong>Both readable radars are still on the vendor's " +
-      "default password.</strong> The login that read their model and " +
-      "firmware was <code>admin</code>/<code>password</code> \u2014 the " +
-      "documented Magos factory default, which authenticated on the first " +
-      "attempt against both units. Nothing was guessed and nothing was " +
-      "changed. It is worth checking the other Magos sites for the same " +
-      "thing; the two radars that serve no port here cannot be checked at " +
-      "all.</p>";
-
-    html += "<p><strong>What did get settled along the way.</strong> The " +
-      "router at .1 is this subnet's <strong>DHCP server, DNS resolver and " +
-      "default gateway</strong> \u2014 read from the leases held by two " +
-      "independent clients, not inferred from its address. The same read " +
-      "showed that the server and the operator station <strong>hold DHCP " +
-      "leases rather than static addresses</strong>. That is worth an " +
-      "operator's attention rather than a footnote: every bench tool points " +
-      "its NTP at the server, and a site time source on a lease can move. " +
-      "The fix is a static reservation on the router, which is a change and " +
-      "was not made.</p>";
-
-    html += "<p><strong>One caution about how these facts were obtained.</strong> " +
-      "192.168.88.0/24 is the subnet at every site <em>and</em> on the " +
-      "bench, and a bench station carries a 192.168.88.10 alias of its own. " +
-      "A probe run from the wrong machine reaches bench hardware at the " +
-      "same address and returns an answer that looks entirely valid. Every " +
-      "confirmed reading here is trusted for one specific reason: the " +
-      "device <strong>reported the same MAC that the site router had " +
-      "already observed</strong> at that address. The two cameras cleared " +
-      "a second check as well \u2014 each serial matched its own DNS " +
-      "hostname.</p>";
-
-    if (ARCHIVE) {
-      var hasSite = (ARCHIVE.sites || []).some(function (s) {
-        return s.toLowerCase().indexOf("fob-03") >= 0;
-      });
-      html += "<p>All " + nDev + " MACs were looked up in bench-central (" +
-        ARCHIVE.runs_total + " run records, both MAC spellings tried) and " +
-        "<strong>none of them is there</strong>." +
-        (hasSite ? "" : " There is no <code>" + esc(SITE.name) +
-          "</code> site in the archive at all.") +
-        " So this site was either never provisioned through the bench, " +
-        "provisioned before central shipping was switched on, or filed under " +
-        "another label. A miss is not evidence of anything — central " +
-        "shipping is opt-in per station.</p>";
-    }
-    html += "<p>Shortlists marked <span class=\"fact narrowed\">" +
-      "<span class=\"fglyph\">~</span><span class=\"fval\">like this</span>" +
-      "</span> are narrowings from vendor correlation across the archive. " +
-      "They are leads to confirm, not answers \u2014 and this site " +
-      "demonstrated both outcomes. The radars were shortlisted " +
-      "AR-300 / SR1000-F / SR500-F and read as <strong>SR1000-I</strong>, a " +
-      "variant the archive did not contain. The cameras were shortlisted " +
-      "PC464A1 \u2014 every camera on their OUI in the archive reports that " +
-      "\u2014 and read as <strong>SG-PTZ</strong>, a pan/tilt/zoom unit, " +
-      "a different class of device entirely. The router, though, was " +
-      "shortlisted <strong>RUTM08</strong> and reads as RUTM08. All three " +
-      "were derived correctly from the same real data; two were wrong and " +
-      "one was right, and nothing about the shortlist itself told them " +
-      "apart. Treat every " +
-      "<span class=\"fact narrowed\"><span class=\"fglyph\">~</span>" +
-      "<span class=\"fval\">shortlist</span></span> on this page as a " +
-      "question, not an answer \u2014 but the router\u2019s came out " +
-      "right, so treat them as questions, not as wrong answers either.</p>" +
-      "</div>";
     document.getElementById("banner").innerHTML = html;
   }
 

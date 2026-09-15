@@ -23,6 +23,7 @@ import bench_central
 import discover as discover_mod
 import probe as probe_mod
 import oui
+import export
 from export import as_js, as_json
 from lint import ERROR, WARN, coverage, lint
 from model import Site, SiteModelError, load_site
@@ -143,6 +144,19 @@ def cmd_export(args: argparse.Namespace) -> int:
     sites, failed = _load_all(args.paths)
     if not sites:
         return EXIT_BAD_MODEL
+
+    # Templates are schema examples with invented devices. The UI renders the
+    # first site in the payload, so shipping one is not a harmless extra entry
+    # — it silently becomes the site the dashboard shows.
+    if not args.include_templates:
+        sites, dropped = export.drop_templates(sites)
+        for name in dropped:
+            print(f"skipping template site '{name}' "
+                  f"(pass --include-templates to keep it)", file=sys.stderr)
+        if not sites:
+            print("nothing to export: every site given was a template",
+                  file=sys.stderr)
+            return EXIT_BAD_MODEL
 
     text = as_json(sites) if args.format == "json" else as_js(sites)
 
@@ -421,6 +435,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="js wraps the payload as window.SITE_DATA (default)",
     )
     p_export.add_argument("-o", "--out", help="write here instead of stdout")
+    p_export.add_argument(
+        "--include-templates", action="store_true",
+        help="keep _-prefixed template sites in the payload (they are dropped "
+             "by default: the UI shows the first site, so a template ships as "
+             "the site the dashboard renders)",
+    )
     p_export.set_defaults(func=cmd_export)
 
     p_id = sub.add_parser(

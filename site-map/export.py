@@ -21,6 +21,29 @@ from model import Site
 
 PAYLOAD_VERSION = 1
 
+# A site file whose name starts with "_" is a template: a worked example of the
+# schema with invented devices. `sites/*.yaml` globs it in with the real ones,
+# and the UI reads the FIRST site in the payload — so the template sorted ahead
+# of kela-fob-03 and the dashboard rendered a fictional site for several
+# published versions, under prose written about the real one. Nobody caught it
+# because no test and no lint pass ever opened the page.
+#
+# Templates are dropped here rather than in the UI, so every consumer of the
+# payload gets the same answer. `--include-templates` exists for anyone who
+# genuinely wants to preview one.
+TEMPLATE_PREFIX = "_"
+
+
+def is_template(site: Site) -> bool:
+    return site.name.startswith(TEMPLATE_PREFIX)
+
+
+def drop_templates(sites: list[Site]) -> tuple[list[Site], list[str]]:
+    """Real sites, plus the names of the templates that were left out."""
+    kept = [s for s in sites if not is_template(s)]
+    dropped = [s.name for s in sites if is_template(s)]
+    return kept, dropped
+
 
 def _node_payload(site: Site, name: str) -> dict:
     node = site.nodes[name]

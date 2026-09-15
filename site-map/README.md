@@ -49,6 +49,16 @@ The page reads `ui/site-data.js`, which `export` generates from the same YAML
 the linter reads — so the page cannot drift from the model. After changing a
 site file, re-export before republishing.
 
+**The page renders ONE site: the first real one in the payload.** `export`
+therefore drops any site whose name starts with `_`, because those are schema
+templates full of invented devices — and `sites/*.yaml` globs them in with the
+real ones. This is not a tidiness rule. The template's name sorts ahead of
+every real site, so before the filter existed the dashboard rendered a
+fictional 16-device site for several published versions, with prose about a
+real site wrapped around it. `--include-templates` keeps them if you actually
+want to preview one. `lint` still checks templates; only the UI payload
+excludes them.
+
 ### Publishing the UI
 
 The page and its data file have to be staged somewhere the Artifact tool can
