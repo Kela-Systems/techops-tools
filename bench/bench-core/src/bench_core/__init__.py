@@ -2141,7 +2141,7 @@ class TeltonikaClient:
         (TEC-857): stock RutOS ships `time2/3/4.google.com` there, a `uci show
         system` scan cannot see them, and on an offline site each one costs a
         failover timeout before the server that would have worked is tried.
-        Devices without that package (the TSW202) simply contribute nothing.
+        A device without that package simply contributes nothing.
         """
         servers: list[str] = []
 
