@@ -36,7 +36,7 @@ class FakeSwitch:
 
     def __init__(self, *, version=FLOOR, uci=None, model="TSW202",
                  mnfinfo=True, board="", network=None, offset=None,
-                 system_show=None, polling=None):
+                 system_show=None, polling=None, ntpclient_show=""):
         self.commands: list[str] = []
         self.version = version
         self.model = model
@@ -56,6 +56,10 @@ class FakeSwitch:
         # config for the same reason as the clock: the daemon not having picked
         # a committed config up is its own failure mode.
         self.polling = [NTP] if polling is None else polling
+        # `uci show ntpclient`. Empty by default: the switch was believed to
+        # have no such package, and the tests that predate finding one on a
+        # real unit describe that build.
+        self.ntpclient_show = ntpclient_show
         # {section: ip} as `uci show network` would report it. Defaults to what
         # the first real TSW202 had: an addressed section that is NOT `lan`.
         self.network = {"lan_mgmt": "192.0.2.2"} if network is None else network
@@ -72,6 +76,8 @@ class FakeSwitch:
         if "uci show network" in command:
             return "\n".join(f"network.{s}=interface\nnetwork.{s}.ipaddr='{ip}'"
                              for s, ip in self.network.items())
+        if "uci show ntpclient" in command:
+            return self.ntpclient_show
         if "uci show system" in command:
             if self.system_show is not None:
                 return self.system_show
@@ -202,6 +208,49 @@ def test_a_switch_with_no_stock_pool_is_left_alone():
     c = client(uci={"system.ntp": "timeserver"})
     c.set_ntp_server(NTP)
     assert not c.switch.wrote("uci delete ")
+
+
+# ── the second time subsystem, on a build that has one ───────────────────────
+#
+# A switch off the bench failed the NTP row with a clean `system` package: the
+# factory pool was in `ntpclient`, which `configured_ntp_servers` scans and
+# `set_ntp_server` did not write. The row was right and the switch really was
+# carrying four Google servers.
+
+STOCK_NTPCLIENT = ("".join(f"ntpclient.{i}=ntpserver\n"
+                           f"ntpclient.{i}.hostname='time{i}.google.com'\n"
+                           for i in range(1, 5))
+                   + "ntpclient.ntpdrift=ntpdrift\n"
+                   "ntpclient.ntpclient=ntpclient\n"
+                   "ntpclient.ntpclient.enabled='1'\n"
+                   "ntpclient.ntpclient.interval='86400'\n")
+
+
+def test_the_ntpclient_package_is_pointed_at_our_server_too():
+    c = client(ntpclient_show=STOCK_NTPCLIENT)
+    c.set_ntp_server(NTP)
+    assert c.switch.wrote(f"uci set ntpclient.1.hostname={NTP}")
+    assert c.switch.wrote("uci commit ntpclient")
+
+
+def test_the_stock_ntpclient_servers_are_deleted():
+    # Kept one section (rewritten above) and dropped the rest — four Google
+    # servers left below ours cost a failover timeout each on an offline site.
+    c = client(ntpclient_show=STOCK_NTPCLIENT)
+    c.set_ntp_server(NTP)
+    for section in ("2", "3", "4"):
+        assert c.switch.wrote(f"uci delete ntpclient.{section}")
+    assert not c.switch.wrote("uci delete ntpclient.1")
+
+
+def test_a_switch_with_no_ntpclient_package_is_untouched():
+    # The build the tool was written against. Delegating unconditionally would
+    # abort the run: set_ntp_client raises when the package is absent.
+    c = client(uci={"system.ntp": "timeserver"})
+    c.set_ntp_server(NTP)
+    # The probe itself (`uci show ntpclient`) is fine; a write is not.
+    assert not c.switch.wrote("uci set ntpclient")
+    assert not c.switch.wrote("uci delete ntpclient")
 
 
 # ── the timezone has to reach the CLOCK, not just the config ─────────────────

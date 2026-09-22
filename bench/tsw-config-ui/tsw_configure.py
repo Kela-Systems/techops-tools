@@ -56,6 +56,7 @@ from bench_core import (
     DEFAULT_TIMEZONE,
     DEFAULT_USERNAME,
     LOG_LINE_FORMAT,
+    NTP_CLIENT_PACKAGE,
     NTP_SERVER_TYPES,
     POSIX_TZ,
     UCI_NTP_ENABLED,
@@ -194,6 +195,16 @@ class TswClient(TeltonikaClient):
         cmds.append("uci commit system")
         self.ssh_exec(" && ".join(cmds))
         self.ssh_exec("/etc/init.d/sysntpd restart", check=False)
+
+        # And the OTHER time subsystem, on a build that has it. The switch was
+        # assumed to carry no `ntpclient` package — one off the bench does, its
+        # four factory `time1-4.google.com` sitting in a section each, which
+        # nothing done to `system` above reaches. `configured_ntp_servers`
+        # already scans that package, so those servers failed the NTP row on a
+        # switch whose live daemon polled ours alone. Same write-path gap as
+        # TEC-857 closed for `system`, one package over.
+        if self._uci_package(NTP_CLIENT_PACKAGE)[0]:
+            self.set_ntp_client(server)
         log.info("NTP server set.")
 
     # --- verification -------------------------------------------------------

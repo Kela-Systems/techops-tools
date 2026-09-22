@@ -83,7 +83,7 @@ TEC-848 and is recovered from that switch's own configure record.
 | --- | --- | --- |
 | `admin/root password` | As above. | effect-based |
 | `timezone` | The shared `timezone_check` — the row this whole document is about. | effect-based |
-| `NTP server` | Three facts: every server the device has (not just the option we wrote, so a leftover pool entry is found), the enable flag, and the servers the **running** ntpd was started with, off its command line. Since TEC-857 the server scan covers the `ntpclient` package too; a TSW202 has none, so the row is unchanged — the widening was for the routers, which do. See the note below on what a half-green reading of this row means. | effect-based |
+| `NTP server` | Three facts: every server the device has (not just the option we wrote, so a leftover pool entry is found), the enable flag, and the servers the **running** ntpd was started with, off its command line. Since TEC-857 the server scan covers the `ntpclient` package too — and some TSW202 builds do have it, holding the factory pool where nothing in `system` reaches it (see the second note below). See the note below on what a half-green reading of this row means. | effect-based |
 | `firmware` | `/etc/version` against the firmware floor. | effect-based |
 | `LAN IP` (verify only, static) | `lan_ip_check`, as above. | effect-based |
 | `LAN IP` (verify only, DHCP) | `lan_dhcp_check`: there is no address to hold the switch to, so the answerable question is whether it is configured to ask for one. A leftover static `ipaddr` alongside `proto=dhcp` **fails** — that switch falls back to the bench address when no lease arrives, which is a second device shipped under one record. | effect-based |
@@ -112,6 +112,20 @@ timeout each on a site with no internet.
 A switch provisioned before that fix still carries them; it is cleared by a
 re-run, or by hand with `while uci -q delete system.@ntpserver[0]; do :; done &&
 uci commit system && /etc/init.d/sysntpd restart`.
+
+**The factory pool has a second hiding place.**
+A later switch failed this row with a `system` package that was clean:
+`system.ntp.server` was ours alone, `enabled=1`, and `ntpd` polled ours — but
+`uci show ntpclient` held `time1-4.google.com` in a section each, plus its own
+enabled client on an 86400s interval. The row reads both packages, so it was
+right; `set_ntp_server` only wrote one, so a re-run never cleared them. It now
+points `ntpclient` at the same server when the package exists (reusing the
+routers' `set_ntp_client`), and leaves a build without one untouched.
+
+The general lesson is the one above, twice: detection was widened to find the
+stock pool before the write was, so the row went red on a switch that no number
+of re-runs could fix. When a check reads more places than the setter writes,
+the gap surfaces as an unfixable red row rather than a silent pass.
 
 ## Provision-ISR IP speaker
 
