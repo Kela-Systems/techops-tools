@@ -3001,6 +3001,18 @@ class TeltonikaClient:
                       raw)
         return (int(m.group(1)) if m else None), raw
 
+    def sim_inserted(self) -> Optional[bool]:
+        """False only when the modem says outright that the active slot has no
+        SIM (`+CME ERROR: SIM not inserted`, or its numeric form 10). A modem
+        still booting, or a reply we don't recognise, is None — callers go on
+        rather than block a run on a guess."""
+        raw = self.ssh_exec("gsmctl -A 'AT+CPIN?' 2>/dev/null", check=False)
+        if "+CPIN:" in raw:
+            return True
+        if re.search(r"SIM not inserted|\+CME ERROR:\s*10\b", raw, re.I):
+            return False
+        return None
+
     def sim_4g_check(self) -> dict:
         """One `{item, expected, actual, ok}` row for "the SIMs are 4G-only".
 

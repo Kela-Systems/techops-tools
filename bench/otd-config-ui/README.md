@@ -5,6 +5,16 @@ plug-in → configure → unplug flow as the other bench tools: plug a device in
 UI reads its LAN MAC, you type the **site name** and the **factory label
 password**, and it provisions. Nothing is saved beyond the session history.
 
+## Before you start: insert an activated SIM
+
+The Tailscale join (and eSIM download and FOTA, when enabled) needs mobile data.
+Put a SIM in the device, the right way round and clicked home, and make sure
+the carrier has **activated** it. Without one the run stops at the start with
+"No SIM detected"; a SIM that is inserted but gets no data fails the
+Tailscale step after the 180 s wait with the same advice. A carrier reject such
+as "PLMN not allowed" in the log means the SIM is not activated or not allowed
+on that network.
+
 ## What it does per device
 
 1. Login with the label password (falls back to the shared password for re-runs).
@@ -102,7 +112,7 @@ plan.
 
 The device's own `sim_switch` service does the switching; the bench only writes
 the rules, as one `config sim` section per slot. That makes the step pure UCI plus
-a service restart: it needs **no SIM inserted** (the normal bench state), never
+a service restart: it needs **no SIM inserted** for this step, never
 reads modem state, and never touches `simcard.@sim[].primary`. Restarting the
 service does not bounce the modem or drop back to the primary SIM.
 

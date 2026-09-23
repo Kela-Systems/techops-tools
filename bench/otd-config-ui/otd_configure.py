@@ -52,6 +52,10 @@ DEFAULT_OTD_NTP_SERVER = "192.168.1.2"
 # rather than a default somebody else may have moved.
 DEFAULT_DHCP_START = 100
 DEFAULT_DHCP_LIMIT = 150
+# Shown wherever a run stops for want of mobile data: on the bench, a missing,
+# loose or unactivated SIM is the usual cause, and nothing else says so.
+SIM_HINT = ("check a SIM is in the slot, the right way round and clicked home, "
+            "and that the carrier has activated it")
 
 
 # --- pipeline (shared by CLI + web UI) --------------------------------------
@@ -119,6 +123,17 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
     assert_device_model(identity, "OTD", "OTD500 configurator")
     warnings = client.verify_identity(identity, expected or {})
 
+    # The steps that need mobile data come last, after a 180 s wait, so an empty
+    # slot used to cost the whole run before anything said "SIM". Check first.
+    online_steps = [step for step, wanted in (
+        ("Tailscale", (settings.get("tailscale") or {}).get("enabled")),
+        ("eSIM", (settings.get("esim") or {}).get("enabled")
+                 and (expected or {}).get("esim_activation_code")),
+        ("FOTA", (settings.get("firmware") or {}).get("mode") == "fota")) if wanted]
+    if online_steps and client.sim_inserted() is False:
+        raise SystemExit(f"No SIM detected ({' / '.join(online_steps)} needs mobile "
+                         f"data): {SIM_HINT}.")
+
     # Critical steps abort the run (login + password already ran above).
     client.set_admin_password(new_password)
 
@@ -169,7 +184,7 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
         client.get_identity()  # refresh fw version after reboot
     elif mode == "fota":
         if not client.ensure_online(net_timeout):
-            raise SystemExit("FOTA needs internet, but the SIM has no data connection.")
+            raise SystemExit(f"FOTA needs internet, but the SIM has no data connection: {SIM_HINT}.")
         client.upgrade_firmware(fota=True, keep_settings=fw.get("keep_settings", True),
                                 net_wait=net_timeout)
         client.get_identity()
@@ -233,8 +248,8 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
 
     if ts.get("enabled"):
         if online is False:
-            failures.append("tailscale: no mobile data — could not join (needs internet)")
-            log.error("Tailscale: no mobile data — cannot join.")
+            failures.append(f"tailscale: no mobile data — could not join ({SIM_HINT})")
+            log.error("Tailscale: no mobile data — cannot join. %s.", SIM_HINT.capitalize())
         else:
             _step("tailscale", lambda: client.join_tailscale(
                 ts.get("_resolved_auth_key") or ts.get("auth_key", ""),
@@ -242,8 +257,8 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
 
     if needs_esim:
         if online is False:
-            failures.append("esim: no mobile data — skipped (needs internet)")
-            log.error("eSIM: no mobile data — skipped.")
+            failures.append(f"esim: no mobile data — skipped ({SIM_HINT})")
+            log.error("eSIM: no mobile data — skipped. %s.", SIM_HINT.capitalize())
         else:
             _step("esim", lambda: client.load_esim(expected["esim_activation_code"]))
 
