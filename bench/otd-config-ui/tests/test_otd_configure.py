@@ -19,6 +19,8 @@ Two placements are load-bearing here:
 What the steps WRITE is pinned in bench-core's `test_ntp_client_applied.py` and
 `test_ntp_path_applied.py`; this file is only about the pipeline.
 """
+import pytest
+
 import otd_configure as mod
 
 SETTINGS = {
@@ -136,3 +138,34 @@ def test_a_device_that_refuses_the_ntp_write_fails_one_step_not_the_run(
     # The run carried on: the operator gets the rest of the steps and the
     # verification table, not a run that stopped at the first refusal.
     assert "set_dhcp_pool" in stub_client.calls
+
+
+# ── the SIM (mobile data for Tailscale) ──────────────────────────────────────
+
+class _NoSim:
+    def sim_inserted(self):
+        self.calls.append("sim_inserted")
+        return False
+
+
+def test_a_missing_sim_stops_the_run_before_anything_changes(stub_client):
+    # Tailscale is the last step, after a 180 s data wait: without this the run
+    # spent minutes configuring and then failed without ever saying "SIM".
+    stub_client.__class__ = type("NoSimClient", (_NoSim, type(stub_client)), {})
+    with pytest.raises(SystemExit, match=r"No SIM detected \(Tailscale"):
+        mod.configure_device(stub_client, label_password="pw", site_name="haifa",
+                             settings={**SETTINGS, "tailscale": {"enabled": True}})
+    assert "set_admin_password" not in stub_client.calls
+
+
+def test_the_sim_is_not_asked_for_when_nothing_needs_data(run_pipeline, stub_client):
+    stub_client.__class__ = type("NoSimClient", (_NoSim, type(stub_client)), {})
+    run_pipeline(SETTINGS, stub_client)
+    assert "sim_inserted" not in stub_client.calls
+
+
+def test_no_mobile_data_points_at_the_sim(stub_client):
+    stub_client.ensure_online = lambda *a, **k: False
+    result = mod.configure_device(stub_client, label_password="pw", site_name="haifa",
+                                  settings={**SETTINGS, "tailscale": {"enabled": True}})
+    assert any("activated" in f for f in result["failures"])
