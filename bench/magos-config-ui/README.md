@@ -89,6 +89,20 @@ static IP is applied to). Any key you remove — or the whole file — falls bac
 to the built-in values, which match a fresh unit; keys starting with `_` are
 comments.
 
+The committed values are the **factory** defaults — a fresh unit really does
+answer to `admin`/`password` — so the template is safe to ship as-is. But the
+file is edited per station, and once an operator puts a site password in it
+that is a secret in the working tree. So, as with every other bench tool, the
+live file is **gitignored** and only the `*.example.json` variant is
+committed. On a new station:
+
+```bash
+cp config/magos.config.example.json config/magos.config.json
+```
+
+This rule was missing until 2026-09-14, which is why `magos.config.json`
+itself was tracked; it was the only bench tool without one.
+
 The file and each tool's **settings panel edit the same settings**: the file
 is read once at startup, and changes made in the web UI are saved back into
 the tool's section of the file, so they survive a restart — whatever was set
@@ -141,7 +155,8 @@ Pass `--host`, `--ip`, `--ntp`, etc. to drive them explicitly, or set
 | `magos_configure.py`                   | Radar device client + standalone CLI                                                                             |
 | `apu_configure.py`                     | APU device client + standalone CLI                                                                               |
 | `static/index.html`, `static/apu.html` | The radar / APU dashboards                                                                                       |
-| `config/magos.config.json`             | Operator-editable factory defaults (`ar300` + `apu` sections)                                                    |
+| `config/magos.config.example.json`     | Committed template — copy to `magos.config.json` and fill in the passwords                                       |
+| `config/magos.config.json`             | Operator-editable factory defaults (`ar300` + `apu` sections) — **gitignored, holds real passwords**             |
 | `logs/`                                | Rolling human log + per-unit JSON records                                                                        |
 
 
