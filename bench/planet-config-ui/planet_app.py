@@ -438,13 +438,19 @@ class PlanetConfigurator(BenchConfigurator):
                 "MISSING — a switch below the floor cannot be configured without it"
             print(f"  firmware     : floor {self._min_firmware()}, image "
                   f"{image.name if image else '(none configured)'} ({found})")
-        allocated, budget = self._poe_allocated(), self._poe_budget()
-        over = "  ** OVER BUDGET **" if allocated > budget else ""
-        print(f"  PoE plan     : {allocated:.0f} W allocated of {budget} W{over}")
+        managed = self._poe_managed()
+        if managed:
+            allocated, budget = self._poe_allocated(), self._poe_budget()
+            over = "  ** OVER BUDGET **" if allocated > budget else ""
+            print(f"  PoE plan     : {allocated:.0f} W allocated of {budget} W{over}")
+        else:
+            print("  Port plan    : PoE left to the switch (poe.managed is false)")
         for row in self._poe_plan():
-            state = (f"on  {row['limit_w']:>5.1f} W {row['priority']}"
-                     if row["enabled"] else "off")
-            print(f"    gi{row['port']}  {state:<22} {row['description']}")
+            state = ""
+            if managed:
+                on = f"on  {row['limit_w']:>5.1f} W {row['priority']}"
+                state = f"{on if row['enabled'] else 'off':<22} "
+            print(f"    gi{row['port']}  {state}{row['description']}")
         print(f"  config       : "
               f"{'config/planet.config.json' if self.cfg else 'MISSING — copy the example'}")
         if next_ip:

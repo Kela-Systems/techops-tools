@@ -200,6 +200,19 @@ def test_the_wattage_comes_back_on_the_label_when_the_bench_sets_poe(tool):
     assert rows["5"] == "SPARE"          # a port with PoE off names no wattage
 
 
+def test_the_banner_names_no_wattage_when_the_switch_manages_poe(tool, capsys):
+    """The startup banner still printed the 200 W plan after PoE was turned off,
+    so an operator read it as the bench setting power."""
+    tool.print_banner()
+    out = capsys.readouterr().out
+    assert "PoE left to the switch" in out
+    assert "45.0 W" not in out and "critical" not in out
+
+    tool.cfg["poe"]["managed"] = True
+    tool.print_banner()
+    assert "200 W allocated of 240 W" in capsys.readouterr().out
+
+
 def test_the_port_map_reaches_the_run_record(tool):
     """The label is printed from the record, so a plan that never got there is
     a switch that ships with no port map."""
