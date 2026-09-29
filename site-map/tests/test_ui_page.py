@@ -181,3 +181,39 @@ def test_the_banner_opens_short_and_keeps_the_detail(tmp_path):
     assert len(visible) < 900, f"the collapsed banner is too long ({len(visible)} chars)"
     assert len(hidden) > 2000, "the detail was deleted rather than collapsed"
     assert banner.count("<details>") >= 5
+
+
+# ── the stylesheet's own vocabulary ─────────────────────────────────────────
+#
+# A misspelled custom property fails silently and completely: the declaration
+# is dropped, the element keeps whatever it inherited, and the page still
+# parses, renders and passes every test above. That is how the site switcher
+# shipped with `background: var(--ink); color: var(--card)` — `--card` is not
+# a token this page defines, so the label inherited dark ink onto a near-black
+# ground and the selected site name arrived looking redacted.
+#
+# Nothing here opens a browser, so this is the only cheap guard: every token
+# used has to be one the page defines.
+
+TOKEN_USE = re.compile(r"var\((--[a-z0-9-]+)")
+TOKEN_DEF = re.compile(r"^\s*(--[a-z0-9-]+)\s*:", re.M)
+
+
+def test_every_css_variable_the_page_uses_is_one_it_defines():
+    html = PAGE.read_text()
+    used = set(TOKEN_USE.findall(html))
+    defined = set(TOKEN_DEF.findall(html))
+    missing = sorted(used - defined)
+    assert not missing, (
+        f"these custom properties are used but never defined, so every "
+        f"declaration reading them is silently dropped: {missing}"
+    )
+
+
+def test_the_guard_would_catch_an_invented_token():
+    # A negative control: without this, a regex that stopped matching the
+    # page would make the check above pass by finding nothing.
+    html = 'a { color: var(--nope); } :root { --real: #fff; }'
+    used = set(TOKEN_USE.findall(html))
+    defined = set(TOKEN_DEF.findall(html))
+    assert sorted(used - defined) == ["--nope"]

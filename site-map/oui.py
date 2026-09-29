@@ -29,6 +29,11 @@ from typing import Iterable, Optional
 import devices
 
 # Where nmap keeps its vendor list, in the order worth trying.
+# Local additions, merged over the system database. nmap's list is a snapshot
+# that ships with the package, so anything newer than it resolves to no vendor
+# at all - which on a site map reads as "unknown device".
+OVERRIDES = Path(__file__).resolve().parent / "oui-overrides.txt"
+
 DB_CANDIDATES = (
     "/opt/homebrew/share/nmap/nmap-mac-prefixes",
     "/usr/local/share/nmap/nmap-mac-prefixes",
@@ -99,8 +104,21 @@ def find_db(explicit: Optional[str] = None) -> Path:
     )
 
 
-def load_db(path: Path) -> dict[str, str]:
-    """prefix (upper hex, no separators) -> vendor name."""
+def load_db(path: Path, overrides: Path | None = OVERRIDES) -> dict[str, str]:
+    """prefix (upper hex, no separators) -> vendor name.
+
+    Local overrides are merged last so they win, and a longer prefix beats a
+    shorter one in `lookup` regardless of which file it came from.
+    """
+    table = _read_prefixes(path)
+    if not table:
+        raise OuiError(f"{path} held no usable entries")
+    if overrides and Path(overrides).is_file():
+        table.update(_read_prefixes(Path(overrides)))
+    return table
+
+
+def _read_prefixes(path: Path) -> dict[str, str]:
     table: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
@@ -109,8 +127,6 @@ def load_db(path: Path) -> dict[str, str]:
         prefix, _, name = line.partition(" ")
         if name:
             table[prefix.strip().upper()] = name.strip()
-    if not table:
-        raise OuiError(f"{path} held no usable entries")
     return table
 
 

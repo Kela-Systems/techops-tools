@@ -4,11 +4,16 @@
     ./sitemap.py lint   sites/*.yaml          # offline checks, CI-safe
     ./sitemap.py show   sites/kela-cuas-06.yaml
     ./sitemap.py render sites/kela-cuas-06.yaml -o docs/kela-cuas-06.md
+    ./sitemap.py serve                        # host the UI, sweep a site
 
-Nothing here contacts a device. That is a property worth keeping: `lint` runs
-on every push without a tailnet, without credentials and without any chance
-of touching production. Proving a model against real hardware is a separate
-command against a read-only path, and it is not built yet.
+`lint`, `show`, `render` and `export` contact nothing. That is a property
+worth keeping: they run on every push without a tailnet, without credentials
+and without any chance of touching production.
+
+`serve` and `probe` do reach out, both opt-in and both read-only. `serve`
+pings a subnet from a site server and reads that host's neighbour table;
+`probe` reads identity off the devices' own APIs and is a dry run without
+`--confirm`. Neither writes to a device.
 
 Exit codes: 0 clean (warnings allowed), 1 lint errors, 2 a file that could
 not be loaded at all.
@@ -16,12 +21,15 @@ not be loaded at all.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 import bench_central
 import discover as discover_mod
 import probe as probe_mod
+import runlog
+import serve as serve_mod
 import oui
 import export
 from export import as_js, as_json
@@ -321,6 +329,57 @@ def cmd_discover(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_runs(args: argparse.Namespace) -> int:
+    """List past surveys, or print one.
+
+    The point of keeping these is that the failures this tool has had were
+    all silent: a command returning rc 127, an ssh refused for a username
+    rather than a key, a neighbour table full of container addresses. Every
+    one is obvious in a transcript and invisible in a result.
+    """
+    runs = runlog.list_runs(runlog.RUNS_DIR)
+    if not runs:
+        print(f"no runs recorded yet (they land in {runlog.RUNS_DIR})")
+        return EXIT_OK
+
+    if args.last or args.show:
+        path, record = runs[-1] if args.last else next(
+            ((p, r) for p, r in runs if args.show in p.name), (None, None))
+        if path is None:
+            print(f"no run matching {args.show!r}", file=sys.stderr)
+            return EXIT_BAD_MODEL
+        print(path)
+        print(json.dumps(record, indent=2, ensure_ascii=False))
+        return EXIT_OK
+
+    for path, record in runs[-args.limit:]:
+        result = record.get("result") or {}
+        status = "ok " if record.get("ok") else "FAIL"
+        summary = (
+            f"{result.get('site') or record.get('request', {}).get('server')} "
+            f"{result.get('subnet') or ''} "
+            f"{record.get('answered')}/{record.get('swept')} answered"
+            if record.get("ok") else
+            (record.get("error") or {}).get("message", "")[:70]
+        )
+        print(f"{status} {record.get('started')} {record.get('seconds')}s  "
+              f"{summary}")
+        print(f"     {path.name}")
+    print(f"\n{len(runs)} run(s) in {runlog.RUNS_DIR}. "
+          f"`runs --last` prints the newest in full.")
+    return EXIT_OK
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Host the page and give it a sweep endpoint.
+
+    The other commands are offline by design; this one is the exception and
+    says so. It is also the only way the two address fields on the page can
+    work at all - see serve.py.
+    """
+    return serve_mod.serve(args)
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     """Read identity off the devices themselves. Read-only, one attempt each.
 
@@ -487,6 +546,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--write", help="write a YAML patch of what was learned to this path",
     )
     p_probe.set_defaults(func=cmd_probe)
+
+    p_serve = sub.add_parser(
+        "serve",
+        help="host the dashboard and let it sweep a site over the tailnet",
+    )
+    serve_mod.add_arguments(p_serve)
+    p_serve.set_defaults(func=cmd_serve)
+
+    p_runs = sub.add_parser(
+        "runs", help="what past surveys actually did, command by command")
+    p_runs.add_argument("--limit", type=int, default=20)
+    p_runs.add_argument("--last", action="store_true",
+                        help="print the newest run in full")
+    p_runs.add_argument("--show", help="print the run whose filename contains this")
+    p_runs.set_defaults(func=cmd_runs)
 
     return parser
 

@@ -72,6 +72,50 @@ class SiteModelError(Exception):
     """
 
 
+# An interface's side of the world. `internal` means an address inside the
+# site's own subnet; `external` is everything else - a tailnet address, a WAN
+# address, an uplink to somebody else's network. The distinction is the one an
+# operator actually needs: which of these can I reach from my desk, and which
+# only exists on site.
+SCOPE_INTERNAL = "internal"
+SCOPE_EXTERNAL = "external"
+SCOPES = (SCOPE_INTERNAL, SCOPE_EXTERNAL)
+
+
+def _sort_key(addr: Optional[str], subnet=None):
+    """On-subnet addresses first, then numerically."""
+    if not addr:
+        return (2, 0)
+    try:
+        ip = ipaddress.IPv4Address(addr)
+    except ValueError:
+        return (2, 0)
+    on_subnet = subnet is not None and ip in subnet
+    return (0 if on_subnet else 1, int(ip))
+
+
+@dataclass
+class Interface:
+    """One address on one NIC.
+
+    A device with two legs is the normal case for the two that matter most:
+    the router carries br-lan, wan and tailscale0, and a site server carries
+    its LAN NIC and tailscale0. A model with one `addr` per node cannot say
+    that, and the one address it does hold is whichever the sweep happened to
+    see - which for the router is whichever side you came in on.
+    """
+
+    name: Optional[str] = None
+    addr: Optional[str] = None
+    scope: str = SCOPE_INTERNAL
+    prefix: Optional[int] = None
+    note: Optional[str] = None
+
+    @property
+    def ip(self) -> Optional[ipaddress.IPv4Address]:
+        return ipaddress.IPv4Address(self.addr) if self.addr else None
+
+
 @dataclass
 class Node:
     """One box at the site."""
@@ -93,6 +137,11 @@ class Node:
     mac: Optional[str] = None
     addr: Optional[str] = None
     addr_source: str = "none"
+    # Every address this device holds, where that was read. Empty means
+    # nobody looked, NOT that the device has one NIC - an ARP sweep only ever
+    # sees the leg facing the host that swept, so absence here is a limit of
+    # the reading and `interfaces_or_addr` says so.
+    interfaces: list[Interface] = field(default_factory=list)
     roles: list[str] = field(default_factory=list)
     critical: bool = False
     # Switch-only: the per-port power budget, and whether the switch is
@@ -119,6 +168,31 @@ class Node:
     @property
     def ip(self) -> Optional[ipaddress.IPv4Address]:
         return ipaddress.IPv4Address(self.addr) if self.addr else None
+
+    def interfaces_or_addr(self, subnet=None) -> list[Interface]:
+        """The declared interfaces, or the one address we happen to know.
+
+        Never invents a second leg. A device read over SSH has real
+        interfaces; a device seen only in an ARP table has exactly one
+        address, and this returns exactly that.
+        """
+        if self.interfaces:
+            return sorted(
+                self.interfaces,
+                key=lambda i: (i.scope != SCOPE_INTERNAL,
+                               _sort_key(i.addr, subnet)),
+            )
+        if not self.addr:
+            return []
+        scope = SCOPE_INTERNAL
+        if subnet is not None:
+            try:
+                scope = (SCOPE_INTERNAL
+                         if ipaddress.IPv4Address(self.addr) in subnet
+                         else SCOPE_EXTERNAL)
+            except ValueError:
+                pass
+        return [Interface(name=None, addr=self.addr, scope=scope)]
 
 
 @dataclass
@@ -361,6 +435,36 @@ def _parse_node(name: str, spec: Any) -> Node:
         except ipaddress.AddressValueError as exc:
             raise SiteModelError(f"node '{name}': '{addr}' is not an IPv4 address") from exc
 
+    interfaces = []
+    raw_ifaces = spec.get("interfaces") or []
+    if not isinstance(raw_ifaces, list):
+        raise SiteModelError(f"node '{name}': 'interfaces' must be a list")
+    for index, item in enumerate(raw_ifaces, 1):
+        if not isinstance(item, dict):
+            raise SiteModelError(
+                f"node '{name}': interface #{index} must be a mapping")
+        iface_addr = item.get("addr")
+        if iface_addr is not None:
+            iface_addr = str(iface_addr)
+            try:
+                ipaddress.IPv4Address(iface_addr)
+            except ipaddress.AddressValueError as exc:
+                raise SiteModelError(
+                    f"node '{name}': interface #{index} address "
+                    f"'{iface_addr}' is not an IPv4 address") from exc
+        scope = str(item.get("scope", SCOPE_INTERNAL))
+        if scope not in SCOPES:
+            raise SiteModelError(
+                f"node '{name}': interface #{index} scope '{scope}' is not "
+                f"one of {', '.join(SCOPES)}")
+        prefix = item.get("prefix")
+        interfaces.append(Interface(
+            name=(str(item["name"]) if item.get("name") else None),
+            addr=iface_addr, scope=scope,
+            prefix=(int(prefix) if prefix is not None else None),
+            note=(str(item["note"]) if item.get("note") else None),
+        ))
+
     addr_source = spec.get("addr_source", "static-bench" if addr else "none")
     if addr_source not in ADDR_SOURCES:
         raise SiteModelError(
@@ -394,6 +498,7 @@ def _parse_node(name: str, spec: Any) -> Node:
         model=spec.get("model"),
         addr=addr,
         addr_source=addr_source,
+        interfaces=interfaces,
         roles=[str(r) for r in roles],
         critical=bool(spec.get("critical", False)),
         poe_budget_w=spec.get("poe_budget_w"),

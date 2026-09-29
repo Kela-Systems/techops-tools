@@ -89,10 +89,34 @@ nodes:
     mac: 20:97:27:36:55:ec
     addr: 192.168.88.1
     addr_source: static-manual
+    # Read on the device 2026-09-15 with `ip -4 addr show`, over a read-only
+    # session. `addr` above is the LAN leg, which is the one a site map is
+    # about; these are all three of them. The WAN address is private but is
+    # NOT this site's subnet - it is the link to the Teltonika upstream at
+    # 192.168.1.1 - so scope here is taken from the interface name rather
+    # than from whether the address happens to be RFC1918.
+    interfaces:
+      - name: br-lan
+        addr: 192.168.88.1
+        prefix: 24
+        scope: internal
+      - name: tailscale0
+        addr: 100.64.242.104
+        prefix: 32
+        scope: external
+        note: the tailnet address, and how this survey reached the site
+      - name: wan
+        addr: 192.168.1.164
+        prefix: 24
+        scope: external
+        note: uplink to another Teltonika at 192.168.1.1
     evidence:
       "*": arp
       model: device-api
       firmware: device-api
+      # Upgraded from arp: the addresses below were read on the device with
+      # `ip -4 addr show`, not observed from outside it.
+      addr: device-api
     verified_at: 2026-09-14
     critical: true
     roles: [dhcp-server, dns-resolver, default-gateway]

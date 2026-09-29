@@ -1,3 +1,5 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Site Wiring Map</title>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -362,6 +364,158 @@ body {
 .panel > .body { padding: 14px; }
 .panel > .body.flush { padding: 0; }
 
+/* --- the sweep panel ---------------------------------------------------
+   Two fields, and the asymmetry between them is the design. The server
+   address has no default because nothing can guess which site you mean;
+   the subnet has one because 192.168.88.0/24 is nearly always right - and
+   is editable because "nearly" is not "always". */
+.scan { margin: 0 0 18px; }
+.scan .body { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+.scan .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1 1 210px; }
+.scan label { font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-2); }
+.scan label .opt { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--ink-3); }
+.scan input {
+  font: 500 13px/1.3 var(--font-mono);
+  color: var(--ink);
+  background: var(--ground);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  padding: 8px 9px;
+  min-width: 0;
+}
+.scan input:focus { outline: 2px solid var(--data); outline-offset: -1px; }
+.scan input:disabled { opacity: .55; cursor: not-allowed; }
+.scan button {
+  font: 600 12.5px/1 var(--font-cond);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--data);
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  padding: 10px 16px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.scan button:disabled { opacity: .5; cursor: progress; }
+.scan .note { flex: 1 1 100%; margin: 0; font-size: 12px; color: var(--ink-2); }
+.scan .note.bad { color: var(--alarm); }
+.scan .note code { font-family: var(--font-mono); font-size: 11.5px; }
+.scan details { flex: 1 1 100%; font-size: 12px; }
+.scan details pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow: auto;
+  max-height: 260px;
+  background: var(--ground);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font: 400 11.5px/1.5 var(--font-mono);
+}
+
+/* --- the connection diagram -------------------------------------------
+   Drawn as an SVG rather than handed to a diagramming library: an artifact
+   page cannot load one, and the layout here is four fixed layers, which is
+   less code than configuring someone else's graph engine.
+
+   A solid line is a cable something established. A dashed line is what the
+   FOB pattern expects and nobody has checked. Those must never look alike,
+   so they differ in dash, colour AND weight - the distinction has to
+   survive greyscale and a projector. */
+.diagram { margin: 0 0 18px; }
+.diagram .body { padding: 0; }
+.dwrap { overflow-x: auto; overflow-y: hidden; padding: 16px 14px 6px; }
+/* No max-width: the drawing keeps its natural size and the panel scrolls.
+   Capping it at 100% scaled a wide diagram down to fit, shrinking every
+   label with it until a nine-device site was unreadable. */
+.dwrap svg { display: block; height: auto; max-width: none; }
+.dbox { cursor: pointer; }
+.dbox rect {
+  fill: var(--surface);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  rx: 3;
+}
+.dbox:hover rect { stroke: var(--data); stroke-width: 1.5; }
+.dbox.sel rect { stroke: var(--data); stroke-width: 2; fill: var(--data-soft); }
+.siteswitch { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 0; }
+.siteswitch button {
+  font: 600 11.5px/1 var(--font-cond); letter-spacing: .02em; padding: 6px 10px;
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--surface); color: var(--ink-2); cursor: pointer;
+}
+.siteswitch button:hover { border-color: var(--line-strong); color: var(--ink); }
+/* The selected site reads as pressed, not as a redaction. This was an
+   inverted black pill whose text colour came from a token that does not
+   exist in this page (`--card`), so the label inherited dark ink on a dark
+   ground and the site name arrived looking blacked out. */
+.siteswitch button[aria-current="true"] {
+  background: var(--surface-3); color: var(--ink);
+  border-color: var(--line-strong); box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.dbox.ghost rect { stroke-dasharray: 3 3; fill: none; stroke: var(--unknown); }
+/* Proven to exist, and permanently unidentifiable: an unmanaged switch is
+   in no table anywhere, because it never sources a frame. Solid outline
+   because its presence is a reading, hollow because there is no device
+   record behind it and never can be. */
+.dregion rect {
+  fill: var(--surface-2); stroke: var(--line-strong); stroke-dasharray: 2 3;
+  opacity: .75;
+}
+.dregionlabel {
+  font: 600 9.5px/1 var(--font-mono); fill: var(--ink-3);
+  letter-spacing: .04em; text-transform: uppercase;
+}
+.dbox.anon rect { stroke: var(--proven); fill: none; }
+.dbox.anon .dname, .dbox.anon .dkind { fill: var(--proven); }
+.dbox .dname {
+  font: 600 11.5px var(--font-cond);
+  fill: var(--ink);
+}
+.dbox.ghost .dname { fill: var(--unknown); }
+.dbox .daddr { font: 400 10px var(--font-mono); fill: var(--ink-3); }
+.dbox .dkind { font: 500 9.5px var(--font-cond); fill: var(--ink-3); letter-spacing: .06em; }
+.dedge { fill: none; stroke-linecap: square; }
+.dedge.proven { stroke: var(--proven); stroke-width: 2; }
+.dedge.pattern { stroke: var(--unknown); stroke-width: 1.25; stroke-dasharray: 4 4; }
+.dlayer { font: 500 9.5px var(--font-cond); fill: var(--ink-3); letter-spacing: .08em; }
+.dlegend {
+  display: flex; flex-wrap: wrap; gap: 14px;
+  padding: 10px 14px; border-top: 1px solid var(--line);
+  font-size: 11.5px; color: var(--ink-2);
+}
+.dlegend span { display: inline-flex; align-items: center; gap: 6px; }
+.dlegend i { width: 22px; height: 0; border-top-width: 2px; border-top-style: solid; }
+.dnotes { padding: 0 14px 12px; margin: 0; font-size: 12px; color: var(--ink-2); }
+.dnotes li { margin: 7px 0 0; }
+
+/* --- interface scope badges -------------------------------------------
+   E for an address facing outward - a tailnet or WAN leg - and I for one on
+   the site's own subnet. A letter rather than colour alone, so it survives
+   greyscale and colour blindness, which is the same rule the certainty
+   glyphs follow. Deliberately quiet: this is a qualifier on an address, not
+   a finding about it. */
+.scope {
+  display: inline-block;
+  min-width: 13px;
+  padding: 0 3px;
+  margin-right: 5px;
+  border-radius: 2px;
+  font: 600 9px/13px var(--font-cond);
+  text-align: center;
+  vertical-align: 1px;
+  letter-spacing: .02em;
+}
+.scope.ext { color: var(--power); background: var(--power-soft); }
+.scope.int { color: var(--data); background: var(--data-soft); }
+.ifaces { display: flex; flex-direction: column; gap: 2px; }
+.ifaces .ifrow { display: flex; align-items: baseline; gap: 6px; font-size: 11.5px; }
+.ifaces .ifname { color: var(--ink-3); font: 500 10.5px var(--font-mono); }
+svg .scopeglyph { font: 600 8.5px var(--font-cond); }
+svg .scopeglyph.ext { fill: var(--power); }
+svg .scopeglyph.int { fill: var(--data); }
+svg .difname { font: 500 8.5px var(--font-mono); fill: var(--ink-3); }
+
 /* --- certainty chips --------------------------------------------------- */
 
 .fact {
@@ -520,12 +674,52 @@ a { color: var(--data); }
       <p class="eyebrow" id="eyebrow">Site model</p>
       <h1 id="site-name">Site Wiring Map</h1>
       <p class="sub" id="site-sub"></p>
+      <!-- Only rendered when the payload holds more than one site. Comparing
+           sites is where the architectural differences show up: which of them
+           has two fan-outs, which has a switch with no address at all. -->
+      <div id="site-switch" class="siteswitch" hidden></div>
     </div>
     <div id="status-wrap"></div>
   </header>
 
+  <section class="panel scan" id="scan" hidden>
+    <header>
+      <h2>Sweep a site</h2>
+      <span class="hint" id="scan-hint">Read-only: the router's own interfaces, its lease table, then one ping per address</span>
+    </header>
+    <div class="body">
+      <div class="field">
+        <label for="scan-server">Router Tailscale IP <span class="opt">the site's Teltonika</span></label>
+        <input id="scan-server" type="text" placeholder="100.x.y.z" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="scan-subnet">LAN subnet <span class="opt">optional — read from the router</span></label>
+        <input id="scan-subnet" type="text" placeholder="from the router's br-lan" autocomplete="off" spellcheck="false">
+      </div>
+      <button id="scan-go" type="button">Sweep</button>
+      <p class="note" id="scan-note"></p>
+    </div>
+  </section>
+
   <section class="verdict" id="verdict"></section>
   <div id="banner"></div>
+
+  <section class="panel diagram" id="diagram">
+    <header>
+      <h2>Connection diagram</h2>
+      <span class="hint" id="diagram-hint"></span>
+    </header>
+    <div class="body">
+      <div class="dwrap" id="dwrap"></div>
+      <div class="dlegend">
+        <span><i style="border-color: var(--proven)"></i> a cable something established</span>
+        <span><i style="border-color: var(--unknown); border-top-style: dashed"></i> what a FOB does, unchecked</span>
+        <span><svg width="22" height="12"><rect x="1" y="1" width="20" height="10" rx="2"
+          fill="none" stroke="var(--unknown)" stroke-dasharray="3 3"></rect></svg> expected, not seen</span>
+      </div>
+      <ul class="dnotes" id="dnotes"></ul>
+    </div>
+  </section>
 
   <div class="cols">
     <main class="main">
@@ -599,14 +793,17 @@ a { color: var(--data); }
   var ALL_SITES = (DATA.sites || []).filter(function (s) {
     return s && s.name && s.name.charAt(0) !== "_";
   });
-  var SITE = ALL_SITES[0];
+  var SITE = ALL_SITES[0] || null;
 
-  if (!SITE) {
+  // The page used to bail out here when no site was exported. It cannot any
+  // more: served by serve.py it can fetch a site by sweeping one, so an empty
+  // payload is a starting state rather than a dead end.
+  function renderEmpty() {
     document.getElementById("site-sub").textContent = (DATA.sites || []).length
       ? "Only template sites were exported, and a template is invented data. " +
         "Run: sitemap.py export sites/<site>.yaml -o ui/site-data.js"
-      : "No site model loaded. Run: sitemap.py export sites/<site>.yaml -o ui/site-data.js";
-    return;
+      : "No site model loaded. Sweep one above, or run: " +
+        "sitemap.py export sites/<site>.yaml -o ui/site-data.js";
   }
 
   var selected = null;
@@ -618,6 +815,22 @@ a { color: var(--data); }
   }
 
   function node(name) { return SITE.nodes[name] || null; }
+
+  /* E for an address facing outward, I for one on the site's own subnet.
+     A letter as well as a colour: the page's whole convention is that a
+     distinction has to survive greyscale. */
+  function scopeBadge(scope) {
+    var ext = scope === "external";
+    return '<span class="scope ' + (ext ? "ext" : "int") + '" title="' +
+      (ext ? "External — a tailnet or WAN leg, reachable off site"
+           : "Internal — on the site's own subnet") + '">' +
+      (ext ? "E" : "I") + "</span>";
+  }
+
+  function interfacesOf(name) {
+    var n = node(name);
+    return (n && n.interfaces) || [];
+  }
 
   // Every source name, and what it means in one clause. Kept in step with
   // evidence.py; the page must never imply more than the source proves.
@@ -668,14 +881,22 @@ a { color: var(--data); }
 
     var sub = "Subnet " + SITE.subnet + " · " + SITE.counts.nodes +
       " devices seen";
-    if (ARCHIVE) {
+    // The archive snapshot describes the static export. A live sweep did not
+    // consult it unless serve.py was started with --central, and claiming a
+    // cross-check that did not happen is the one thing this page must not do.
+    if (ARCHIVE && !SITE.live) {
       sub += " · checked against bench-central (" +
         ARCHIVE.runs_total + " run records) on " +
         String(ARCHIVE.queried_at).slice(0, 10);
     }
     document.getElementById("site-sub").textContent = sub;
 
-    if (SITE.status === "provisional") {
+    if (SITE.live) {
+      document.getElementById("status-wrap").innerHTML =
+        '<span class="status-pill" title="Swept just now over the tailnet. ' +
+        'Presence, addresses, MACs and vendors only.">Live sweep · ' +
+        'provisional</span>';
+    } else if (SITE.status === "provisional") {
       document.getElementById("status-wrap").innerHTML =
         '<span class="status-pill" title="Gaps are expected and are reported ' +
         'as warnings; contradictions are still errors.">Provisional · ' +
@@ -842,13 +1063,81 @@ a { color: var(--data); }
     ];
   }
 
+  /* Everything in bannerItems() is prose about kela-fob-03 - its factory
+     passwords, its unprovisioned .118, its two silent radars. None of it is
+     derived from the payload, so a swept site would inherit findings about
+     somebody else's hardware and present them as its own. That is the exact
+     shape of the bug that put a template site's devices under this site's
+     prose for several published versions, so a live sweep gets a banner
+     generated from what a sweep can actually establish, and nothing more. */
+  function sweepItems(cv) {
+    var items = [
+      {
+        tag: "blocked",
+        head: "No cable and no power feed is established here, at all",
+        body: "A ping sweep proves that something answered at an address and " +
+              "what its MAC is. It proves nothing about what is plugged into " +
+              "what, or what powers what — so this model carries no network " +
+              "and no power graph rather than a plausible-looking guess. " +
+              "Those need a switch MAC-address table, LLDP and PoE port " +
+              "status, and the mains side needs a person on site."
+      },
+      {
+        tag: "caution",
+        head: "A MAC gives a vendor and never a model",
+        body: "Every model on this page came from bench-central, by MAC, or " +
+              "is unknown. A vendor that makes several devices in the " +
+              "catalogue cannot be narrowed further by its OUI — and " +
+              "bench-central only holds devices a bench tool configured, so " +
+              "a miss there is not evidence of anything."
+      },
+      {
+        tag: "caution",
+        head: "192.168.88.0/24 is also the bench subnet",
+        body: "The sweep ran on the site server you named, over the tailnet, " +
+              "which is what makes these the right devices. Run the same " +
+              "subnet from a bench station and it answers just as " +
+              "convincingly with bench hardware. If the addresses below look " +
+              "unfamiliar, check which server you swept before believing them."
+      }
+    ];
+    if (cv && cv.model && cv.model.proven < cv.model.total) {
+      items.push({
+        tag: "blocked",
+        head: (cv.model.total - cv.model.proven) + " of " + cv.model.total +
+              " devices have no model",
+        body: "Which is the expected result of a sweep, not a failure of one. " +
+              "Reading a model needs the device's own API — " +
+              "<code>sitemap.py probe</code> — or a bench-central record."
+      });
+    }
+    return items;
+  }
+
   function renderBanner() {
     var cv = SITE.coverage;
     var nDev = Object.keys(SITE.nodes).length;
-    var items = bannerItems(cv);
+    var items = SITE.live ? sweepItems(cv) : bannerItems(cv);
     var acts = items.filter(function (i) { return i.tag === "action"; }).length;
 
     var html = '<div class="banner"><h2>What this page cannot tell you</h2>';
+
+    if (SITE.live) {
+      html += '<p class="lede">' + nDev + " devices answered a read-only " +
+        "sweep of <strong>" + esc(SITE.subnet) + "</strong> run from " +
+        "<strong>" + esc(SITE.swept_from || "the server you named") +
+        "</strong>. Addresses, MACs and vendors are established; model and " +
+        "firmware for " + cv.model.proven + " of " + cv.model.total +
+        ". No cabling and no power path is established at all.</p>";
+      html += '<ul class="blist">';
+      items.forEach(function (item) {
+        html += '<li><details><summary><span class="btag ' + item.tag + '">' +
+          esc(BANNER_TAGS[item.tag]) + "</span>" + item.head +
+          "</summary><div class=\"bbody\">" + item.body + "</div></details></li>";
+      });
+      document.getElementById("banner").innerHTML = html + "</ul></div>";
+      return;
+    }
 
     // The lede carries live numbers, never prose counts. An earlier version
     // hardcoded "eight devices" and "no model" and was wrong on both inside a
@@ -937,8 +1226,16 @@ a { color: var(--data); }
 
       return '<li><button class="devrow" type="button" data-node="' + esc(name) +
         '"' + (name === selected ? ' aria-current="true"' : "") +
-        '><span><span class="daddr">' + esc(n.addr || "—") +
-        '</span><br><span class="dmac">' + esc(n.mac || "") + "</span></span>" +
+        '><span>' +
+        (n.interfaces && n.interfaces.length
+          ? n.interfaces.map(function (iface) {
+              return '<span class="daddr">' + scopeBadge(iface.scope) +
+                esc(iface.addr || "—") +
+                (iface.name ? ' <span class="ifname">' + esc(iface.name) +
+                  "</span>" : "") + "</span>";
+            }).join("<br>")
+          : '<span class="daddr">' + esc(n.addr || "—") + "</span>") +
+        '<br><span class="dmac">' + esc(n.mac || "") + "</span></span>" +
         '<span><span class="dname">' + esc(name) + "</span> " +
         '<span class="dkind">' + esc(n.kind) + "</span>" +
         (n.critical ? ' <span class="chip crit">critical</span>' : "") +
@@ -949,7 +1246,11 @@ a { color: var(--data); }
   // -- the gaps ---------------------------------------------------------
 
   function renderGaps() {
-    var missing = [
+    // The addresses below are kela-fob-03's bench plan, written by hand. A
+    // site nobody has written a plan for has no "expected but missing" set,
+    // and inventing one from a sweep would report absence as a finding when
+    // ARP only ever lists what the host has recently talked to.
+    var missing = SITE.live ? [] : [
       ["192.168.88.2", "TSW202 managed switch", "did not answer the sweep"],
       ["192.168.88.3", "PLANET IGS-4215 PoE switch", "did not answer the sweep"],
       ["192.168.88.70", "speaker", "did not answer the sweep"]
@@ -975,7 +1276,8 @@ a { color: var(--data); }
       '<span class="fact unknown"><span class="fglyph">—</span>' +
       '<span class="fval">power</span></span> No power feed on this site is ' +
       'established</div>' +
-      "<p>Nothing is known about what powers any of these eight devices.</p>" +
+      "<p>Nothing is known about what powers any of these " +
+      Object.keys(SITE.nodes).length + " devices.</p>" +
       '<p class="gfix"><b>What would settle it — partly</b>The switch’s ' +
       'PoE port status gives measured watts per port, and it reports whether ' +
       'each of its own DC inputs has voltage.</p>' +
@@ -989,12 +1291,13 @@ a { color: var(--data); }
       '<span class="fact unknown"><span class="fglyph">—</span>' +
       '<span class="fval">who hands out addresses</span></span> Unverified' +
       "</div>" +
-      "<p>Every address here is recorded as bench-assigned, but nothing has " +
-      "confirmed which device serves DHCP. The router at <code>.1</code> is " +
-      "the obvious candidate and remains a candidate.</p>" +
+      "<p>Nothing here has confirmed which device serves DHCP, or whether " +
+      "any given address is a static or a lease. The router at " +
+      "<code>.1</code> is the obvious candidate and remains a candidate.</p>" +
       '<p class="gfix"><b>What would settle it</b>The router’s own DHCP ' +
       'lease table, in one read.</p></div>';
 
+    if (missing.length) {
     html += '<div class="gap"><div class="gtitle">Expected but not in the ' +
       'sweep</div><p>These addresses carry known roles in the bench plan and ' +
       'did not appear. <strong>That is not evidence they are absent</strong> ' +
@@ -1009,6 +1312,7 @@ a { color: var(--data); }
           "</span></td></tr>";
       }).join("") +
       "</tbody></table></div></div>";
+    }
 
     document.getElementById("gaps").innerHTML = html;
   }
@@ -1081,7 +1385,30 @@ a { color: var(--data); }
     if (n.critical) html += '<span class="chip crit">critical</span>';
 
     html += '<dl class="kv" style="margin-top:11px">';
-    html += "<dt>Address</dt><dd>" + fact("", n.addr, n.proven.addr, srcOf("addr")) + "</dd>";
+    var ifaces = n.interfaces || [];
+    if (ifaces.length > 1 || (ifaces.length === 1 && ifaces[0].name)) {
+      html += "<dt>Interfaces</dt><dd><div class=\"ifaces\">" +
+        ifaces.map(function (iface) {
+          return '<div class="ifrow">' + scopeBadge(iface.scope) +
+            '<span class="mono" style="font-size:12px">' +
+            esc(iface.addr || "—") +
+            (iface.prefix ? "/" + iface.prefix : "") + "</span>" +
+            (iface.name ? '<span class="ifname">' + esc(iface.name) + "</span>" : "") +
+            "</div>";
+        }).join("") + "</div>" +
+        // An unread device shows one address because that is all an ARP
+        // entry can establish - not because the device has one NIC.
+        (n.interfaces_read
+          ? ""
+          : '<p class="prose" style="margin:6px 0 0;font-size:11.5px">Read ' +
+            "from an ARP entry, which only ever sees the leg facing the host " +
+            "that swept. Other interfaces are unread, not absent.</p>") +
+        "</dd>";
+    } else {
+      html += "<dt>Address</dt><dd>" +
+        (ifaces.length ? scopeBadge(ifaces[0].scope) : "") +
+        fact("", n.addr, n.proven.addr, srcOf("addr")) + "</dd>";
+    }
     html += "<dt>MAC</dt><dd><span class=\"mono\" style=\"font-size:12px\">" +
       esc(n.mac || "—") + "</span></dd>";
     html += "<dt>Vendor</dt><dd>" + fact("", n.vendor, n.proven.vendor, srcOf("vendor")) + "</dd>";
@@ -1154,6 +1481,7 @@ a { color: var(--data); }
     selected = name;
     renderDevices();
     renderInspector();
+    renderDiagram();
   }
 
   document.addEventListener("click", function (ev) {
@@ -1161,23 +1489,429 @@ a { color: var(--data); }
     if (t) select(t.getAttribute("data-node"));
   });
 
-  // Open on a device whose model is only a shortlist, since that is the
-  // state this page exists to make visible.
-  var opener = Object.keys(SITE.nodes).filter(function (name) {
-    var n = node(name);
-    return !n.model && n.candidates && n.candidates.length;
-  })[0] || Object.keys(SITE.nodes)[0];
+  // -- the connection diagram -------------------------------------------
+  //
+  // Four layers, top to bottom: what comes in from outside, the router, the
+  // switch the site is built around, everything else. The payload decides
+  // which box sits where (topology.py), so the page never works out a
+  // topology of its own - it draws the one the CLI would draw.
 
-  renderHead();
-  renderVerdict();
-  renderBanner();
-  renderCoverage();
-  renderLegend();
-  selected = opener;
-  renderDevices();
-  renderGaps();
-  renderArchive();
-  renderInspector();
-  renderFindings();
+  // Wide enough for a 15-character address and an interface name side by
+  // side without touching. At 138 they overlapped: `100.64.242.104` runs to
+  // about x+103 and a right-aligned `tailscale0` started around x+80.
+  var D_BOX_W = 186, D_BOX_H = 44, D_GAP_X = 16, D_GAP_Y = 54;
+  var D_IF_H = 14;   // one more address line
+  var D_ADDR_X = 19; // where an address starts, after its E/I
+  var D_IF_NAME_X = 116; // and where its interface name starts, left-aligned
+
+  function dIfaces(b) {
+    var n = SITE.nodes[b.name];
+    return (n && n.interfaces && n.interfaces.length) ? n.interfaces : [];
+  }
+
+  function dBoxH(b) {
+    // 44 fits a kind, a name and one address. Every further leg adds a line.
+    return D_BOX_H + Math.max(0, dIfaces(b).length - 1) * D_IF_H;
+  }
+  // Leaves sit on ONE row, however many there are, and the panel scrolls.
+  // Wrapping them was the problem: an edge from the switch to a device on
+  // the second row had to pass the first row, so the diagram read as
+  // switch -> server -> radar when those two are only neighbours on the
+  // same switch. A single row is also what the hardware looks like - a
+  // switch with its ports in a line - and nothing crosses anything.
+  var D_LEAF_ONE_ROW = true;
+  var D_LAYER_NAMES = ["OUTSIDE", "ROUTER", "SWITCH", "ON THE LAN"];
+
+  function dLayout(topo) {
+    // Leaves wrap; every other layer is one row. Positions are computed
+    // rather than laid out by a library, which keeps the whole diagram one
+    // pass over the boxes.
+    var rows = [[], [], [], []];
+    /* A region is drawn AROUND its members, so it must not occupy a slot in
+       its own layer. Given one, it lines up beside the switches it stands
+       for and reads as another switch - which is exactly the confusion it
+       exists to prevent. */
+    topo.boxes.forEach(function (b) { if (!b.group) rows[b.layer].push(b); });
+
+    var leafCols = Math.max(1, rows[3].length);
+    var width = Math.max(leafCols, 1) * (D_BOX_W + D_GAP_X) - D_GAP_X;
+    var at = {};
+    var y = 4;
+    var bottom = y;
+
+    rows.forEach(function (row, layer) {
+      if (!row.length) return;
+      var cols = layer === 3 ? leafCols : row.length;
+      // Every box in a wrapped line shares that line's height, so the row
+      // below clears the tallest one. Advancing by a fixed height instead
+      // overlapped a three-legged router onto whatever came next.
+      var tallest = 0;
+      row.forEach(function (b) { tallest = Math.max(tallest, dBoxH(b)); });
+      row.forEach(function (b, i) {
+        var col = layer === 3 ? i % cols : i;
+        var line = layer === 3 ? Math.floor(i / cols) : 0;
+        var rowWidth = layer === 3
+          ? Math.min(cols, row.length - line * cols) * (D_BOX_W + D_GAP_X) - D_GAP_X
+          : cols * (D_BOX_W + D_GAP_X) - D_GAP_X;
+        at[b.name] = {
+          x: (width - rowWidth) / 2 + col * (D_BOX_W + D_GAP_X),
+          y: y + line * (tallest + 18),
+          h: dBoxH(b),
+          box: b
+        };
+        bottom = Math.max(bottom, at[b.name].y + at[b.name].h);
+      });
+      var lines = layer === 3 ? Math.ceil(row.length / cols) : 1;
+      y += lines * (tallest + 18) - 18 + D_GAP_Y;
+    });
+    /* Regions, from the bounding box of their members. The anchor handed
+       back is a pseudo-box whose bottom edge is the region's bottom edge and
+       whose centre is the region's centre, so edge routing needs to know
+       nothing about regions at all. */
+    var pad = 9;
+    topo.boxes.forEach(function (b) {
+      if (!b.group) return;
+      var seats = (b.members || []).map(function (m) { return at[m]; })
+        .filter(Boolean);
+      if (!seats.length) return;
+      var x0 = Math.min.apply(null, seats.map(function (s) { return s.x; })) - pad;
+      var x1 = Math.max.apply(null, seats.map(function (s) { return s.x + D_BOX_W; })) + pad;
+      var y0 = Math.min.apply(null, seats.map(function (s) { return s.y; })) - pad;
+      var y1 = Math.max.apply(null, seats.map(function (s) { return s.y + (s.h || D_BOX_H); })) + pad + 13;
+      var cx = (x0 + x1) / 2;
+      at[b.name] = {
+        x: cx - D_BOX_W / 2, y: y1 - D_BOX_H, h: D_BOX_H, box: b,
+        region: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+      };
+      bottom = Math.max(bottom, y1);
+    });
+
+    return { at: at, width: width, height: bottom + 8, rows: rows };
+  }
+
+  function dEdgePath(from, to) {
+    // Orthogonal, like a wiring diagram: down out of the parent, across at
+    // the midpoint, down into the child. A straight diagonal between two
+    // rows of boxes is unreadable once there are more than about four.
+    var x1 = from.x + D_BOX_W / 2, y1 = from.y + (from.h || D_BOX_H);
+    var x2 = to.x + D_BOX_W / 2, y2 = to.y;
+    var mid = y1 + (y2 - y1) / 2;
+    if (Math.abs(x1 - x2) < 0.5) return "M" + x1 + "," + y1 + "V" + y2;
+    return "M" + x1 + "," + y1 + "V" + mid + "H" + x2 + "V" + y2;
+  }
+
+  function renderDiagram() {
+    var topo = SITE.topology;
+    var wrap = document.getElementById("dwrap");
+    var hint = document.getElementById("diagram-hint");
+    var notes = document.getElementById("dnotes");
+
+    if (!topo || !topo.boxes.length) {
+      wrap.innerHTML = '<p class="prose">No topology to draw.</p>';
+      notes.innerHTML = "";
+      return;
+    }
+
+    var L = dLayout(topo);
+    var svg = "";
+
+    /* Regions first of all, so they sit behind both the lines and the boxes
+       they enclose. A region is not a device: it says "one of these, and
+       which is unread", which is a statement about the diagram's own
+       knowledge rather than about the site. */
+    topo.boxes.forEach(function (b) {
+      var at = L.at[b.name];
+      if (!b.group || !at || !at.region) return;
+      var r = at.region;
+      svg += '<g class="dregion">' +
+        '<rect x="' + r.x + '" y="' + r.y + '" width="' + r.w +
+        '" height="' + r.h + '" rx="6"></rect>' +
+        '<text class="dregionlabel" x="' + (r.x + 8) + '" y="' +
+        (r.y + r.h - 5) + '">' + esc(b.label) + "</text>" +
+        "<title>" + esc(b.note || b.label) + "</title></g>";
+    });
+
+    // Edges first, so a box always sits on top of the lines reaching it.
+    topo.edges.forEach(function (e) {
+      var from = L.at[e.parent], to = L.at[e.child];
+      if (!from || !to) return;
+      /* "read" is a link the survey established but the site model has no
+         node to declare it against — an unmanaged switch holds no address,
+         so it cannot BE a node, and drawing the one thing we proved about
+         it as a dashed expectation would understate the reading. */
+      var established = e.source === "declared" || e.source === "read";
+      var cls = established ? "proven" : "pattern";
+      var title = established
+        ? "Established" + (e.evidence ? " — " + (SOURCES[e.evidence] || e.evidence) : "") +
+          (e.port ? " (" + e.port + ")" : "") +
+          (e.source === "read" ? " — " + e.basis : "")
+        : "Expected, unchecked — " + e.basis;
+      svg += '<path class="dedge ' + cls + '" d="' + dEdgePath(from, to) +
+        '"><title>' + esc(e.parent + " → " + e.child + ": " + title) +
+        "</title></path>";
+      if (e.port && established) {
+        svg += '<text class="daddr" x="' + (from.x + D_BOX_W / 2 + 5) + '" y="' +
+          (from.y + (from.h || D_BOX_H) + 13) + '">' + esc(e.port) + "</text>";
+      }
+    });
+
+    // Layer captions, on the left of the first box of each layer.
+    L.rows.forEach(function (row, layer) {
+      if (!row.length) return;
+      var first = L.at[row[0].name];
+      svg += '<text class="dlayer" x="0" y="' + (first.y - 7) + '">' +
+        esc(D_LAYER_NAMES[layer]) + "</text>";
+    });
+
+    topo.boxes.forEach(function (b) {
+      var at = L.at[b.name];
+      if (!at || b.group) return;          // regions are drawn above
+      var node = SITE.nodes[b.name] || null;
+      var classes = "dbox" + (b.real ? "" : (b.proven ? " anon" : " ghost")) +
+        (b.name === selected ? " sel" : "");
+      var attrs = node ? ' data-node="' + esc(b.name) + '"' : "";
+      var ifaces = node ? (node.interfaces || []) : [];
+      var sub = node
+        ? (ifaces.length ? (ifaces[0].addr || "no address") : (node.addr || "no address"))
+        : (b.name === "__internet__" ? "SIM"
+           : (b.proven ? "no address — never will have" : "not in this model"));
+      var h = at.h || D_BOX_H;
+
+      svg += '<g class="' + classes + '"' + attrs + '>' +
+        '<rect x="' + at.x + '" y="' + at.y + '" width="' + D_BOX_W +
+        '" height="' + h + '"></rect>' +
+        '<text class="dkind" x="' + (at.x + 8) + '" y="' + (at.y + 13) + '">' +
+        esc(String(b.kind).toUpperCase()) + "</text>" +
+        '<text class="dname" x="' + (at.x + 8) + '" y="' + (at.y + 27) + '">' +
+        esc(b.label.length > 20 ? b.label.slice(0, 19) + "…" : b.label) + "</text>" +
+        "";
+
+      if (!ifaces.length) {
+        svg += '<text class="daddr" x="' + (at.x + 8) + '" y="' +
+          (at.y + 38) + '">' + esc(sub) + "</text>";
+      } else {
+        // One line per leg, each with its own E/I and its own address. A
+        // device nobody logged in to has exactly one line, which is the
+        // honest picture of what an ARP entry establishes.
+        ifaces.forEach(function (iface, i) {
+          var ext = iface.scope === "external";
+          var ly = at.y + 38 + i * D_IF_H;
+          svg += '<text class="scopeglyph ' + (ext ? "ext" : "int") +
+            '" x="' + (at.x + 8) + '" y="' + ly + '">' +
+            (ext ? "E" : "I") + "</text>" +
+            '<text class="daddr" x="' + (at.x + 19) + '" y="' + ly + '">' +
+            esc(iface.addr || "—") + "</text>";
+          if (iface.name) {
+            // A fixed column, not right-aligned: right-aligning put the
+            // name's left edge wherever its length happened to land, which
+            // is what walked it into a long address.
+            svg += '<text class="difname" x="' + (at.x + D_IF_NAME_X) +
+              '" y="' + ly + '">' + esc(iface.name) + "</text>";
+          }
+        });
+      }
+      if (b.note) svg += "<title>" + esc(b.note) + "</title>";
+      svg += "</g>";
+    });
+
+    wrap.innerHTML = '<svg viewBox="-4 -12 ' + (L.width + 12) + " " +
+      (L.height + 20) + '" width="' + (L.width + 12) +
+      '" role="img" aria-label="Site connection diagram">' + svg + "</svg>";
+
+    hint.textContent = topo.counts.declared + " established · " +
+      topo.counts.pattern + " expected";
+
+    // The notes are the honest part: what the drawing is guessing at.
+    var items = (topo.notes || []).map(esc);
+    if (topo.counts.pattern) {
+      items.unshift(
+        "<strong>" + topo.counts.pattern + " of " +
+        (topo.counts.pattern + topo.counts.declared) + " lines are dashed</strong>, " +
+        "meaning the FOB pattern expects them and nothing has checked. They " +
+        "are not in the site file and will not be written to it — a diagram " +
+        "is something people wire to."
+      );
+    }
+    notes.innerHTML = items.map(function (n) {
+      return "<li>" + n + "</li>";
+    }).join("");
+  }
+
+  /* One payload can carry several sites (`export sites/*.yaml`, or a batch
+     of live surveys). The renderer is single-site by design — one set of
+     facts on screen at a time — so switching sites re-points SITE and
+     re-renders rather than drawing two of anything. */
+  function renderSiteSwitch() {
+    var bar = document.getElementById("site-switch");
+    if (!bar) return;
+    if (!ALL_SITES.length || ALL_SITES.length < 2) { bar.hidden = true; return; }
+    bar.hidden = false;
+    bar.innerHTML = ALL_SITES.map(function (s, i) {
+      var live = s.live ? " ·" : "";
+      return '<button type="button" data-site="' + i + '"' +
+        (s === SITE ? ' aria-current="true"' : "") + ">" +
+        esc(s.name) + live + "</button>";
+    }).join("");
+    Array.prototype.forEach.call(bar.querySelectorAll("button"), function (b) {
+      b.addEventListener("click", function () {
+        var next = ALL_SITES[Number(b.getAttribute("data-site"))];
+        if (!next || next === SITE) return;
+        SITE = next;
+        renderAll();
+        document.getElementById("diagram-hint").scrollIntoView({
+          behavior: "smooth", block: "center" });
+      });
+    });
+  }
+
+  function renderAll() {
+    // Open on a device whose model is only a shortlist, since that is the
+    // state this page exists to make visible.
+    selected = Object.keys(SITE.nodes).filter(function (name) {
+      var n = node(name);
+      return !n.model && n.candidates && n.candidates.length;
+    })[0] || Object.keys(SITE.nodes)[0];
+
+    renderSiteSwitch();
+    renderHead();
+    renderVerdict();
+    renderBanner();
+    renderCoverage();
+    renderLegend();
+    renderDiagram();
+    renderDevices();
+    renderGaps();
+    renderArchive();
+    renderInspector();
+    renderFindings();
+  }
+
+  // -- the sweep panel --------------------------------------------------
+  //
+  // Only useful when something is serving /api/scan. Published as an
+  // artifact the page is a static export and cannot reach 100.x or
+  // 192.168.88.x at all - the sandbox blocks it silently - so the panel
+  // stays hidden rather than offering a button that does nothing.
+
+  var PANEL = document.getElementById("scan");
+  var F_SERVER = document.getElementById("scan-server");
+  var F_SUBNET = document.getElementById("scan-subnet");
+  var BTN = document.getElementById("scan-go");
+  var NOTE = document.getElementById("scan-note");
+  var REMEMBER = "site-map.sweep";
+
+  function say(text, bad) {
+    NOTE.className = bad ? "note bad" : "note";
+    NOTE.innerHTML = text;
+  }
+
+  /* Private windows and blocked site data make these throw rather than
+     return empty, and a remembered subnet is not worth a dead page. */
+  function remembered() {
+    try { return JSON.parse(localStorage.getItem(REMEMBER)) || {}; }
+    catch (e) { return {}; }
+  }
+  function remember(value) {
+    try { localStorage.setItem(REMEMBER, JSON.stringify(value)); }
+    catch (e) { /* nothing to do, and nothing worth saying */ }
+  }
+
+  function sweep() {
+    var server = F_SERVER.value.trim();
+    var subnet = F_SUBNET.value.trim();
+    if (!server) {
+      F_SERVER.focus();
+      return say("Enter the Tailscale address of the site's router. This " +
+                 "field is what picks the site, so it has no default.", true);
+    }
+
+    BTN.disabled = F_SERVER.disabled = F_SUBNET.disabled = true;
+    say("Surveying " + (subnet ? esc(subnet) : "the router's own LAN") +
+        " from " + esc(server) + " — its interfaces and lease table, then " +
+        "one ping per address. A /24 takes a few seconds.");
+
+    fetch("api/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: server, subnet: subnet || null })
+    }).then(function (response) {
+      return response.json().then(function (body) {
+        if (!response.ok) throw new Error(body.error || ("HTTP " + response.status));
+        return body;
+      });
+    }).then(function (body) {
+      remember({ server: server, subnet: subnet });
+
+      // Marked live so the hand-written findings about kela-fob-03 stay off
+      // a site they were not written about.
+      SITE = body.site;
+      SITE.live = true;
+      SITE.swept_from = body.server;
+      renderAll();
+
+      var msg = "<strong>" + body.answered + " of " + body.swept +
+        "</strong> addresses in " + esc(body.subnet) + " answered, swept from " +
+        esc(body.server) + (body.hostname ? " (" + esc(body.hostname) + ")" : "") +
+        ". Nothing was written to any device." +
+        (body.log ? " Transcript: <code>" +
+          esc(String(body.log).split("/").pop()) + "</code>" : "");
+      if (body.warnings && body.warnings.length) {
+        msg += "<br>" + body.warnings.map(esc).join("<br>");
+      }
+      msg += '<details><summary>The site file this would be, to save as ' +
+        '<code>sites/' + esc(body.hostname || "site") + '.yaml</code></summary>' +
+        "<pre>" + esc(body.yaml) + "</pre></details>";
+      say(msg);
+    }).catch(function (err) {
+      say(esc(err.message || String(err)), true);
+    }).then(function () {
+      BTN.disabled = F_SERVER.disabled = F_SUBNET.disabled = false;
+    });
+  }
+
+  BTN.addEventListener("click", sweep);
+  [F_SERVER, F_SUBNET].forEach(function (input) {
+    input.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter") sweep();
+    });
+  });
+
+  fetch("api/health").then(function (r) {
+    return r.ok ? r.json() : Promise.reject(new Error("no backend"));
+  }).then(function (health) {
+    var last = remembered();
+    if (last.server) F_SERVER.value = last.server;
+    // Which host the survey opens, and as whom, is decided server-side.
+    F_SERVER.placeholder = health.via === "router"
+      ? "100.x.y.z  (the site's router)"
+      : (health.ssh_user || "kela") + "@100.x.y.z";
+    if (last.subnet) F_SUBNET.value = last.subnet;
+    PANEL.hidden = false;
+    if (!health.oui_db) {
+      say("No vendor database found on the server, so a MAC would resolve to " +
+          "no vendor — which is most of what a sweep can tell you. Install " +
+          "nmap there, or pass <code>--db</code>.", true);
+    } else if (health.via === "router" && !health.has_password) {
+      // The routers reject keys outright, so this fails every time until
+      // the password is given - server-side, never here.
+      say("No router password is configured, so every survey will refuse. " +
+          "The Teltonikas take root plus the shared password and reject " +
+          "keys. Start <code>serve.py --password</code>, or set " +
+          "<code>KELA_BENCH_PASSWORD</code>. It is never sent to this page.",
+          true);
+    } else if (!health.central) {
+      say("Ready. No bench-central URL is configured, so models will not be " +
+          "resolved by MAC — start with <code>--central</code> to close that.");
+    } else {
+      say("Ready.");
+    }
+    if (!SITE) F_SERVER.focus();
+  }).catch(function () {
+    // Static export: leave the panel hidden. Whoever needs it is reading the
+    // README, not this page.
+    PANEL.hidden = true;
+  });
+
+  if (SITE) renderAll(); else renderEmpty();
 })();
 </script>

@@ -1,0 +1,22 @@
+# Vendor prefixes the shipped nmap-mac-prefixes does not carry, or carries
+# wrongly. Merged OVER the system database, longest prefix winning, so a line
+# here beats whatever nmap says for the same bytes.
+#
+# Why this file exists: nmap's list is a snapshot that ships with the package
+# (the copy in use here is dated 6 Aug and holds 52091 entries), so hardware
+# newer than it resolves to no vendor at all - which on a site map reads as
+# "unknown device" and costs an operator a trip. Recording a prefix here once
+# fixes it for every site and every future survey.
+#
+# Format: <prefix, upper hex, no separators> <vendor name>
+# A 6-digit prefix is a 24-bit OUI. A longer one narrows an MA-S/MA-M block,
+# which is how the IEEE hands out ranges smaller than /24.
+#
+# ONE RULE: only put a prefix here when you know what it is. A guessed vendor
+# is worse than no vendor, because it looks like a reading.
+
+# --- unresolved, recorded so the next person does not re-derive it ---------
+# 44BB47  seen on an APU at a Magos site (44:bb:47:a2:25:f4). NOT in nmap's
+#         list and NOT in bench-central's 284 run records. Uncomment and
+#         name it once someone has read the unit or checked the IEEE
+#         registry - do not guess it from the device's role.

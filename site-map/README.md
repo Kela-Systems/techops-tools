@@ -11,6 +11,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python sitemap.py show   sites/my-site.yaml  # tree, in the terminal
 .venv/bin/python sitemap.py render sites/my-site.yaml -o docs/my-site.md
 .venv/bin/python sitemap.py export sites/*.yaml -o ui/site-data.js   # feed the UI
+.venv/bin/python sitemap.py serve                       # host the UI, sweep a site
 
 arp -an | .venv/bin/python sitemap.py identify          # MACs -> vendors
 ```
@@ -27,11 +28,22 @@ A Magos site is also cookie-cutter (four AR-300 radars, two APUs, a camera, a
 speaker, a PoE switch, a managed switch, a cellular router), so the model is
 nearly free to write: copy `sites/_template-magos-site.yaml` and adjust.
 
-**Nothing in this tool contacts a device.** That is a property worth keeping,
-not an accident of it being unfinished: `lint` runs in CI with no tailnet, no
-credentials and no possibility of touching production. Proving a model against
-real hardware is a separate command against read-only endpoints, and is not
-built yet — see *Not built yet* below.
+**Nothing that touches the network is in the path `lint` takes.** That is a
+property worth keeping rather than an accident of being unfinished: `lint`,
+`show`, `render` and `export` run in CI with no tailnet, no credentials and
+no possibility of touching production, and they are what every commit runs.
+
+Three commands do reach out, each opt-in and each read-only:
+
+| Command | What it contacts | What it needs |
+| --- | --- | --- |
+| `discover` | nothing — it parses an ARP table someone else collected | a file |
+| `serve` | pings a subnet from a site server over SSH, then reads that host's neighbour table | ssh to the site server |
+| `probe` | the devices' own read-only APIs, one attempt each | `--confirm`, and the bench password |
+
+None of them writes to a device. `probe` is a dry run unless you pass
+`--confirm`, because these are production units and a retried credential can
+lock a switch out.
 
 ## Viewing a site
 
@@ -40,7 +52,8 @@ Three ways out, in increasing effort:
 - **`show`** prints the data path as an indented tree with the power feed
   alongside. Fastest way to answer "what is plugged into what".
 - **`render`** emits Mermaid, which GitHub draws inline in a README or a PR.
-- **`ui/index.html`** is a published Artifact page: the connection flow, a
+- **`ui/index.html`** served by `sitemap.py serve`, or published as an
+  Artifact page: the connection diagram, a
   drawn faceplate of every switch whose socket layout is known, the whole
   subnet on one ruler with the reserved ranges laid over it, and the PoE
   budget. Click anything to inspect it.
@@ -84,6 +97,543 @@ installer has is *which socket is gi8*, and a catalogue photo does not answer
 it. A drawn faceplate whose ports carry the same ids the site model uses does,
 colour-coded by what is plugged in and which sockets supply power. Photos are
 supported on top, per model, for the units where seeing the real thing helps.
+
+## Self-hosting it, and sweeping a site from the page
+
+The published Artifact is a static export and always will be. An artifact
+page is sandboxed and its content-security policy blocks every request to a
+host that is not allowlisted — silently, so it reads as a hang rather than an
+error — and `100.x` and `192.168.88.x` are certainly not allowlisted. A page
+that sweeps a site therefore has to be served by a process that is on the
+tailnet and has a working `ssh`. That is the whole reason self-hosting is the
+answer here, rather than a preference.
+
+```bash
+export KELA_BENCH_PASSWORD=...          # or pass --password
+.venv/bin/python sitemap.py serve
+# site-map on http://localhost:8200
+```
+
+### Passwords, and where they are not
+
+Two secrets are involved and they are different: the shared Teltonika
+password, and the operator stations' account password. Neither belongs in
+this repo, a shell history, a process argument or the page.
+
+**The simplest thing that is still safe: let it ask.** With nothing
+configured and a terminal to ask at, it prompts once at startup. Nothing
+records what you type — not the shell history, not `ps`, not a file:
+
+```
+$ .venv/bin/python sitemap.py serve
+the shared Teltonika/router password (not echoed):
+site-map on http://localhost:8200
+  router password typed at the prompt
+```
+
+Add `--ask-host-password` to be asked for the operator stations' password
+too. `--no-prompt` turns it off for a systemd unit or CI, where a prompt
+would block on a terminal nobody is watching — there it fails on the missing
+secret instead.
+
+**For anything long-lived, name a command that produces the secret.** It runs
+at the moment the secret is needed, so the value lives wherever it already
+lives and this process holds it for the length of one survey:
+
+```bash
+# 1Password
+sitemap.py serve \
+  --password-cmd 'op read "op://TechOps/Teltonika/password"' \
+  --host-password-cmd 'op read "op://TechOps/OperatorStation/password"'
+
+# macOS Keychain — store once, with -w reading from stdin so the secret is
+# never an argv entry:
+security add-generic-password -U -a "$USER" -s kela-router -w
+sitemap.py serve --password-cmd 'security find-generic-password -s kela-router -w'
+```
+
+The startup banner says where each came from and never any part of it:
+
+```
+router password from `security` on demand
+host password   not configured
+```
+
+Why not the other ways, worst first:
+
+Every way in, strongest first:
+
+| How | Router | Operator stations |
+| --- | --- | --- |
+| prompt at startup | default, when interactive | `--ask-host-password` |
+| a command | `--password-cmd` | `--host-password-cmd` |
+| an env var | `$KELA_BENCH_PASSWORD` | `$KELA_HOST_PASSWORD` |
+| a literal flag | `--password` | `--host-password` |
+
+And why the last one is last, along with the ways that are not offered at all:
+
+| | Why not |
+| --- | --- |
+| a field on the page | crosses the network on every survey, sits in browser memory, and the router password opens every router in the fleet |
+| a literal flag | visible to every user on the box in `ps`, and recorded in your shell history |
+| an env var set inline | same shell history problem |
+| a file in the repo | one `git add -A` from being published |
+
+The flags and env vars still work, because a systemd `EnvironmentFile` that
+root owns is a reasonable place for this and a script has to come from
+somewhere. Stronger sources win where several are set, and both secrets are
+resolved once at **startup** rather than per request — so a locked keychain
+or a `not signed in` fails when you start the server, not three minutes later
+in the middle of someone's survey.
+
+Only the first line of the command's output is used: `op read` and
+`security -w` both emit a trailing newline, and a stray one silently becomes
+part of the password, which then fails authentication with no clue as to why.
+
+### Why the survey runs from the router
+
+The site's Teltonika is the vantage point, and not only because it is the
+internet leg. It is the subnet's **DHCP server, DNS resolver and default
+gateway**, so every device at the site has talked to it — where a site
+server's neighbour table holds only what the server itself exchanged traffic
+with. It is also the one device a FOB certainly has; a server is
+site-specific. And its bridge forwarding table is what proved the single
+cabling fact in `sites/kela-fob-03.yaml`, so it is the only vantage point
+that can ever turn the diagram's dashed lines solid.
+
+**The routers reject keys.** Tailscale SSH is not enabled on them, so:
+
+```
+$ ssh -o BatchMode=yes root@100.64.242.104
+root@100.64.242.104: Permission denied (publickey,password).
+```
+
+They take `root` plus the shared password. Rather than roll keys onto a dozen
+production routers to make a read-only tool work, the transport is
+`bench_core.TeltonikaClient` — the same client `probe.py` uses — in
+`set_read_only(True)` mode, where a command that changes the device is
+refused **by construction** rather than by careful reading.
+
+The password is taken server-side, via `--password` or
+`KELA_BENCH_PASSWORD`, and **never reaches the browser**. A field on the page
+would put the password that opens every router in the fleet into a web form
+and across the wire on each survey; `/api/health` reports only whether one is
+set.
+
+`--via server` keeps the old path — `ssh` as `kela` with a key, against a site
+server — for a site whose router is unreachable. It sees less: no interfaces,
+no lease table, and a neighbour table that is only as complete as the server's
+own traffic.
+
+### The subnet is read, not asked for
+
+The router states its own LAN — `br-lan 192.168.88.1/24` — so the subnet
+field is **optional and normally left empty**. That beats a default typed
+into a field: it gets a site on some other range right without anyone
+remembering to change it, and it cannot be wrong about the site you are
+actually looking at. A value in the field overrides it, for sweeping some
+other range from the same vantage point, and the survey says so when the two
+disagree.
+
+### Every run leaves a transcript
+
+`runs/` holds one JSON file per survey, written whether it succeeded, was
+refused or crashed. Each remote command is recorded with its exit status, how
+long it took and what came back:
+
+```
+$ sitemap.py runs
+ok  2026-09-15T14:46:25+00:00 10.8s  kela-fob-03 192.168.88.0/24 9/254 answered
+     20260915T144625+0000-kela-fob-03.json
+
+$ sitemap.py runs --last
+  . scan requested: subnet 'to be read from the router', via router
+  $ [router] cat /proc/sys/kernel/hostname          rc=0 0.349s out=15b
+  $ [router] ip -4 addr show                        rc=0 0.395s out=804b
+  . subnet read from the router: 192.168.88.0/24
+  $ [router] cat /tmp/dhcp.leases                   rc=0 0.328s out=418b
+  $ [router] for a in 192.168.88.1 …                rc=0 2.859s out=0b
+  $ [router] ip neigh show                          rc=0 0.425s out=10153b
+  . discovered: 9 devices
+  $ [kela-fob-03 as kela] read DMI + ip addr        rc=0 out=1129b
+  $ [kela-fob-03-operator as kela] read DMI         rc=1 ERR=Permission denied
+```
+
+That last line is the point. **Every failure this tool has had was a silent
+one** — `hostname` returning rc 127 on BusyBox, an ssh refused for a username
+rather than a key, a neighbour table full of k3s pod addresses, a host
+answering with the wrong MAC. Each is obvious in a transcript and invisible
+in a result.
+
+**Secrets are redacted before anything is written.** Every value the resolver
+produced is scrubbed from every command, every output and every traceback, so
+a password that turns up inside a command string does not survive into the
+file. The marker is plain-ASCII `[redacted]` so it greps the same everywhere.
+Outputs are capped at 20 KB and say when they were truncated; the newest 200
+runs are kept. The page reports the transcript name with each answer, so a
+bug report can name the run.
+
+### What it reads
+
+Four reads, all of them reads:
+
+| Command | What it establishes |
+| --- | --- |
+| `cat /proc/sys/kernel/hostname` | which site this is. RutOS is BusyBox and has no `hostname` binary — the first attempt died on `rc 127`. |
+| `ip -4 addr show` | the router's **own** legs: `br-lan`, `wan` and `tailscale0`. |
+| `cat /tmp/dhcp.leases` | MAC → hostname, which is how `.118` gets pinned as a `TSW202`. |
+| `ip neigh show` | who answered, and at what MAC. |
+
+Plus one ICMP echo per address in the subnet, and `/sys/class/net/*/address`
+for the interface MACs, because `ip -4 addr` prints no `link/ether` line.
+
+### The vantage point has to add itself
+
+**A host has no ARP entry for itself**, so whatever you survey from is the one
+device a survey of it cannot see. That is why the server was missing from the
+diagram when the server was the vantage point, and it would be the router
+now. So the router is added from its own `ip addr`, with `device-api`
+evidence — its presence and every one of its addresses come from the box
+itself, which outranks an ARP observation.
+
+It is *merged*, not inserted. The sweep pings every address in the subnet
+including the router's own, so the router often does end up in its own
+neighbour table; inserting blindly emitted two `router:` keys and the
+ARP-derived one silently won, taking all three interfaces with it.
+
+### A factory hostname is a model number
+
+An unprovisioned Teltonika still answers to the hostname it shipped with, and
+that hostname is a model number. A lease reading `TSW202` therefore becomes a
+**candidate** with that as its basis — never a `model`, because nothing has
+asked the device. This is how the curated site file pinned `.118` by hand, and
+without it a fresh survey has no shortlist at all and the switch the whole
+site hangs off is drawn as a plain unknown device.
+
+### Where hostnames come from
+
+Three sources, weakest last, and `nmap` is not one of them — it is not
+installed on RutOS, and its hostname discovery is reverse DNS, which the
+router will do directly:
+
+| Source | Names |
+| --- | --- |
+| `/tmp/dhcp.leases` | anything holding an active lease — the device speaking now |
+| `uci show dhcp` (`@host` sections) | static reservations, which name a device that holds no lease |
+| `nslookup <addr> 127.0.0.1` | whatever the router's own resolver admits to (`expandhosts` is on) |
+
+Reverse DNS is asked only for the addresses that answered, in one command,
+not for all 254.
+
+**None of them will name a radar.** `192.168.88.130` has no lease, no
+reservation and returns NXDOMAIN. Nothing short of reading the device names
+one of those, and the map says `unknown` rather than inventing something.
+
+### When a vendor comes back unknown
+
+nmap's `nmap-mac-prefixes` is a snapshot that ships with the package, so
+hardware newer than it resolves to no vendor at all — which on a site map
+reads as an unknown device and costs an operator a trip. `oui-overrides.txt`
+is merged **over** the system database, longest prefix winning, so a line
+there fixes a prefix for every site and every future survey.
+
+One rule, stated in the file: only record a prefix you actually know. A
+guessed vendor is worse than no vendor, because it looks like a reading. A
+prefix nobody has identified yet belongs in there as a commented line naming
+where it was seen, so the next person does not re-derive the dead end.
+
+### Reading a PC's model off the PC
+
+`/sys/class/dmi/id` is world-readable, so an ordinary SSH session as `kela`
+is enough — no sudo, no extra credential, nothing written. That is what turns
+`vendor Dell` into `Dell Pro Max Tower T2 FCT2250`, and it is the same
+reading the curated site file records by hand.
+
+The chain is: **lease hostname → tailnet node → SSH → DMI.** A device's lease
+hostname (`kela-fob-03`) is looked up in `tailscale status` to get its tailnet
+address, which is how a host on `192.168.88.0/24` becomes reachable from
+anywhere. Offline nodes are skipped rather than waited on.
+
+It fills three gaps for each host it can reach:
+
+| Field | From |
+| --- | --- |
+| `model` | `product_name` |
+| `firmware` | `bios_version` — the firmware analogue on a PC. The OS version goes in the notes, because software moves on its own schedule. |
+| `interfaces` | the host's own legs, so a site server arrives with its LAN NIC *and* `tailscale0` |
+
+Container plumbing is filtered: the site server runs k3s, so it carries
+`cni0` at `10.42.0.1` and `flannel.1`, and both arrived on the diagram as
+external interfaces of the server — the same noise as the `10.42.0.x` pod
+neighbours the sweep already drops. `tailscale0` is deliberately kept: it is
+a real leg, and how the site is reached.
+
+**Every reading is accepted only after the host's own MAC matches the one the
+router observed at that address.** `192.168.88.0/24` is the subnet at every
+site *and* on the bench, and a bench station carries a `192.168.88.10` alias
+of its own — so a session opened to the wrong machine answers entirely
+convincingly. A mismatch is discarded and reported, never recorded.
+
+The operator stations take a **different account and a password** —
+`KelaAdmin` by default, `--admin-user` to change it — because their sshd
+advertises password auth only. That path uses paramiko rather than the `ssh`
+binary: the way to feed a password to `ssh` is to turn its prompt back on,
+which is how a survey ends up hanging on a prompt nobody can see. It is tried
+**only** after a key has actually been refused, so the normal path stays
+keys-only, and only when `--host-password-cmd` is set.
+
+Not every host can be read, and one that refuses is a finding rather than a
+silence:
+
+```
+kela-fob-03-operator (100.120.150.95): kela@100.120.150.95: Permission denied (password).
+```
+
+That host advertises password auth only, so a key is never offered. Making it
+work is an sshd config change — a write to production — so it is reported and
+left alone. `--no-host-identity` skips the whole step.
+
+### A server and an operator station cannot be told apart by MAC
+
+Two real devices from kela-fob-03:
+
+```
+e8:cf:83:8d:fc:14   the site server
+e8:cf:83:3f:f3:83   the operator station
+```
+
+`e8:cf:83` is Dell for both, and the remaining three bytes are Dell's own
+allocation sequence — so nothing in either MAC says which is which, and a
+rule built on them would be an accident of the purchase order. The same shape
+as `8C:1F:64:E7:4` proving Magos while saying nothing about radar-vs-APU.
+
+The lease table settles it, because the devices name themselves:
+
+```
+E8CF838DFC14 -> kela-fob-03            ← the site's own name: the server
+E8CF833FF383 -> kela-fob-03-operator   ← the suffix: the operator station
+```
+
+So `kind` comes from the hostname, which beats the `.10-20` / `.29` address
+convention because that is a bench convention a site is free to depart from.
+`operator` is matched anywhere in the name, not as a suffix — `afb8-oc-station`
+and `fob-91-hamamis-mediaserver` both exist — and it is checked *before* the
+server rule, because `kela-fob-03-operator` carries the site name too.
+Anything unrecognised leaves the kind alone rather than guessing.
+
+### What a vendor settles, and what it does not
+
+A MAC gives a vendor. A vendor settles a **kind** where it makes only one
+kind of thing, and never a **model**:
+
+| OUI | Kind | Why, and what is still unknown |
+| --- | --- | --- |
+| Magosys | `radar` | Magos makes radars and APUs, but an APU is an NVIDIA board carrying an NVIDIA MAC — so a Magosys OUI is a radar. *Which* radar stays unknown. |
+| HangZhou JuRu | `camera` | the site's cameras are on `bc:74:d7` and nothing else at a FOB is. |
+| Routerboard / MikroTik / Planet | `switch` | — |
+| Teltonika, and not the router | `switch` — as a **lead** | `20:97:27` covers the RUT, the TSW202 and the OTD500 alike, so the OUI cannot confirm it. The router is identified separately and excluded first, and a FOB's second Teltonika is usually its switch. Without this a site whose switch holds no named lease drew as *switch (not seen)* while the switch sat in the device list. |
+| Dell | *nothing useful* | a server and an operator station are both Dell on `e8:cf:83`. The hostname decides; the vendor table's answer is only a fallback for a Dell with no name at all. |
+
+**Every site has at least one server.** When none is identified the diagram
+says so, and says why a MAC could not have found it: either the lease table
+was not read, or the server holds a static address and never appears in it.
+
+Lease hostnames are recorded as notes and candidates but **never used as node
+names**: names are referenced by `net:` edges in site files, so deriving them
+differently would rewrite identities across every existing model.
+
+Open it and the masthead grows two fields:
+
+| Field | Default | What it is |
+| --- | --- | --- |
+| **Router Tailscale IP** | none | *Where the survey runs.* A root session on one site's Teltonika over the tailnet. This is what chooses the site. |
+| **LAN subnet** | `192.168.88.0/24` | *What it looks at,* from that vantage point. |
+
+The asymmetry is deliberate: there is a sensible default for what to look at
+and none at all for where to look from. Press Sweep and the server pings each
+address in the subnet from the site server, reads that host's neighbour
+table, and runs the result through the same `discover` → YAML → `lint` path
+the CLI uses — so the page can only ever draw a model the linter would
+accept. The YAML it came from is handed back under the panel, ready to save as
+`sites/<name>.yaml`.
+
+The site is named from the remote host's own `hostname`, which is why two
+fields are enough and there is no third one to fill in.
+
+Only addresses inside the subnet you asked about are reported. The
+neighbour table belongs to the host, not to the sweep, so a site server
+running k3s carries one entry per pod on `cni0` — 37 of them on
+`kela-tlv-dev-03` — and unfiltered they arrive as vendorless devices that
+bury the real ones.
+
+**It is read-only, and the remote commands are the whole of it:** one ICMP
+echo per address, then `ip neigh show`. Nothing logs in to a device, no device
+credential is needed or accepted, and nothing is written anywhere. What comes
+back proves presence, an address, a MAC and — through the OUI — a vendor. It
+proves no cable, no power feed and no model, so the emitted model carries
+none of those rather than a plausible-looking guess.
+
+Two guards worth knowing about, both of which exist because the failure is
+silent otherwise:
+
+- **The subnet is capped at a /22.** The cost is linear in addresses, and a
+  mistyped `/8` would otherwise queue 16 million pings against production
+  from a web request. It is counted before the address list is built.
+- **A LAN address in the server field is flagged.** `192.168.88.0/24` is the
+  subnet at every site *and* on the bench, so sweeping it from a laptop finds
+  the bench and reports it as a site. That is the same collision every fact
+  in `sites/kela-fob-03.yaml` carries a MAC cross-check for. It warns rather
+  than refuses — a jump host is legitimate — but it says so on the page.
+
+To resolve models as well as vendors, point it at the archive:
+
+```bash
+.venv/bin/python sitemap.py serve --central http://techops-automations-host:8100
+```
+
+Without it every device comes back vendor-only, and the page says so.
+
+### Getting to it from somewhere else
+
+**There is no authentication in `serve.py` at all**, which is the same bargain
+bench-central's collector makes and for the same reason: a client that could
+authenticate would be a client that could be talked into sweeping on someone
+else's behalf. So it binds `127.0.0.1` and the tailnet is the perimeter.
+
+The right way to share it is to let Tailscale terminate TLS and do the
+identity, which keeps the listener on loopback:
+
+```bash
+sitemap.py serve                       # still 127.0.0.1:8200
+tailscale serve --bg 8200              # https://<host>.<tailnet>.ts.net/
+tailscale serve status
+```
+
+Anyone on the tailnet can then open it; nobody off it can reach the port.
+`--host 0.0.0.0` also works and publishes an unauthenticated sweep trigger to
+whatever LAN the box is on — it prints a warning saying so, and on a site LAN
+that is a bad trade.
+
+To keep it up on a server, the unit is unremarkable:
+
+```ini
+# /etc/systemd/system/site-map.service
+[Unit]
+Description=site-map
+After=network-online.target tailscaled.service
+
+[Service]
+User=techops
+WorkingDirectory=/opt/site-map
+ExecStart=/opt/site-map/.venv/bin/python sitemap.py serve --central http://techops-automations-host:8100
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`User=` has to be an account whose `ssh` can reach the site servers
+non-interactively: the sweep runs with `BatchMode=yes`, because a passphrase
+prompt behind an HTTP request is indistinguishable from a hang. A key with no
+passphrase, or an agent that unit can reach, is the requirement — and that
+account's key is then a key to every site server, so it belongs on a host you
+are willing to treat that way.
+
+Nothing else about the deployment is special: it is stdlib-only, single
+process, holds no state and stores no credential, so it can be restarted or
+moved at any time and the worst case is a sweep in flight.
+
+## The connection diagram
+
+The page draws the site as four layers, and the whole design rests on one
+distinction: **a solid line is a cable something established, a dashed line
+is what a FOB does and nobody has checked.** They differ in dash, colour and
+weight, so the difference survives greyscale and a projector.
+
+```
+OUTSIDE     [ internet / SIM ]
+                   |            dashed - nothing has read the WAN side
+ROUTER      [ Teltonika RUT ]   mounted high, for signal
+                   |            solid where a switch table or LLDP proved it
+SWITCH      [ MikroTik / TSW / PSW / Planet ]   in the box
+                   |            dashed - which port needs the MAC table
+ON THE LAN  [ cameras  radars  lidars  server  operator station ... ]
+```
+
+`topology.py` builds it and `export` puts it in the payload, so the page
+draws the topology the CLI would draw rather than working out one of its own.
+
+**The bottom row never wraps,** however many devices there are; the panel
+scrolls sideways instead. Wrapping was actively misleading: an edge from the
+switch to a device on a second row had to pass the first row, so the diagram
+read as *switch → server → radar* when those two are only neighbours on the
+same switch. One row is also what the hardware looks like — a switch with its
+ports in a line — and nothing crosses anything.
+
+**Nothing is identified by address.** `.1` being the router is a bench
+convention, and a site where it is untrue is exactly the site where a diagram
+built on the convention misleads. The tells, strongest first:
+
+| Thing | How it is recognised |
+| --- | --- |
+| router | an evidence-backed `gateway` role; else the declared `uplink`; else a model read as a `RUT*`; else the only Teltonika that is not a switch — and that last one says it is the vendor talking |
+| switch | a recorded `switch`/`poe-switch` kind; a model read as `TSW`/`PSW`/`IGS-`/`CRS`/`CSS`; a shortlist naming one; or a MikroTik/Routerboard/Planet OUI |
+
+A pattern edge is a question, not an answer, and it is **never written into a
+site file's `net:` block** — the same rule `discover.to_yaml` follows, for the
+same reason: someone will wire to a diagram.
+
+### Where it refuses to guess
+
+These are the cases that make the diagram worth trusting:
+
+- **Two switches.** A FOB runs a second when one has too few ports, and which
+  device is on which is then the exact fact a MAC-address table exists to
+  answer. No leaf is attached to either; the note says so.
+- **A switch nobody saw.** A FOB has one. An ARP sweep lists only what the
+  host has recently exchanged traffic with, so a quiet switch never appears —
+  an expected absence, not a missing device. It is drawn as a dashed empty box
+  labelled *switch (not seen)*, with the LAN hanging off it, because the
+  alternative is pretending the devices plug into the router.
+- **No router.** Nothing is rooted, and the note says what would settle it —
+  naming the actual unread Teltonika where there is one, and saying plainly
+  that there is none where there is not.
+- **A declared cable.** Wins outright. The pattern does not also propose a
+  different parent for that device, and the edge carries its own evidence
+  rather than its parent's.
+
+### Two legs, and the E/I badges
+
+The router carries `br-lan`, `wan` and `tailscale0`; a site server carries its
+LAN NIC and `tailscale0`. One `addr` per node cannot say that, and the one
+address it does hold is whichever side you happened to come in on — so
+`Node.interfaces` is a list, and each entry carries a scope:
+
+- **I** — internal: an address on the site's own subnet.
+- **E** — external: a tailnet or WAN leg, reachable off site.
+
+A letter rather than colour alone, on the same principle as the certainty
+glyphs: the distinction has to survive greyscale and colour blindness. Scope
+comes from the **interface name**, not the address — this router's `wan`
+holds `192.168.1.164`, a private address that is emphatically not the site
+LAN, and an "is it RFC1918" test would put the site's uplink on the wrong side
+of the diagram.
+
+**A device showing one interface is not a device with one NIC.** An ARP entry
+can only ever establish the leg facing the host that swept, so
+`interfaces_read` records whether anyone actually looked, and the inspector
+says so in as many words. Two legs show up for the router (read on the box)
+and for anything `probe` has read; everything else shows the one address that
+was established.
+
+### Power
+
+Not drawn yet, and the reason is that there is nothing to draw: no site model
+carries a single `power:` edge. The switch's PoE port status would prove the
+PoE half in one read, and the mains half — which PSU, which breaker, which UPS
+— is the half no protocol can answer and the model only accepts `survey`
+evidence for. The layers and the solid/dashed rule carry over unchanged when
+the data exists.
 
 ## Discovery: ARP + bench-central
 
@@ -392,9 +942,109 @@ settled from the model.
 
 `poe_budget_w: 240` may only be raised if **both** power inputs are wired.
 
+## Seeing a switch that has no address
+
+A ping sweep finds things that hold an address. An unmanaged switch holds
+none, so it is not merely missed — it cannot be looked for. `traceroute`
+cannot help either: a switch forwards at layer 2 and never decrements TTL, so
+it is never a hop, and every device at a FOB is one hop from the router
+whether there are zero switches or four in series.
+
+The router's own forwarding database can. `bridge fdb show` reports which MAC
+was learned on which physical port, so several MACs on one port means several
+devices behind one cable — which is a switch, named or not. The survey reads
+it after the sweep on purpose: the database is learned from traffic and ages
+out in about five minutes, so the sweep is what makes everything speak.
+
+What that licenses is deliberately narrow, because people wire to diagrams:
+
+| what the port shows | what is claimed |
+| --- | --- |
+| one MAC | that device is on the far end of that cable |
+| several, one of them a switch | that switch's uplink is this port |
+| several, none a switch | an unmanaged switch is **on that port**, with those clients |
+| several, two of them switches | nothing — their own tables settle it |
+
+The third row is the interesting one. An unmanaged switch is in no table
+anywhere, so its model, serial and firmware are unknowable by any protocol —
+but its *position* is proven and so is its client list. The page draws it
+solid-outlined and hollow rather than dashed, because dashed means "expected"
+and this was read.
+
+A port with no carrier is skipped: a dark port carries nothing, and saying so
+about a socket with no cable in it is noise rather than a finding.
+
+### Listening is worth more than asking (`--listen`)
+
+Two protocols the devices speak to nobody in particular, captured passively
+with `tcpdump` (already installed on RutOS, under `/usr/local`). Opt-in only
+because of the time: about 12s plus 35s per live port.
+
+**Spanning-tree BPDUs.** A BPDU is generated by a bridge and *consumed* by
+the next bridge along rather than forwarded, so one arriving on a router port
+names the nearest bridge on that cable — the thing the router's own
+forwarding table cannot say. Three separate facts come out of one frame:
+
+- the sender **is** a switch, because only bridges speak STP. That is the
+  first evidence-backed `kind` available for a device whose model nobody has
+  read, and it upgraded two devices that had been sitting on a vendor hunch.
+- **which** switch the cable lands on, and which of *its* ports, from the
+  bridge-id. This is the chain order at a multi-switch site.
+- the **root** and the **path cost to it**. A non-zero cost proves a further
+  bridge beyond the nearest one, whether or not it holds an address — a
+  second hidden-switch detector, independent of the fan-out count. The cost
+  also names the link speed, and 200000 is 802.1D's figure for 100 Mb, which
+  is how a fast-ethernet bottleneck inside a fabric carrying cameras became
+  visible from the router.
+
+The claim is *nearest bridge*, never *directly attached*: an unmanaged switch
+forwards BPDUs and leaves no trace. But see the path cost above — that is
+often what catches it.
+
+**MikroTik neighbour discovery (MNDP, UDP 5678).** A MikroTik broadcasts its
+model, RouterOS version and serial number every 30 seconds, unauthenticated
+and unsolicited. Nobody has RouterOS credentials for the field switches, so
+this is the only read that will ever settle what they are — and it settled
+three of them (`CRS112-8P-4S`, with serials). Parsed as TLVs from a hex
+capture rather than scraped out of tcpdump's printable output, because the
+strings sit between binary uptime and address fields.
+
+Both are reads, and both get their own evidence source — `stp` and
+`discovery` — rather than being filed under `lldp`, which they are not.
+
+### The upstream leg is a hop further out than the diagram's root
+
+Every FOB surveyed routes its default through a **second** Teltonika — the
+outdoor SIM unit, on the WAN subnet, invisible to any sweep of the LAN. The
+survey records it from `ip route` plus the neighbour entry, so the map says
+what the internet leg actually is instead of implying the indoor router is
+the end of the line.
+
+### The address plan is a convention, and four sites in seven break it
+
+`ADDR_ROLES` calls `.1` the router. At three of seven sites `.1` is a MikroTik
+switch and the Teltonika's `br-lan` is `.2` — and because names were deduped
+before the vantage point was merged in, both wanted the node name `router`,
+the YAML got two `router:` keys and the later one won. **The device the survey
+ran from was silently absent from its own map**, taking its model, firmware
+and three interfaces with it. The reading now wins: the vantage point keeps
+the name, whatever held that address is renamed from its vendor, and it stops
+claiming to be a router — which had the diagram drawing two of them.
+
+### A hyphen cost five switches their model
+
+Lease hostnames name the switch at five sites, spelled `TSW202` or
+`Teltonika-TSW202`. The catalogue spells it `Teltonika TSW202`, and a plain
+substring test says yes to the first and no to the second. Matching now
+squashes separators and consults `aliases`, and `tsw`/`psw` in a hostname
+settles `kind` — a switch still on its factory hostname is telling you what
+it is.
+
 ## Not built yet
 
-The verifier: prove a model against the hardware, read-only.
+The verifier's remaining half: what is in which socket, and what powers it.
+`serve` establishes presence and `probe` reads identity; neither can see a
+cable.
 
 - **PLANET IGS-4215** — MAC address table per port, LLDP, PoE port status.
   The highest-value query available: it answers what is physically in which

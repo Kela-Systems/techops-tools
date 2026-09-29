@@ -22,7 +22,8 @@ window.SITE_DATA = {
           "evidence": {
             "*": "arp",
             "model": "device-api",
-            "firmware": "device-api"
+            "firmware": "device-api",
+            "addr": "device-api"
           },
           "proven": {
             "vendor": true,
@@ -34,6 +35,30 @@ window.SITE_DATA = {
           "verified_at": "2026-09-14",
           "addr": "192.168.88.1",
           "addr_source": "static-manual",
+          "interfaces": [
+            {
+              "name": "br-lan",
+              "addr": "192.168.88.1",
+              "scope": "internal",
+              "prefix": 24,
+              "note": null
+            },
+            {
+              "name": "tailscale0",
+              "addr": "100.64.242.104",
+              "scope": "external",
+              "prefix": 32,
+              "note": "the tailnet address, and how this survey reached the site"
+            },
+            {
+              "name": "wan",
+              "addr": "192.168.1.164",
+              "scope": "external",
+              "prefix": 24,
+              "note": "uplink to another Teltonika at 192.168.1.1"
+            }
+          ],
+          "interfaces_read": true,
           "roles": [
             "dhcp-server",
             "dns-resolver",
@@ -83,6 +108,16 @@ window.SITE_DATA = {
           "verified_at": "2026-09-14",
           "addr": "192.168.88.29",
           "addr_source": "dhcp-lease",
+          "interfaces": [
+            {
+              "name": null,
+              "addr": "192.168.88.29",
+              "scope": "internal",
+              "prefix": null,
+              "note": null
+            }
+          ],
+          "interfaces_read": false,
           "roles": [],
           "critical": false,
           "notes": "Hostname kela-fob-03-operator. Identity read on the host itself 2026-09-14 from /sys/class/dmi/id, which is world-readable and needed no sudo: vendor Dell Inc., model Dell Pro Micro QCM1250, board 04C6CY, chassis type 3 (desktop). `firmware` holds the BIOS version (1.4.4, dated 2025-05-08), the firmware analogue on a PC. product_serial reads empty — that DMI field is root-only here, so the serial is genuinely unread rather than absent. The OS is Ubuntu 22.04.5 LTS on kernel 6.8.0-101-generic; that is software on its own schedule, so it is recorded here rather than in the firmware field. Worth noting for patching: the server at .10 is on 24.04.4, so the two PCs are a release apart.\nThe MAC the host reports for enp128s31f6 is e8:cf:83:3f:f3:83, which matches the router's ARP observation exactly — the cross-check that rules out having read a bench machine over the colliding 192.168.88.0/24.\nReached by forwarding a local port to .29:22 through the site server, so nothing was written to either box. SSH keys do NOT work here and the reason is on the far end: this sshd advertises only password auth (`Authentications that can continue: password`), so a key installed by ssh-copy-id is never offered and never used. Fixing that is an sshd config change, which is a write to production and was not made.\n`addr_source` is dhcp-lease, read off the interface itself: the address carries `scope global dynamic` with a finite valid_lft, and /run/systemd/netif/leases names .1 as the server. Not a static.\nStill no candidates list, and that is correct: operator stations do not go through a bench tool, so bench-central will never hold one.",
@@ -119,6 +154,16 @@ window.SITE_DATA = {
           "verified_at": "2026-09-14",
           "addr": "192.168.88.30",
           "addr_source": "static-bench",
+          "interfaces": [
+            {
+              "name": null,
+              "addr": "192.168.88.30",
+              "scope": "internal",
+              "prefix": null,
+              "note": null
+            }
+          ],
+          "interfaces_read": false,
           "roles": [],
           "critical": false,
           "notes": "Model and firmware read off the camera's own RPC2 API on 2026-09-14 (read-only client armed after login). Serial KC0500PAZ00052, which matches the ARP hostname KC0500PAZ00052.lan exactly, and the camera reported its own MAC as bc:74:d7:81:17:b1 — identical to the ARP observation at .30. Those two independent matches are what rule out having reached a bench camera on the same address.\nThe shortlist was PC464A1 and it was WRONG: every BC:74:D7 camera in the archive reports PC464A1, and this one is an SG-PTZ — a pan/tilt/zoom unit, a different class of device from the fixed PC464A1. So the OUI correlation that produced that shortlist does not hold at this site. The old note about the serial prefix differs from camera_2 (KC vs HF) and nothing maps that prefix to a model, so the two are not necessarily identical units.",
@@ -155,6 +200,16 @@ window.SITE_DATA = {
           "verified_at": "2026-09-14",
           "addr": "192.168.88.31",
           "addr_source": "static-bench",
+          "interfaces": [
+            {
+              "name": null,
+              "addr": "192.168.88.31",
+              "scope": "internal",
+              "prefix": null,
+              "note": null
+            }
+          ],
+          "interfaces_read": false,
           "roles": [],
           "critical": false,
           "notes": "Read off the device 2026-09-14, same as camera_1. Serial HF0428PAZ00055, matching its ARP hostname; self-reported MAC matched the ARP observation at .31. Same model and firmware as camera_1 despite a different serial prefix (HF0428 vs KC0500) — which settles an open question in this file: the serial prefix does NOT encode the model, so it can never be used to narrow one.",
@@ -191,6 +246,16 @@ window.SITE_DATA = {
           "verified_at": "2026-09-14",
           "addr": "192.168.88.130",
           "addr_source": "static-bench",
+          "interfaces": [
+            {
+              "name": null,
+              "addr": "192.168.88.130",
+              "scope": "internal",
+              "prefix": null,
+              "note": null
+            }
+          ],
+          "interfaces_read": false,
           "roles": [],
           "critical": true,
           "notes": "Model and firmware read off the radar's own dashboard API on 2026-09-14 (read-only client, one login) — and the login that worked was admin/password, the Magos FACTORY DEFAULT. See the SECURITY FINDING at the foot of this file; that is a fact about this site, not a detail of the probe. Serial 12510000-082. The radar reported its own MAC as 8c:1f:64:e7:4c:46, identical to the MAC the site server's ARP table observed at .130 — that match is what proves this was THIS site's radar and not a bench unit, since 192.168.88.0/24 is also the bench subnet. Firmware is the System Software version; the unit separately reports Dashboard 2.4.3, DSP 1.2.4 and FPGA 1.2.6, and those move independently. Outside the documented .50-.53 radar plan. Radar rather than APU by the Magosys-vs-NVIDIA OUI split, not by reading the unit.",
@@ -227,6 +292,16 @@ window.SITE_DATA = {
           "verified_at": "2026-09-14",
           "addr": "192.168.88.131",
           "addr_source": "static-bench",
+          "interfaces": [
+            {
+              "name": null,
+              "addr": "192.168.88.131",
+              "scope": "internal",
+              "prefix": null,
+              "note": null
+            }
+          ],
+          "interfaces_read": false,
           "roles": [],
           "critical": true,
           "notes": "Read off the device 2026-09-14, same as radar_1 — including the factory-default admin/password login; see the SECURITY FINDING at the foot of this file. Serial 12510000-005. Self-reported MAC matched the ARP observation at .131. Component versions identical to radar_1 (Dashboard 2.4.3, DSP 1.2.4, FPGA 1.2.6).",
@@ -263,6 +338,16 @@ window.SITE_DATA = {
           "verified_at": null,
           "addr": "192.168.88.132",
           "addr_source": "static-bench",
+          "interfaces": [
+            {
+              "name": null,
+              "addr": "192.168.88.132",
+              "scope": "internal",
+              "prefix": null,
+              "note": null
+            }
+          ],
+          "interfaces_read": false,
           "roles": [],
           "critical": true,
           "notes": "COULD NOT BE IDENTIFIED, and the reason matters. This unit answers ICMP (3/3, 0% loss) and sits in the site server's neighbour table, so it is powered and on the network — but it serves NO TCP port at all. Re-checked 2026-09-14 with a full connect scan of ports 1-10240 run FROM THE SITE SERVER, on the same L2 segment as the radar: zero open ports. The same scan from the same host finds 22, 80 and 443 open on .130 and .131. So this is not a vantage-point artifact and not the 192.168.88.0/24 bench collision producing a false negative — it is the radar.\nThat settles a specific question: a port forward cannot help here. Forwarding needs something listening to forward to, and these two units are not listening on anything. The Magos dashboard API is plain HTTP on 80, so there is nothing to query and no credential would change the outcome.\nWorth an operator's attention on its own merits: two of four radars serving no management port is either a stopped web service, a host firewall or VLAN difference on these two, a management interface bound to an address on another subnet, or a genuinely different product variant. Detections may still be flowing — that rides a separate path — so this is NOT evidence the radar is down. Deciding between those needs the TSW202's per-port view, or physical/console access.\nThe router's view did narrow it. This MAC appears in the router's bridge FDB on lan3 (2026-09-14) exactly like every working device, so the unit is cabled and forwarding frames at layer 2. Cabling and power are therefore NOT the fault: it is up enough to answer ICMP and put frames on the wire, while serving nothing above that. Reads like a stopped service or a host firewall rather than a dead radar or a dead drop.",
@@ -299,6 +384,16 @@ window.SITE_DATA = {
           "verified_at": null,
           "addr": "192.168.88.133",
           "addr_source": "static-bench",
+          "interfaces": [
+            {
+              "name": null,
+              "addr": "192.168.88.133",
+              "scope": "internal",
+              "prefix": null,
+              "note": null
+            }
+          ],
+          "interfaces_read": false,
           "roles": [],
           "critical": true,
           "notes": "COULD NOT BE IDENTIFIED, and the reason matters. This unit answers ICMP (3/3, 0% loss) and sits in the site server's neighbour table, so it is powered and on the network — but it serves NO TCP port at all. Re-checked 2026-09-14 with a full connect scan of ports 1-10240 run FROM THE SITE SERVER, on the same L2 segment as the radar: zero open ports. The same scan from the same host finds 22, 80 and 443 open on .130 and .131. So this is not a vantage-point artifact and not the 192.168.88.0/24 bench collision producing a false negative — it is the radar.\nThat settles a specific question: a port forward cannot help here. Forwarding needs something listening to forward to, and these two units are not listening on anything. The Magos dashboard API is plain HTTP on 80, so there is nothing to query and no credential would change the outcome.\nWorth an operator's attention on its own merits: two of four radars serving no management port is either a stopped web service, a host firewall or VLAN difference on these two, a management interface bound to an address on another subnet, or a genuinely different product variant. Detections may still be flowing — that rides a separate path — so this is NOT evidence the radar is down. Deciding between those needs the TSW202's per-port view, or physical/console access.\nThe router's view did narrow it. This MAC appears in the router's bridge FDB on lan3 (2026-09-14) exactly like every working device, so the unit is cabled and forwarding frames at layer 2. Cabling and power are therefore NOT the fault: it is up enough to answer ICMP and put frames on the wire, while serving nothing above that. Reads like a stopped service or a host firewall rather than a dead radar or a dead drop.",
@@ -336,6 +431,16 @@ window.SITE_DATA = {
           "verified_at": "2026-09-14",
           "addr": "192.168.88.10",
           "addr_source": "dhcp-lease",
+          "interfaces": [
+            {
+              "name": null,
+              "addr": "192.168.88.10",
+              "scope": "internal",
+              "prefix": null,
+              "note": null
+            }
+          ],
+          "interfaces_read": false,
           "roles": [
             "ntp-server"
           ],
@@ -374,6 +479,16 @@ window.SITE_DATA = {
           "verified_at": null,
           "addr": "192.168.88.118",
           "addr_source": "static-bench",
+          "interfaces": [
+            {
+              "name": null,
+              "addr": "192.168.88.118",
+              "scope": "internal",
+              "prefix": null,
+              "note": null
+            }
+          ],
+          "interfaces_read": false,
           "roles": [],
           "critical": false,
           "notes": "STILL A SHORTLIST, but only just, and the reason is worth being pedantic about. The router's DHCP lease table (read 2026-09-14) shows this MAC taking .118 with the hostname **TSW202**. That is the device announcing its own name over DHCP — far stronger than the OUI guess it replaces — but a hostname is not the model field. `dhcp-lease` evidence proves present/mac/vendor/addr and deliberately does NOT prove `model`, so this stays \"~\". Reading its model properly needs a login, which is blocked (see below).\nThat same lease is the answer to why the login fails. Every other provisioned device here carries a provisioned hostname (rut-kela-fob-03, kela-fob-03, kela-fob-03-operator); this one still carries the Teltonika factory default, \"TSW202\". So this switch was never run through the bench — which is also why the shared bench password is rejected on both SSH and REST (tried once each, 2026-09-14). It is presumably still on its per-device factory label password.\nAN UNPROVISIONED MANAGED SWITCH IN PRODUCTION is worth an operator's attention on its own: no hostname, no known credential, and nothing about its configuration has ever been verified. It is also the last thing standing between this map and a full cabling answer — a managed switch holds the per-port MAC table, and the router's own table (below) proves every device at this site sits behind it.",
@@ -444,6 +559,199 @@ window.SITE_DATA = {
           "peer_port": null
         }
       ],
+      "topology": {
+        "boxes": [
+          {
+            "name": "__internet__",
+            "label": "internet",
+            "layer": 0,
+            "kind": "internet",
+            "real": false,
+            "note": "over the router's SIM. Nothing here has read the WAN side."
+          },
+          {
+            "name": "router",
+            "label": "router",
+            "layer": 1,
+            "kind": "router",
+            "real": true,
+            "note": "router is recorded as default-gateway, with evidence"
+          },
+          {
+            "name": "teltonika_118",
+            "label": "teltonika 118",
+            "layer": 2,
+            "kind": "network-device",
+            "real": true,
+            "note": "shortlisted as TSW202, which is a switch - a shortlist is a lead and not a reading"
+          },
+          {
+            "name": "camera_1",
+            "label": "camera 1",
+            "layer": 3,
+            "kind": "camera",
+            "real": true,
+            "note": null
+          },
+          {
+            "name": "camera_2",
+            "label": "camera 2",
+            "layer": 3,
+            "kind": "camera",
+            "real": true,
+            "note": null
+          },
+          {
+            "name": "operator_station",
+            "label": "operator station",
+            "layer": 3,
+            "kind": "operator-station",
+            "real": true,
+            "note": null
+          },
+          {
+            "name": "radar_1",
+            "label": "radar 1",
+            "layer": 3,
+            "kind": "radar",
+            "real": true,
+            "note": null
+          },
+          {
+            "name": "radar_2",
+            "label": "radar 2",
+            "layer": 3,
+            "kind": "radar",
+            "real": true,
+            "note": null
+          },
+          {
+            "name": "radar_3",
+            "label": "radar 3",
+            "layer": 3,
+            "kind": "radar",
+            "real": true,
+            "note": null
+          },
+          {
+            "name": "radar_4",
+            "label": "radar 4",
+            "layer": 3,
+            "kind": "radar",
+            "real": true,
+            "note": null
+          },
+          {
+            "name": "server",
+            "label": "server",
+            "layer": 3,
+            "kind": "server",
+            "real": true,
+            "note": null
+          }
+        ],
+        "edges": [
+          {
+            "parent": "router",
+            "child": "teltonika_118",
+            "source": "declared",
+            "basis": "The router's bridge FDB learns EVERY site MAC on lan3, and lan1/lan2 have no carrier, so one cable leaves the router and the rest of the site is behind the .118 switch. This edge is the part that is proven. The port on the .118 end is unknown — `peer_port` is deliberately absent rather than guessed — and so is every device-to-switch-port pairing, because the router cannot see past its own port. The TSW202's own MAC table is what completes this, and that needs its credential.",
+            "port": "lan3",
+            "peer_port": null,
+            "evidence": "switch-table"
+          },
+          {
+            "parent": "__internet__",
+            "child": "router",
+            "source": "pattern",
+            "basis": "the FOB's internet leg is the router's SIM, mounted high for signal. Not read from the device.",
+            "port": null,
+            "peer_port": null,
+            "evidence": null
+          },
+          {
+            "parent": "teltonika_118",
+            "child": "camera_1",
+            "source": "pattern",
+            "basis": "everything on the LAN hangs off teltonika_118; which port needs its MAC-address table",
+            "port": null,
+            "peer_port": null,
+            "evidence": null
+          },
+          {
+            "parent": "teltonika_118",
+            "child": "camera_2",
+            "source": "pattern",
+            "basis": "everything on the LAN hangs off teltonika_118; which port needs its MAC-address table",
+            "port": null,
+            "peer_port": null,
+            "evidence": null
+          },
+          {
+            "parent": "teltonika_118",
+            "child": "operator_station",
+            "source": "pattern",
+            "basis": "everything on the LAN hangs off teltonika_118; which port needs its MAC-address table",
+            "port": null,
+            "peer_port": null,
+            "evidence": null
+          },
+          {
+            "parent": "teltonika_118",
+            "child": "radar_1",
+            "source": "pattern",
+            "basis": "everything on the LAN hangs off teltonika_118; which port needs its MAC-address table",
+            "port": null,
+            "peer_port": null,
+            "evidence": null
+          },
+          {
+            "parent": "teltonika_118",
+            "child": "radar_2",
+            "source": "pattern",
+            "basis": "everything on the LAN hangs off teltonika_118; which port needs its MAC-address table",
+            "port": null,
+            "peer_port": null,
+            "evidence": null
+          },
+          {
+            "parent": "teltonika_118",
+            "child": "radar_3",
+            "source": "pattern",
+            "basis": "everything on the LAN hangs off teltonika_118; which port needs its MAC-address table",
+            "port": null,
+            "peer_port": null,
+            "evidence": null
+          },
+          {
+            "parent": "teltonika_118",
+            "child": "radar_4",
+            "source": "pattern",
+            "basis": "everything on the LAN hangs off teltonika_118; which port needs its MAC-address table",
+            "port": null,
+            "peer_port": null,
+            "evidence": null
+          },
+          {
+            "parent": "teltonika_118",
+            "child": "server",
+            "source": "pattern",
+            "basis": "everything on the LAN hangs off teltonika_118; which port needs its MAC-address table",
+            "port": null,
+            "peer_port": null,
+            "evidence": null
+          }
+        ],
+        "router": "router",
+        "switches": [
+          "teltonika_118"
+        ],
+        "notes": [],
+        "counts": {
+          "declared": 1,
+          "pattern": 9
+        }
+      },
       "off_tree": [
         "camera_1",
         "camera_2",

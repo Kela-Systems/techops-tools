@@ -16,6 +16,7 @@ import json
 from dataclasses import asdict
 
 import devices
+import topology
 from lint import coverage, lint
 from model import Site
 
@@ -65,6 +66,16 @@ def _node_payload(site: Site, name: str) -> dict:
         "verified_at": node.verified_at,
         "addr": node.addr,
         "addr_source": node.addr_source,
+        # Every leg, with which side of the world it faces. Falls back to the
+        # one address we know: an ARP entry can only ever see the interface
+        # facing the host that swept, and an empty list would read as "this
+        # device has no addresses" rather than "nobody read its interfaces".
+        "interfaces": [
+            {"name": i.name, "addr": i.addr, "scope": i.scope,
+             "prefix": i.prefix, "note": i.note}
+            for i in node.interfaces_or_addr(site.subnet)
+        ],
+        "interfaces_read": bool(node.interfaces),
         "roles": node.roles,
         "critical": node.critical,
         "notes": node.notes,
@@ -112,7 +123,13 @@ def _tree_payload(site: Site) -> list[dict]:
     return rows
 
 
-def site_payload(site: Site) -> dict:
+def site_payload(site: Site, fanout: list | None = None) -> dict:
+    """The payload the UI reads.
+
+    `fanout` is the router's forwarding database, and only a live survey has
+    one - a site read from a YAML file passes None and gets exactly what it
+    always got.
+    """
     findings = lint(site)
     on_tree = {row["node"] for row in _tree_payload(site)}
 
@@ -149,6 +166,10 @@ def site_payload(site: Site) -> dict:
             for r in sorted(site.reservations, key=lambda r: r.start)
         ],
         "tree": _tree_payload(site),
+        # The connection diagram, with declared edges and the FOB pattern's
+        # expectations kept separate. Computed here so the page draws what
+        # the CLI would draw.
+        "topology": topology.propose(site, fanout).as_payload(),
         "off_tree": sorted(set(site.nodes) - on_tree),
         "poe": total_poe,
         "findings": [

@@ -230,3 +230,30 @@ def test_values_needing_quotes_are_quoted(tmp_path):
     text = discover.to_yaml("s", "192.168.88.0/24", found, warnings)
     doc = yaml.safe_load(text)
     assert doc["nodes"]["router"]["mac"] == "20:97:27:36:55:ec"
+
+
+# -- what a vendor settles, and what it does not -------------------------
+
+def test_a_magosys_oui_is_a_radar_and_the_model_stays_unknown():
+    """Magos makes radars and APUs, but an APU is an NVIDIA board carrying
+    an NVIDIA MAC - so a Magosys OUI is a radar. Which radar it is is a
+    different question, and the vendor cannot answer it."""
+    arp = "? (192.168.88.130) at 8c:1f:64:e7:4c:46 [ether] on br-lan\n"
+    found, _ = discover.discover(arp, {"8C1F64E74": "Magosys Systems"}, None)
+    assert found[0].kind == "radar"
+    assert found[0].model is None, "a vendor never settles a model"
+
+
+def test_a_hangzhou_oui_is_a_camera():
+    arp = "? (192.168.88.111) at bc:74:d7:81:17:b1 [ether] on br-lan\n"
+    found, _ = discover.discover(
+        arp, {"BC74D7": "HangZhou JuRu Technology"}, None)
+    assert found[0].kind == "camera"
+
+
+def test_a_dell_oui_settles_nothing_between_a_server_and_a_station():
+    # Both are Dell on e8:cf:83. Only the hostname tells them apart, which
+    # is router.kind_from_hostname's job, not the vendor table's.
+    arp = "? (192.168.88.77) at e8:cf:83:8d:fc:14 [ether] on br-lan\n"
+    found, _ = discover.discover(arp, {"E8CF83": "Dell"}, None)
+    assert found[0].kind == "operator-station", "the weak fallback, by design"

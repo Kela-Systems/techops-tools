@@ -44,12 +44,32 @@ ADDR_ROLES = (
 )
 
 # Vendor substring -> the kind to use when the address plan says nothing.
+# Routerboard is MikroTik's OUI name, and a FOB's internal switch is often
+# one; without it eleven real devices came back as `unknown` on a site whose
+# two switches are MikroTiks.
+# A vendor settles a *kind* where it makes only one kind of thing, which is
+# not the same as settling a model - `model` stays unknown throughout.
+#
+#   magos       radar. Magos makes radars and APUs, but an APU is an NVIDIA
+#               board and carries an NVIDIA MAC, so a Magosys OUI is a
+#               radar. sites/kela-fob-03.yaml reaches the same conclusion by
+#               the same split. Which radar it is stays unknown.
+#   hangzhou    camera. The site's cameras are on bc:74:d7 and nothing else
+#               at a FOB is.
+#   dell        a PC, and nothing more - a site server and an operator
+#               station are both Dell on e8:cf:83. The lease hostname is
+#               what tells those apart; this is only the fallback for a Dell
+#               with no name at all.
 VENDOR_KINDS = (
-    ("magos", "magos-device"),
+    ("magos", "radar"),
+    ("hangzhou juru", "camera"),
     ("teltonika", "network-device"),
     ("planet", "poe-switch"),
     ("provision", "speaker"),
     ("dell", "operator-station"),
+    ("routerboard", "switch"),
+    ("mikrotik", "switch"),
+    ("ubiquiti", "network-device"),
 )
 
 
@@ -63,6 +83,21 @@ class Discovered:
     kind: str = "unknown"
     evidence: dict = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    # Every leg of the device, where something read them. An ARP entry can
+    # only ever establish the one facing the host that swept, so this stays
+    # empty for everything except a device somebody logged in to.
+    interfaces: list[dict] = field(default_factory=list)
+    addr_source: str = "static-bench"
+    roles: list[str] = field(default_factory=list)
+    # Models this device COULD be, and why. Never `model`: a narrowing is not
+    # a determination. The linter never counts these toward coverage.
+    candidates: list[str] = field(default_factory=list)
+    candidate_basis: Optional[str] = None
+    # Read off the device itself, which outranks a bench-central record for
+    # the same claim: the record says what the unit reported to a bench tool
+    # at some point, and this says what the unit says now.
+    read_model: Optional[str] = None
+    read_firmware: Optional[str] = None
 
     @property
     def vendor(self) -> Optional[str]:
@@ -73,10 +108,14 @@ class Discovered:
 
     @property
     def model(self) -> Optional[str]:
+        if self.read_model:
+            return self.read_model
         return self.facts.model if self.facts and self.facts.model else None
 
     @property
     def firmware(self) -> Optional[str]:
+        if self.read_firmware:
+            return self.read_firmware
         return self.facts.firmware if self.facts and self.facts.firmware else None
 
 
@@ -246,12 +285,16 @@ def to_yaml(
     found: list[Discovered],
     warnings: list[str],
     source_note: str = "",
+    net_edges: list | None = None,
 ) -> str:
     """Render a provisional site file.
 
-    No `net:` or `power:` block is emitted. An ARP sweep establishes neither,
-    and writing a plausible-looking one would be the single most damaging
-    thing this function could do.
+    No `power:` block is emitted, and no `net:` block either unless
+    `net_edges` carries links something actually read - today, the router's
+    own forwarding database, which places a MAC on a physical port. An ARP
+    sweep establishes no cabling at all, and writing a plausible-looking
+    `net:` block from one would be the single most damaging thing this
+    function could do: people wire to diagrams.
     """
     out: list[str] = []
     add = out.append
@@ -267,10 +310,19 @@ def to_yaml(
     add("#                 tool, looked up by MAC in bench-central")
     add("#   assumed       nobody has checked")
     add("#")
-    add("# There is deliberately NO net: or power: block. An ARP sweep proves")
-    add("# no cable and no power feed, so inventing either here would make")
-    add("# this file confidently wrong. Add them from a switch MAC-address")
-    add("# table, LLDP, and PoE port status - then mark them accordingly.")
+    if net_edges:
+        add("#   switch-table  a MAC-address table placed this MAC on that")
+        add("#                 port - here, the router's own bridge")
+        add("#")
+        add("# The net: block below is ONLY what a forwarding database")
+        add("# proved. Devices behind a switch have no edge: the router's")
+        add("# table cannot say which of the switch's ports they are on, and")
+        add("# a guess there is a wire somebody would run.")
+    else:
+        add("# There is deliberately NO net: or power: block. An ARP sweep proves")
+        add("# no cable and no power feed, so inventing either here would make")
+        add("# this file confidently wrong. Add them from a switch MAC-address")
+        add("# table, LLDP, and PoE port status - then mark them accordingly.")
     if warnings:
         add("#")
         add("# At discovery time:")
@@ -293,10 +345,28 @@ def to_yaml(
             add(f"    model: {_yaml_scalar(item.model)}")
         if item.firmware:
             add(f"    firmware: {_yaml_scalar(item.firmware)}")
-        add(f"    mac: {_yaml_scalar(item.entry.mac)}")
+        if item.entry.mac:
+            add(f"    mac: {_yaml_scalar(item.entry.mac)}")
         if item.entry.ip:
             add(f"    addr: {_yaml_scalar(item.entry.ip)}")
-            add("    addr_source: static-bench")
+            add(f"    addr_source: {_yaml_scalar(item.addr_source)}")
+        if item.candidates and not item.model:
+            add(f"    candidates: "
+                f"[{', '.join(_yaml_scalar(c) for c in item.candidates)}]")
+            if item.candidate_basis:
+                add("    candidate_basis: >-")
+                for line in _wrap(item.candidate_basis, 64):
+                    add(f"      {line}")
+        if item.roles:
+            add(f"    roles: [{', '.join(_yaml_scalar(r) for r in item.roles)}]")
+        if item.interfaces:
+            add("    interfaces:")
+            for iface in item.interfaces:
+                add(f"      - name: {_yaml_scalar(iface['name'])}")
+                add(f"        addr: {_yaml_scalar(iface['addr'])}")
+                add(f"        scope: {_yaml_scalar(iface['scope'])}")
+                if iface.get("prefix") is not None:
+                    add(f"        prefix: {iface['prefix']}")
         if len(item.evidence) == 1 and "*" in item.evidence:
             add(f"    evidence: {item.evidence['*']}")
         else:
@@ -310,6 +380,22 @@ def to_yaml(
             add("    notes: >-")
             for note in item.notes:
                 for line in _wrap(note, 64):
+                    add(f"      {line}")
+        add("")
+
+    if net_edges:
+        add("net:")
+        for edge in net_edges:
+            add(f"  - from: {_yaml_scalar(edge['from'])}")
+            add(f"    to: {_yaml_scalar(edge['to'])}")
+            if edge.get("port"):
+                add(f"    port: {_yaml_scalar(edge['port'])}")
+            if edge.get("peer_port"):
+                add(f"    peer_port: {_yaml_scalar(edge['peer_port'])}")
+            add(f"    evidence: {edge.get('evidence', 'switch-table')}")
+            if edge.get("notes"):
+                add("    notes: >-")
+                for line in _wrap(edge["notes"], 64):
                     add(f"      {line}")
         add("")
 

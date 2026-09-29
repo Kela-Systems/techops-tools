@@ -90,6 +90,26 @@ SOURCES: dict[str, Source] = {s.name: s for s in (
        "a switch's MAC address table places this MAC on that port"),
     _s("lldp", {CLAIM_PRESENT, CLAIM_LINK}, True,
        "LLDP neighbour on that port"),
+    # Not LLDP, and worth its own name. A spanning-tree BPDU is emitted by a
+    # bridge and consumed - never forwarded - by the next bridge along, so one
+    # arriving on a port names the nearest bridge on it. It proves the sender
+    # IS a bridge (only bridges speak STP) and that it is on that port. It
+    # says nothing about which endpoints sit behind it, and an unmanaged
+    # switch in between forwards BPDUs and leaves no trace, so "nearest
+    # bridge" is the exact claim - not "directly attached".
+    # A neighbour-discovery broadcast (MikroTik's MNDP, CDP, LLDP-MED): the
+    # device stating its own model, firmware and serial, unprompted and
+    # unauthenticated. It is the device's own word, like device-api, and it
+    # is the only read that ever settled a MikroTik model here - those
+    # switches take credentials nobody has.
+    _s("discovery",
+       {CLAIM_PRESENT, CLAIM_MAC, CLAIM_VENDOR, CLAIM_MODEL, CLAIM_FIRMWARE,
+        CLAIM_LINK}, True,
+       "the device broadcast its own identity on a neighbour-discovery "
+       "protocol (MNDP/CDP): its model, firmware and serial, in its own words"),
+    _s("stp", {CLAIM_PRESENT, CLAIM_MAC, CLAIM_LINK}, True,
+       "a spanning-tree BPDU arrived on that port, so the bridge that sent "
+       "it is the nearest bridge on it"),
     _s("dhcp-lease", {CLAIM_PRESENT, CLAIM_MAC, CLAIM_VENDOR, CLAIM_ADDR}, True,
        "the DHCP server's own lease table"),
     _s("poe-status", {CLAIM_PRESENT, CLAIM_LINK, CLAIM_POWER, CLAIM_DRAW}, True,
