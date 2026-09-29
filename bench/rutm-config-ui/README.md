@@ -10,7 +10,8 @@ CSV** — when a router is detected, the UI asks for the **site name** and the
 1. Login with the label password (falls back to the shared password for re-runs).
    The label password is also kept on bench-central, keyed to the serial — see
    "Factory passwords" below.
-2. Set the admin/root password to the shared default (`Kelasys123!`).
+2. Set the admin/root password to the shared bench password (`new_password`
+   in `config/rutm.config.json`, or `$KELA_NEW_PASSWORD`).
 3. Hostname / device name → `rut-<site_name>`.
 4. Timezone → `Asia/Jerusalem`.
 5. NTP client → `192.168.88.10`, as the only time source. The router is the

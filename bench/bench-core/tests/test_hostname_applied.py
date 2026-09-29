@@ -23,7 +23,7 @@ from bench_core import TeltonikaClient, expected_utc_offset
 
 ZONE = "Asia/Jerusalem"
 NAME = "otd-haifa"
-SHARED = "Kelasys123!"
+SHARED = "test-shared-pw"
 CORRECT_OFFSET = expected_utc_offset(ZONE) or "+0300"
 
 

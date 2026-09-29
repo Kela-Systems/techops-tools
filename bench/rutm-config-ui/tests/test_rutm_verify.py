@@ -20,11 +20,14 @@ import requests
 
 import bench_core
 from bench_core import (
-    DEFAULT_NEW_PASSWORD as SHARED,
     NTP_CLIENT_INTERVAL,
     MutationBlocked,
     expected_utc_offset,
 )
+
+SHARED = "test-shared-pw"   # a fake on purpose: proving the pipeline
+                            # applies the configured password needs a
+                            # value, not THE value
 
 import rutm_configure as mod
 from rutm_configure import RutmClient

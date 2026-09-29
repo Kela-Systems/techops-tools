@@ -7,7 +7,7 @@
 
   "_comment_password": "The factory password is DERIVED, not printed: 'sw' + the last 6 hex digits of the switch's MAC in lowercase (a8:f7:e0:f6:c4:3a -> swf6c43a). The bench reads the MAC off ARP, so there is still nothing to scan or type. Login tries new_password first (a re-run is the common case) and the derived factory password second, then stops — three wrong attempts start a lockout in which the switch answers, prints its banner and hangs up without prompting, which is indistinguishable from the broken-SSH firmware fault. Set factory_password only to override the derivation for an odd unit; leave it empty otherwise.",
   "factory_password": "",
-  "new_password": "Kelasys123!",
+  "new_password": "SET-ME",
 
   "_comment_time": "timezone_acronym must be 1-4 CHARACTERS — the switch silently ignores a longer one and stays on its factory +8. Use 3 for IDT (summer), 2 for IST (winter). The NTP server is unreachable from the factory subnet by design, so verification checks the configuration, not that the clock has synced.",
   "timezone_acronym": "IST",

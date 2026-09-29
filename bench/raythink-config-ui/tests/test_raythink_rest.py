@@ -25,7 +25,7 @@ from raythink_base import CameraError, CameraUnreachable
 from raythink_rest import (FIRMWARE_CHUNK_BYTES, FLASH_DONE,
                            RaythinkRestClient, encrypt_password)
 
-SHARED = "Kelafield123!"
+SHARED = "test-shared-pw"
 FACTORY_PW = "admin"
 CAMERA_MAC = "00:1e:42:aa:bb:01"
 SERIAL = "CB6280103"
@@ -273,11 +273,21 @@ def client(cam):
 
 # ── the password encoding ────────────────────────────────────────────────────
 
-def test_the_encoding_reproduces_a_real_ciphertext():
-    # Captured off a live camera's own web UI changing Kelafield123! to itself.
-    # This is the one thing in the client that cannot be checked by reading the
-    # vendor doc, so it is pinned against the wire rather than against the spec.
-    assert encrypt_password(SHARED) == "jSJyRmOZI8IS+IlXDpUh9g=="
+def test_the_encoding_is_pinned_so_it_cannot_drift():
+    # This WAS a conformance vector: a ciphertext captured off a live camera's
+    # own web UI, which is the one thing in the client that cannot be checked
+    # against the vendor doc. It was pinned against the wire on purpose.
+    #
+    # It had to go. The encoding is reversible under a fixed key, so a captured
+    # ciphertext of the live shared password IS the live shared password, in a
+    # test file, in git. Removing the plaintext and leaving the ciphertext would
+    # have removed nothing.
+    #
+    # What is left is weaker and worth knowing: this pins the algorithm against
+    # accidental change, but no longer proves it matches a real camera. To get
+    # that back, capture a fresh vector on the bench for a throwaway password —
+    # set a camera to one, watch its web UI change it, and pin THAT pair here.
+    assert encrypt_password(SHARED) == "gckoRliTvxbqr2XMSU3vrg=="
 
 
 def test_a_missing_crypto_library_fails_the_step_not_the_process(monkeypatch):

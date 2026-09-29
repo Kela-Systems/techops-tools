@@ -13,7 +13,7 @@ A fresh camera of either generation ships on the static IP 192.168.1.123 with
 admin/admin. Pipeline for one camera (one at a time — the profile and the
 addressing are chosen in the UI / on the CLI):
 
-  login(admin/admin) -> set password "Kelafield123!" -> import config profile
+  login(admin/admin) -> set password <shared> -> import config profile
     (LAN or Cellular) -> set NTP 192.168.88.10 + sync clock to PC time -> set
     the ONVIF user password (separate credential, via ONVIF SetUser) -> address
     the camera (LAST — drops the connection) -> verify
@@ -49,11 +49,11 @@ from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent
 
-from bench_core import load_settings, make_step_runner, tcp_port_open
+from bench_core import (load_settings, make_step_runner, shared_new_password,
+                        tcp_port_open)
 from raythink_base import (
     DEFAULT_HOST,
     DEFAULT_INITIAL_PASSWORD,
-    DEFAULT_NEW_PASSWORD,
     DEFAULT_NTP_SERVER,
     DEFAULT_SCHEME,
     DEFAULT_USERNAME,
@@ -281,7 +281,7 @@ def firmware_only(client, *, settings: dict, force: bool = False) -> bool:
     state it went in, apart from its firmware.
     """
     initial_pw = settings.get("initial_password", DEFAULT_INITIAL_PASSWORD)
-    new_pw = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_pw = shared_new_password(settings)
     try:
         client.login(initial_pw)
     except CameraError:
@@ -419,7 +419,7 @@ def configure_camera(client, *, profile_name: str,
     lease_timeout = int(dhcp_cfg.get("lease_timeout", DEFAULT_LEASE_TIMEOUT))
     ntp_server = settings.get("ntp_server", DEFAULT_NTP_SERVER)
     initial_pw = settings.get("initial_password", DEFAULT_INITIAL_PASSWORD)
-    new_pw = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_pw = shared_new_password(settings)
     target_ip = "" if dhcp_mode else target_ip_for(settings, octet)
     name = device_name(octet)
 
@@ -570,7 +570,7 @@ def verify_camera(client, *, settings: dict, resolve=None,
     """
     ntp_server = settings.get("ntp_server", DEFAULT_NTP_SERVER)
     initial_pw = settings.get("initial_password", DEFAULT_INITIAL_PASSWORD)
-    new_pw = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_pw = shared_new_password(settings)
     static = settings.get("static", {}) or {}
     netmask = static.get("netmask", DEFAULT_NETMASK)
     gateway = static.get("gateway", DEFAULT_GATEWAY)
@@ -696,7 +696,7 @@ def sanitize_profile_file(src: Path, dest: Optional[Path], settings: dict) -> in
         print(f"{src}: not a JSON object of config sections.", file=sys.stderr)
         return 1
 
-    secret = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    secret = shared_new_password(settings)
     cleaned, notes = sanitize_profile(data, secrets=(secret,))
     for note in notes:
         print(f"  {note}")

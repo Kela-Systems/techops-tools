@@ -10,7 +10,7 @@
 
   "_comment_pw": "Factory login is admin/123456; the tool changes it to new_password. A re-run of an already-configured speaker falls back to new_password automatically.",
   "initial_password": "123456",
-  "new_password": "Kelasys123!",
+  "new_password": "SET-ME",
 
   "_comment_ntp": "timezone is the device's own encoding: 720 + the UTC offset in minutes (840 = GMT+2 Israel standard, 900 = GMT+3). interval is the NTP poll interval the web UI uses (minutes).",
   "ntp": {

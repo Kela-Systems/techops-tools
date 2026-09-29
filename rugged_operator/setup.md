@@ -34,8 +34,8 @@ for support.
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Hostname                    | `<site-name>-operator` (e.g. `fob-12-operator`)                                                                                                                                                                                                                                    |
 | Primary user                | `kela`                                                                                                                                                                                                                                                                             |
-| Password                    | `Kelasys123!`                                                                                                                                                                                                                                                                      |
-| AnyDesk unattended password | `Kelasys123!`                                                                                                                                                                                                                                                                      |
+| Password                    | from `KELA_PASSWORD` in `secrets.env`                                                                                                                                                                                                                                                                      |
+| AnyDesk unattended password | from `ANYDESK_PASS` in `secrets.env`                                                                                                                                                                                                                                                                      |
 | Target URL                  | `https://kela.local/` → `192.168.88.10`                                                                                                                                                                                                                                            |
 | Server TLS cert             | Fetched live from the LAN server (`kela.local` / `192.168.88.10`) via `openssl s_client`; **auto-converges** via the `kela-cert-ensure` 5-min timer (installs once the server appears, re-pins on cert rotation) and is re-runnable by hand with `sudo kela-install-cert` (see §3) |
 | Tailscale auth              | Auth key + ACL tags supplied via env vars (see §3)                                                                                                                                                                                                                                 |
@@ -117,7 +117,7 @@ note in §1.
   - Name: `kela`
   - Computer's name: `<site-name>-operator`
   - Username: `kela`
-  - Password: `Kelasys123!`
+  - Password: whatever `KELA_PASSWORD` was set to in `secrets.env`
   - **Log in automatically** → check.
 - Finish, reboot, pull the USB.
 - First boot: log in as `kela`, plug in ethernet, decline online-accounts prompts.
@@ -152,7 +152,7 @@ The script handles:
   - Waits up to 45s for a default route first — first boot can race DHCP
 2. `apt update` + base tools (including `libnss3-tools` for `certutil`). All installs come from the network; if `APT_PROXY` is set (secrets.env or env), apt routes through the bench cache — non-persistent, so field units never carry a dead proxy. `apt upgrade` is skipped by default (set `KELA_APT_UPGRADE=1` to force it); patch centrally over Tailscale instead.
 3. **Tailscale** — installs, enables `tailscaled`, and if `TS_AUTHKEY` is set, runs `tailscale up --reset --authkey=… --hostname=<site>-operator --accept-routes [--advertise-tags=…]` and waits for an IPv4
-4. **AnyDesk** (installs, sets unattended password to `Kelasys123!`)
+4. **AnyDesk** (installs, sets the unattended password from `ANYDESK_PASS`)
 5. **Google Chrome** + managed policy that disables telemetry, pins the homepage / new-tab / startup to `https://kela.local/`, hardens the browser (DevTools off, incognito off, printing off, downloads blocked), and installs managed bookmarks (locked "Kela" folder) generated from the configured `TAB1`..`TAB3` values (names from `TABn_NAME`, default URL). `RestoreOnStartupURLs` is set to the same tabs. **Note:** the kiosk opens the configured tabs directly (§8); the bookmarks matter mainly from the **Chrome (Regular)** launcher, where the bookmark bar is shown.
 6. `/etc/hosts` entry `192.168.88.10  kela.local`
 7. **Server cert fetch** — installs the standalone, re-runnable `kela-install-cert` command and runs it once (via `openssl s_client`, mirrors phase 077):

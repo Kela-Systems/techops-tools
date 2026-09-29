@@ -16,7 +16,7 @@ plain MD5 hex (the device's design, via its `jquery.md5.js`).
 ## What it does per speaker
 
 1. Login with `admin/123456` (falls back to the new password for re-runs).
-2. Change the admin password to `Kelasys123!` (`new_password`) — via the forced
+2. Change the admin password to the shared bench password (`new_password`) — via the forced
    first-login endpoint (`changepwd.set`) when the device demands it
    (`changepwd:85` at login), else the normal `security.set`.
 3. Set NTP to `192.168.88.10` (`datetime.set`, `timesetmode=0`). The `timezone`

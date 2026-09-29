@@ -43,7 +43,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from bench_core import DEFAULT_NEW_PASSWORD, DEFAULT_USERNAME, LOG_LINE_FORMAT, mac_from_arp_output
+from bench_core import DEFAULT_USERNAME, LOG_LINE_FORMAT, mac_from_arp_output, shared_new_password
 from bench_core.central import (
     spool_label_record,
     spool_run_record,
@@ -891,7 +891,8 @@ class BenchConfigurator:
         # An operator re-running a finished unit may type the shared password
         # to get back in. That is not the factory value, and storing it as one
         # would overwrite the real answer with a password we already have.
-        if password == self.cfg.get("new_password", DEFAULT_NEW_PASSWORD):
+        # required=False: with no shared password configured, nothing can equal it.
+        if password == shared_new_password(self.cfg, required=False):
             self.logger.info("Not retaining the entered password — it is the "
                              "station's shared password, not a factory one.")
             return

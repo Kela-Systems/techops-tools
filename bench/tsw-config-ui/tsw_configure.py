@@ -6,7 +6,7 @@ A fresh TSW202 boots on 192.168.1.2 — note the .2, NOT the .1 the OTD500 and
 RUTM08 share — with a unique factory password printed on the device label, and
 forces a password change on first login. Pipeline for one switch:
 
-  login(label_pw) -> set password "Kelasys123!" -> firmware floor
+  login(label_pw) -> set password <shared> -> firmware floor
     -> NTP server 192.168.88.10 -> timezone Asia/Jerusalem -> verify
     -> move the management IP to 192.168.88.2 (LAST — drops the connection;
        confirmed by reaching the switch on the new address)
@@ -51,7 +51,7 @@ from typing import Optional
 BASE_DIR = Path(__file__).resolve().parent
 
 from bench_core import (
-    DEFAULT_NEW_PASSWORD,
+    shared_new_password,
     DEFAULT_SCHEME,
     DEFAULT_TIMEZONE,
     DEFAULT_USERNAME,
@@ -336,7 +336,7 @@ def configure_tsw(client: TswClient, *, initial_password: str,
     the switch again by `mac` afterwards; passing None/"" for both keeps the
     long-standing behaviour of moving to `lan_ip`, which is what the CLI does.
     """
-    new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_password = shared_new_password(settings)
     ntp_server = settings.get("ntp_server", DEFAULT_TSW_NTP_SERVER)
     zonename = settings.get("timezone", DEFAULT_TIMEZONE)
     minimum = ((settings.get("firmware", {}) or {}).get("minimum_version") or "").strip()
@@ -466,7 +466,7 @@ def verify_tsw(client: TswClient, *, settings: dict, resolve=None,
     to be worked around: a finished unit is on it, and one that is not fails the
     password row, which is the correct and useful outcome.
     """
-    new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_password = shared_new_password(settings)
     ntp_server = settings.get("ntp_server", DEFAULT_TSW_NTP_SERVER)
     zonename = settings.get("timezone", DEFAULT_TIMEZONE)
     minimum = ((settings.get("firmware", {}) or {}).get("minimum_version") or "").strip()

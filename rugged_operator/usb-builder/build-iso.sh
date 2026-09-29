@@ -23,7 +23,9 @@
 #  still a desktop kiosk.
 #
 #  Optional flags:
-#    --password '<plaintext>'   Override the kela password (default Kelasys123!)
+#    --password '<plaintext>'   The kela password. REQUIRED — pass it here or
+#                               set KELA_PASSWORD in secrets.env. There is no
+#                               default: the built ISO embeds this password.
 #    --volid    'Kela Operator' ISO volume label (default same)
 #
 #  The install requires a network (the desktop comes from the archive). For
@@ -58,7 +60,8 @@ OVERLAY_DIR="$SCRIPT_DIR/overlay"
 INPUT_ISO=""
 OUTPUT_ISO=""
 SECRETS_FILE=""
-KELA_PASSWORD="Kelasys123!"
+# No default: whatever is here gets embedded in every ISO this builds.
+KELA_PASSWORD="${KELA_PASSWORD:-}"
 VOLID="Kela Operator"
 
 usage() {
@@ -103,6 +106,20 @@ abs_path() {
 INPUT_ISO="$(abs_path "$INPUT_ISO")"
 OUTPUT_ISO="$(abs_path "$OUTPUT_ISO")"
 SECRETS_FILE="$(abs_path "$SECRETS_FILE")"
+
+# The kela password comes from --password or from secrets.env, and there is no
+# default. Whatever is used here is hashed into every ISO this builds, so a
+# compiled-in value would be a fleet credential living in git. secrets.env is
+# gitignored, which is why it is the supply route.
+if [[ -z "$KELA_PASSWORD" ]]; then
+  KELA_PASSWORD="$(set -a; . "$SECRETS_FILE"; set +a; printf '%s' "${KELA_PASSWORD:-}")"
+fi
+if [[ -z "$KELA_PASSWORD" ]]; then
+  echo "ERROR: no kela password." >&2
+  echo "       Pass --password '<plaintext>', or set KELA_PASSWORD in" >&2
+  echo "       $SECRETS_FILE (gitignored). It is deliberately not a default." >&2
+  exit 1
+fi
 
 
 # ---- 1. validate secrets ---------------------------------------------------

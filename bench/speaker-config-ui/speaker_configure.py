@@ -11,7 +11,7 @@ those /24s for a host answering HTTP whose landing page is the speaker's
 Pipeline for one speaker (one at a time):
 
   login(admin/123456, falling back to the target password for a re-run) ->
-    set password "Kelasys123!" -> set NTP 192.168.88.10 -> upload the media
+    set password <shared> -> set NTP 192.168.88.10 -> upload the media
     file to user slot 0 -> address it (LAST — drops the connection; confirmed
     by reaching the speaker where it landed) -> verify
 
@@ -41,12 +41,12 @@ BASE_DIR = Path(__file__).resolve().parent
 
 import requests
 
-from bench_core import load_settings, make_step_runner, tcp_port_open
+from bench_core import (load_settings, make_step_runner, shared_new_password,
+                        tcp_port_open)
 from speaker_client import (
     DEFAULT_GATEWAY,
     DEFAULT_INITIAL_PASSWORD,
     DEFAULT_NETMASK,
-    DEFAULT_NEW_PASSWORD,
     DEFAULT_NTP_SERVER,
     DEFAULT_SCHEME,
     DEFAULT_STATIC_IP,
@@ -180,7 +180,7 @@ def configure_speaker(client: SpeakerClient, *, settings: dict,
     ntp = settings.get("ntp", {}) or {}
     ntp_server = ntp.get("server", DEFAULT_NTP_SERVER)
     initial_pw = settings.get("initial_password", DEFAULT_INITIAL_PASSWORD)
-    new_pw = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_pw = shared_new_password(settings)
     media_slot = int(settings.get("media_slot", 0))
     name = device_name(target_ip)
 
@@ -307,7 +307,7 @@ def verify_speaker(client: SpeakerClient, *, settings: dict,
     ntp = settings.get("ntp", {}) or {}
     ntp_server = ntp.get("server", DEFAULT_NTP_SERVER)
     initial_pw = settings.get("initial_password", DEFAULT_INITIAL_PASSWORD)
-    new_pw = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_pw = shared_new_password(settings)
     media_slot = int(settings.get("media_slot", 0))
     media_name = Path(media_path).name if media_path else ""
 

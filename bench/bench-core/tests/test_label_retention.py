@@ -28,7 +28,7 @@ from bench_core.label_record import LABEL_RECORD_SCHEMA
 from bench_core.run_record import build_run_entry
 
 COLLECTOR = "http://collector.test:8100"
-SHARED = "Kelasys123!"          # bench_core.DEFAULT_NEW_PASSWORD
+SHARED = "test-shared-pw"          # bench_core.DEFAULT_NEW_PASSWORD
 
 # A real OTD500 sticker (the one in device_label.py's docstring).
 LABEL = "SN:6008219573;I:864088065513384;M:2097272B00F7;U:admin;PW:zZ?40*kA;B:015;"

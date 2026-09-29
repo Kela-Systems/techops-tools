@@ -64,7 +64,7 @@ from the device rather than from PLANET's Command Guide:
   factory +8.
 
 CLI (single device):
-  python3 planet_configure.py --password 'Kelasys123!'
+  python3 planet_configure.py --password "$KELA_NEW_PASSWORD"
   python3 planet_configure.py --verify        # check a finished switch, change nothing
 """
 from __future__ import annotations
@@ -81,7 +81,7 @@ from typing import Optional
 BASE_DIR = Path(__file__).resolve().parent
 
 from bench_core import (
-    DEFAULT_NEW_PASSWORD,
+    shared_new_password,
     DEFAULT_USERNAME,
     LOG_LINE_FORMAT,
     format_verification,
@@ -189,7 +189,7 @@ class PlanetClient:
     """
 
     def __init__(self, host: str, username: str = DEFAULT_USERNAME,
-                 password: str = DEFAULT_NEW_PASSWORD, timeout: int = 20):
+                 password: Optional[str] = None, timeout: int = 20):
         self.host = host
         self.username = username
         self.password = password
@@ -216,7 +216,7 @@ class PlanetClient:
         """
         if paramiko is None:
             raise SystemExit("This step needs 'paramiko'.  Install it: pip install paramiko")
-        pw = password or self.password
+        pw = password or self.password or shared_new_password()
         transport = paramiko.Transport(endpoint(self.host, 22))
         try:
             transport.start_client(timeout=self.timeout)
@@ -446,7 +446,7 @@ class PlanetClient:
             response = session.post(
                 f"{self._web_base()}/cgi-bin/dispatcher.cgi?cmd={CMD_LOGIN}",
                 data={"username": self.username,
-                      "password": password or self.password, "login": "1"},
+                      "password": password or self.password or shared_new_password(), "login": "1"},
                 timeout=20)
         except requests.RequestException as e:
             # Raw requests exceptions would reach the bench UI as a traceback;
@@ -517,7 +517,7 @@ class PlanetClient:
         page = self._get(cmd)
         if SESSION_EXPIRED_REDIRECT in page:
             log.info("Web session expired — logging in again.")
-            self.web_login(self.password)
+            self.web_login(self.password or shared_new_password())
             page = self._get(cmd)
         return page
 
@@ -534,7 +534,7 @@ class PlanetClient:
         # is answered with the login page and changes nothing, silently.
         if SESSION_EXPIRED_REDIRECT in response.text:
             log.info("Web session expired — logging in again and retrying.")
-            self.web_login(self.password)
+            self.web_login(self.password or shared_new_password())
             response = self._web.post(f"{self._web_base()}/cgi-bin/dispatcher.cgi",
                                       data=data, timeout=timeout)
         return response
@@ -985,7 +985,7 @@ def configure_planet(client: PlanetClient, *, initial_password: str,
     per-step failures + verification. Raises SystemExit on a hard failure
     (wrong model, unusable SSH, a firmware flash that goes wrong).
     """
-    new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_password = shared_new_password(settings)
     ntp_server = settings.get("ntp_server", DEFAULT_PLANET_NTP_SERVER)
     acronym = str(settings.get("timezone_acronym", DEFAULT_PLANET_TZ_ACRONYM))[:4]
     offset = settings.get("timezone_offset", DEFAULT_PLANET_TZ_OFFSET)
@@ -1140,7 +1140,7 @@ def verify_planet(client: PlanetClient, *, settings: dict, resolve=None,
     # A switch being verified should be on the shared password; the derived
     # factory one is the fallback for a unit an earlier run left half-done.
     password = client.web_login_any(
-        [settings.get("new_password", DEFAULT_NEW_PASSWORD),
+        [shared_new_password(settings),
          settings.get("factory_password")
          or factory_password_for(read_device_mac(client.host) or "")])
     identity = client.get_identity()
@@ -1189,7 +1189,7 @@ def main():
         settings.setdefault("firmware", {})["enabled"] = False
 
     host = args.host or settings.get("host", DEFAULT_PLANET_HOST)
-    password = args.password or settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    password = args.password or shared_new_password(settings)
     client = PlanetClient(host=host,
                           username=settings.get("username", DEFAULT_USERNAME),
                           password=password)

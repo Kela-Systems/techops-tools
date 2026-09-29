@@ -99,13 +99,13 @@ def test_set_password_uses_changepwd_endpoint_when_forced(client):
     client.login("123456")
     client.s.script("config=changepwd.set", login_body())
     client.s.script("?login", login_body())        # re-login under the new password
-    client.set_password("Kelasys123!")
+    client.set_password("test-shared-pw")
     call = next(c for c in client.s.calls if "changepwd.set" in c[1])
     form = call[2]["data"]
     assert form["password"] == md5_hex("123456")
-    assert form["new_password"] == md5_hex("Kelasys123!")
-    assert form["new_password_org"] == "Kelasys123!"
-    assert client.password == "Kelasys123!"
+    assert form["new_password"] == md5_hex("test-shared-pw")
+    assert form["new_password_org"] == "test-shared-pw"
+    assert client.password == "test-shared-pw"
 
 
 def test_set_password_uses_security_endpoint_normally(client):
@@ -113,18 +113,18 @@ def test_set_password_uses_security_endpoint_normally(client):
     client.login("123456")
     client.s.script("config=security.set", login_body())
     client.s.script("?login", login_body())
-    client.set_password("Kelasys123!")
+    client.set_password("test-shared-pw")
     call = next(c for c in client.s.calls if "security.set" in c[1])
     form = call[2]["data"]
     assert form["username"] == "admin"
     assert form["new_username"] == "admin"
-    assert form["new_password"] == md5_hex("Kelasys123!")
+    assert form["new_password"] == md5_hex("test-shared-pw")
 
 
 def test_set_password_skips_when_already_on_target(client):
     client.s.script("?login", login_body())
-    client.login("Kelasys123!")
-    client.set_password("Kelasys123!")   # no scripted call -> would raise if it posted
+    client.login("test-shared-pw")
+    client.set_password("test-shared-pw")   # no scripted call -> would raise if it posted
     assert len(client.s.calls) == 1
 
 

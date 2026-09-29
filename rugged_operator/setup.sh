@@ -31,7 +31,16 @@ SETUP_VERSION="2026-07-19.1"
 # ---------- config ----------------------------------------------------------
 SITE_NAME="${SITE_NAME:-CHANGE-ME}"
 KELA_USER="kela"
-ANYDESK_PASS="Kelasys123!"
+# No default. This is the unattended-access password for a deployed station,
+# so a value compiled in here is a fleet-wide credential sitting in git — which
+# is exactly what it was until 2026-09-14. The first-boot runner already
+# exports secrets.env before invoking this script, so the supply route exists.
+ANYDESK_PASS="${ANYDESK_PASS:-}"
+if [[ -z "$ANYDESK_PASS" ]]; then
+  echo "ANYDESK_PASS is not set. Put it in secrets.env (gitignored) or export" >&2
+  echo "it before running this script. It is deliberately not a default." >&2
+  exit 2
+fi
 
 # Per-site LAN addressing. Defaults match the standard 192.168.88.0/24 site
 # layout, but every value is overridable from the environment (the first-boot

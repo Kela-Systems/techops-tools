@@ -19,11 +19,14 @@ import pytest
 from bench_core import MutationBlocked
 from speaker_client import (
     DEFAULT_INITIAL_PASSWORD as FACTORY,
-    DEFAULT_NEW_PASSWORD as SHARED,
     SpeakerClient,
     SpeakerError,
     md5_hex,
 )
+
+SHARED = "test-shared-pw"   # a fake on purpose: proving the pipeline
+                            # applies the configured password needs a
+                            # value, not THE value
 
 import speaker_configure as mod
 

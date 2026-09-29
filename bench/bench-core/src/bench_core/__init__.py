@@ -140,10 +140,62 @@ def tcp_port_open(host: str, port: int, timeout: float = 2.0) -> bool:
 DEFAULT_HOST = "192.168.1.1"
 DEFAULT_USERNAME = "admin"
 DEFAULT_SCHEME = "https"          # RutOS REST API is HTTPS (self-signed by default)
-# Intentional (bench): a shared post-provisioning password the operator can
-# override in the per-tool config. It is only a *fallback* default for the
-# controlled bench network, not a secret — real deployments set their own.
-DEFAULT_NEW_PASSWORD = "Kelasys123!"
+# The shared post-provisioning password is NOT kept here. It used to be, as a
+# fallback the per-tool config could override — on the reasoning that the bench
+# network is controlled and "real deployments set their own". That reasoning was
+# wrong in practice: the value shipped in every *.example.json, every station
+# copied the example, and so the fallback became the live password on deployed
+# hardware while sitting in git in plaintext. Resolve it instead, from the
+# station's own (gitignored) config or the environment.
+NEW_PASSWORD_ENV = "KELA_NEW_PASSWORD"
+NEW_PASSWORD_KEY = "new_password"
+
+# Values that mean "nobody filled this in". A copied example whose placeholder
+# was never replaced must fail like an empty config, not authenticate with the
+# placeholder and leave an operator wondering why the device refused.
+_PASSWORD_PLACEHOLDERS = frozenset({
+    "", "set-me", "set_me", "setme", "changeme", "change-me", "change_me",
+    "todo", "tbd", "xxx", "password", "none", "null",
+})
+
+
+class MissingSharedPassword(SystemExit):
+    """No shared password is configured, and there is no default to fall back
+    to. Carries the operator-facing fix rather than a stack trace."""
+
+
+def shared_new_password(settings: Optional[dict] = None, *,
+                        key: str = NEW_PASSWORD_KEY,
+                        required: bool = True) -> Optional[str]:
+    """The password this bench applies to a device, resolved not hardcoded.
+
+    In order: the station's config (the gitignored `config/<tool>.config.json`,
+    which is where it belongs), then $KELA_NEW_PASSWORD for CI and one-off
+    runs. If neither supplies one, refuse — a tool that guesses a password is
+    how the value ended up committed in the first place.
+
+    `required=False` returns None instead of raising, for the callers that only
+    want to COMPARE against the shared password ("is this device already on
+    it?"). Those must not fail a run just because no shared password is
+    configured: the honest answer there is "no", not an exception.
+    """
+    for value in ((settings or {}).get(key), os.environ.get(NEW_PASSWORD_ENV)):
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text.casefold() not in _PASSWORD_PLACEHOLDERS:
+            return text
+
+    if not required:
+        return None
+
+    raise MissingSharedPassword(
+        f"No shared password configured. Set {key!r} in this tool's "
+        f"config/<tool>.config.json (copy it from the .example.json and fill "
+        f"in the real value — the example ships a placeholder on purpose), or "
+        f"export {NEW_PASSWORD_ENV}. It is deliberately not compiled into the "
+        f"code any more."
+    )
 DEFAULT_TIMEZONE = "Asia/Jerusalem"
 DEFAULT_NAME_PREFIX = "otd-"
 

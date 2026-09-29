@@ -21,11 +21,14 @@ from bench_core import MutationBlocked
 from raythink_base import GEN_REST, GEN_RPC2
 from raythink_camera import (
     DEFAULT_INITIAL_PASSWORD as FACTORY_PW,
-    DEFAULT_NEW_PASSWORD as SHARED,
     MUTATING_RPC_METHODS,
     CameraError,
     RaythinkCameraClient,
 )
+
+SHARED = "test-shared-pw"   # a fake on purpose: proving the pipeline
+                            # applies the configured password needs a
+                            # value, not THE value
 
 import raythink_configure as mod
 

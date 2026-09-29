@@ -26,7 +26,7 @@ from raythink_base import (
 )
 import raythink_configure as mod
 
-SHARED = "Kelafield123!"
+SHARED = "test-shared-pw"
 
 # A trimmed copy of a real export from a newer camera, keeping the shapes that
 # matter: the address, the plaintext ONVIF credential, a legitimate password

@@ -38,7 +38,7 @@ find them.
 1. Login with `admin/admin` (falls back to the new password for re-runs). The
   older cameras use a two-step challenge/response; the newer ones send the
    password AES-encrypted under a fixed key and get a token back.
-2. Change the admin password to `Kelafield123!` (`new_password`). Neither
+2. Change the admin password to the shared bench password (`new_password`). Neither
   generation takes it in plaintext: the older stores
    `MD5(user:realm:password)` (hex case per firmware), the newer wants the same
    AES form as the login.
@@ -50,7 +50,7 @@ find them.
    uploaded whole. Then re-login (an import can drop the session).
 5. Date & Time: set NTP to `192.168.88.10` **and** sync the clock to the bench
   PC's current time (the web UI's *Sync to PC time* button).
-6. Set the **ONVIF** `admin` password to `Kelafield123!`. ONVIF keeps a
+6. Set the **ONVIF** `admin` password to the same shared password. ONVIF keeps a
   **separate credential** from the web/system account on both generations, so
    the step 2 password change does **not** touch it — verified on a live unit
    that was still ONVIF `admin/admin` after a normal provisioning run. The older

@@ -34,11 +34,10 @@ BASE_DIR = Path(__file__).resolve().parent
 
 import requests
 
-from bench_core import load_settings
+from bench_core import load_settings, shared_new_password
 from raythink_base import (
     DEFAULT_HOST,
     DEFAULT_INITIAL_PASSWORD,
-    DEFAULT_NEW_PASSWORD,
     DEFAULT_SCHEME,
     DEFAULT_USERNAME,
     GENERATION_LABELS,
@@ -169,7 +168,7 @@ def inspect_onvif(client, settings: dict) -> None:
     candidates: dict[str, str] = {}
     for label, pw in (("factory", settings.get("initial_password",
                                                DEFAULT_INITIAL_PASSWORD)),
-                      ("shared", settings.get("new_password", DEFAULT_NEW_PASSWORD))):
+                      ("shared", shared_new_password(settings))):
         if pw:
             candidates.update(forms(label, pw))
 
@@ -222,7 +221,7 @@ def onvif_write_test(host: str, scheme: str, timeout: int, settings: dict,
     from raythink_rest import encrypt_password
 
     print("\n--- ONVIF write test (this one CHANGES the camera) ---")
-    target = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    target = shared_new_password(settings)
     client = open_camera(host, scheme=scheme, generation=GEN_REST, timeout=timeout)
     try:
         client.login(password)
@@ -343,7 +342,7 @@ def main() -> int:
 
     worked = try_logins(
         host, scheme, generation,
-        [("shared (new_password)", settings.get("new_password", DEFAULT_NEW_PASSWORD)),
+        [("shared (new_password)", shared_new_password(settings)),
          ("factory (initial_password)", settings.get("initial_password",
                                                      DEFAULT_INITIAL_PASSWORD))],
         int(args.timeout), settings)
@@ -351,7 +350,7 @@ def main() -> int:
     if worked and args.onvif_write_test and generation == GEN_REST:
         onvif_write_test(host, scheme, int(args.timeout), settings,
                          dict([("shared (new_password)",
-                                settings.get("new_password", DEFAULT_NEW_PASSWORD)),
+                                shared_new_password(settings)),
                                ("factory (initial_password)",
                                 settings.get("initial_password",
                                              DEFAULT_INITIAL_PASSWORD))])[worked])

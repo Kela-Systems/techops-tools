@@ -22,7 +22,7 @@ from typing import Optional
 from bench_core import (
     DEFAULT_HOST,
     DEFAULT_NAME_PREFIX,
-    DEFAULT_NEW_PASSWORD,
+    shared_new_password,
     DEFAULT_SCHEME,
     DEFAULT_TIMEZONE,
     DEFAULT_USERNAME,
@@ -86,7 +86,7 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
     the shared 'teltonika' logger. Returns the discovered identity + verification warnings.
     Raises SystemExit on a hard failure (login, password change, firmware)."""
     name = device_name(site_name, settings.get("name_prefix", DEFAULT_NAME_PREFIX))
-    new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_password = shared_new_password(settings)
 
     # Fail fast on a bad sim_switch block BEFORE touching the device: the
     # sim-switch step commits UCI before the quota-sync step parses the
@@ -296,7 +296,7 @@ def verify_device(client: TeltonikaClient, *, settings: dict, resolve=None,
     `site_name` lets an operator state it instead. An OTD500 keeps its factory
     address, so unlike the router and the switch there is no LAN-move row here.
     """
-    new_password = settings.get("new_password", DEFAULT_NEW_PASSWORD)
+    new_password = shared_new_password(settings)
     sim_switch = settings.get("sim_switch", {}) or {}
     rms = settings.get("rms", {}) or {}
     ts = settings.get("tailscale", {}) or {}

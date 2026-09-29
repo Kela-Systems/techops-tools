@@ -10,7 +10,8 @@ baseline is named after a site, so asking would be a field filled in for nothing
 1. Login with the label password (falls back to the shared password for re-runs).
    The label password is also kept on bench-central, keyed to the serial — see
    "Factory passwords" below.
-2. Set the admin/root password to the shared default (`Kelasys123!`).
+2. Set the admin/root password to the shared bench password (`new_password`
+   in `config/tsw.config.json`, or `$KELA_NEW_PASSWORD`).
 3. Firmware **floor** — see below.
 4. NTP server → `192.168.88.10`, as the switch's *only* time source.
 5. Timezone → `Asia/Jerusalem`.

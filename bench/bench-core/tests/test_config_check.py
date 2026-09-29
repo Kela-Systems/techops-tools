@@ -49,7 +49,7 @@ def test_disabled_sections_are_skipped():
 
 def test_real_looking_config_passes():
     cfg = {"host": "192.168.1.1", "username": "admin", "insecure": True,
-           "new_password": "Kelasys123!", "timezone": "Asia/Jerusalem",
+           "new_password": "test-shared-pw", "timezone": "Asia/Jerusalem",
            "name_prefix": "rut-", "lan_ip": "192.168.88.1",
            "firmware": {"mode": "fota",
                         "bin_path": "./firmware/RUTM08_latest-stable.bin",

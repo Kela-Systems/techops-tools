@@ -7,7 +7,7 @@
   "scheme": "https",
   "insecure": true,
 
-  "new_password": "Kelasys123!",
+  "new_password": "SET-ME",
   "timezone": "Asia/Jerusalem",
 
   "_comment_ntp": "Set as the switch's ONLY time source (the factory pool entries are cleared, not appended to). Unreachable from the factory subnet by design — the switch can only talk to it once the management move below has happened, so verification checks the configuration, not that the clock has synced.",

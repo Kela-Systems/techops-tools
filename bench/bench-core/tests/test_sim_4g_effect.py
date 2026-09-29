@@ -26,7 +26,7 @@ from bench_core import (
     TeltonikaClient,
 )
 
-SHARED = "Kelasys123!"
+SHARED = "test-shared-pw"
 
 # What a modem really says. Taken from the AT spec's response format:
 #   +COPS: <mode>,<format>,<oper>,<AcT>
