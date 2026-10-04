@@ -197,6 +197,11 @@ the first thing to check, ahead of any amount of darkness.
 
 Darkness is `~SD`, not `^MD`, because `^MD` adjusts *relative* to whatever the
 printer is already set to and so inherits the very drift it is meant to remove.
+Being a tilde command it goes in front of `^XA`; `^MT` and `^PR` are caret
+commands and go *inside* the format, because the printer drops any caret
+command that arrives outside `^XA`/`^XZ`. Until that was fixed, a station's
+`speed` and `media` settings never reached the printer at all — only darkness
+did.
 Out-of-range values are clamped rather than rejected: a fat-fingered `300` in a
 station file should still print labels. A bad `media` or a non-numeric darkness
 is ignored for the same reason — a pale label is much easier to notice than a
@@ -236,6 +241,10 @@ and 25 and then **stops** — 28 and 30 are indistinguishable from 25. Speed 2 i
 the slowest the printer goes. So `{"darkness": 25, "speed": 2}` is roughly the
 ceiling of what the bench can do, and a label still weak at those values is not
 going to be rescued by a number.
+
+(The speed half of that was measured before `^PR` was moved inside the format,
+so the "slow" strip actually printed at the printer's own speed. Re-run the
+`--speed 2` ladder before treating speed as exhausted.)
 
 Two symptoms tell you to stop tuning and look at the hardware:
 

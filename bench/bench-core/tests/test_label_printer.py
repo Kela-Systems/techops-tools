@@ -655,14 +655,16 @@ def test_the_environment_overrides_the_quality_too(tmp_path, monkeypatch):
 
 def test_the_configured_quality_reaches_the_printed_label(tmp_path):
     """The wiring, end to end: a station file with a darkness in it has to come
-    out as a `~SD` in front of the ZPL that gets sent."""
+    out as a `~SD` in front of the ZPL that gets sent, and the speed and media
+    inside it."""
     p = printer(tmp_path, media="direct", darkness=26, speed=2)
     entry = record()
     p.print_run(entry)
     assert entry["label"]["printed"] is True
     written = Path(p.settings.sink).read_text(encoding="ascii")
-    assert written.split("^XA", 1)[0].strip().endswith("^PR2")
-    assert "^MTD" in written and "~SD26" in written
+    head, body = written.split("^XA", 1)
+    assert head.strip().endswith("~SD26")
+    assert body.startswith("\n^MTD\n^PR2\n")
 
 
 def test_an_unconfigured_station_still_prints_exactly_as_before(tmp_path):

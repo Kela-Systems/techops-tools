@@ -878,9 +878,29 @@ DARKNESS_RANGE = (0, 30)
 SPEED_RANGE = (2, 6)          # inches/sec, per the ZD421 spec sheet
 
 
-def _quality(media: str = "", darkness: Optional[int] = None,
-             speed: Optional[int] = None) -> list[str]:
-    """The print-quality preamble, in the order the printer wants it."""
+def _darkness(darkness: Optional[int] = None) -> list[str]:
+    """The control command that goes in front of `^XA`.
+
+    ~SD, not ^MD. ^MD is an adjustment RELATIVE to whatever the printer is
+    already set to, so it inherits the drift it is meant to remove; ~SD is
+    absolute and makes the value in the config the value that prints. It sets
+    the running darkness only — saving to flash needs ^JUS, which is
+    deliberately not sent.
+    """
+    if darkness is None:
+        return []
+    return [f"~SD{_clamp(darkness, *DARKNESS_RANGE)}"]
+
+
+def _format_quality(media: str = "",
+                    speed: Optional[int] = None) -> list[str]:
+    """The quality commands that go INSIDE the format, after `^XA`.
+
+    Both are caret commands, and a caret command the printer receives outside
+    `^XA`/`^XZ` belongs to no label and is dropped — the station's speed and
+    media type would silently never reach the head. Only tilde commands like
+    `~SD` act wherever they land.
+    """
     out = []
     if media:
         # ^MT tells the printer whether a ribbon is in the path. Getting it
@@ -888,13 +908,6 @@ def _quality(media: str = "", darkness: Optional[int] = None,
         # thermal stock puts a ribbon between the head and heat-sensitive
         # paper, which insulates it, and every label comes out uniformly pale.
         out.append(MEDIA_COMMAND[media])
-    if darkness is not None:
-        # ~SD, not ^MD. ^MD is an adjustment RELATIVE to whatever the printer
-        # is already set to, so it inherits the drift it is meant to remove;
-        # ~SD is absolute and makes the value in the config the value that
-        # prints. It sets the running darkness only — saving to flash needs
-        # ^JUS, which is deliberately not sent.
-        out.append(f"~SD{_clamp(darkness, *DARKNESS_RANGE)}")
     if speed is not None:
         # Slower is darker, and gentler on the head than the equivalent
         # darkness increase — worth reaching for first when print is pale.
@@ -954,8 +967,9 @@ def render_content(c: LabelContent, *, media: str = "",
                    copies: int = DEFAULT_COPIES) -> str:
     """`c` as one ZPL label format, printed `copies` times."""
     parts = [
-        *_quality(media, darkness, speed),
+        *_darkness(darkness),
         "^XA",
+        *_format_quality(media, speed),
         "^CI28",                                  # UTF-8 in, though _ascii folds
         # `^LH0,0` keeps the home position at the label corner, so the margins
         # the design applies are the margins that print — they cannot be

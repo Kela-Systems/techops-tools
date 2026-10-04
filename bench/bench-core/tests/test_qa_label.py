@@ -587,12 +587,23 @@ def test_a_station_that_sets_nothing_sends_nothing():
         assert command not in zpl
 
 
-def test_the_quality_commands_come_before_the_label():
-    """`~SD` is a control command: inside a format it is not part of it. All
-    three have to land before `^XA` to apply to the label that follows."""
+def test_darkness_comes_before_the_label():
+    """`~SD` is a control command: inside a format it is not part of it, so it
+    lands before `^XA` to apply to the label that follows."""
     zpl = render_zpl(record("tsw-static"), media="direct", darkness=22, speed=3)
-    head = zpl.split("^XA", 1)[0]
-    assert "^MTD" in head and "~SD22" in head and "^PR3" in head
+    head, body = zpl.split("^XA", 1)
+    assert "~SD22" in head and "~SD" not in body
+
+
+def test_speed_and_media_are_inside_the_format():
+    """`^PR` and `^MT` are format commands. Sent ahead of `^XA` they belong to
+    no label and the printer drops them — which is how a station configured
+    for speed 2 went on printing at the printer's own speed."""
+    zpl = render_zpl(record("tsw-static"), media="direct", darkness=22, speed=3)
+    head, rest = zpl.split("^XA", 1)
+    body = rest.split("^XZ", 1)[0]
+    assert "^PR" not in head and "^MT" not in head
+    assert "^PR3" in body and "^MTD" in body
 
 
 def test_thermal_transfer_is_a_different_command():
@@ -624,7 +635,8 @@ def test_quality_does_not_disturb_the_layout():
     entry = record("magos-apu")
     plain = render_zpl(entry)
     tuned = render_zpl(entry, media="direct", darkness=25, speed=2)
-    assert tuned.split("^XA", 1)[1] == plain.split("^XA", 1)[1]
+    tuned_body = tuned.split("^XA", 1)[1].replace("^MTD\n^PR2\n", "", 1)
+    assert tuned_body == plain.split("^XA", 1)[1]
 
 
 # ── how many ─────────────────────────────────────────────────────────────────
