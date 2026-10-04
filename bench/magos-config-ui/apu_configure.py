@@ -16,13 +16,17 @@ Endpoints:
   GET  /dshb/v1/system  -> {swComponents, ntpAutomatic, ntpServer, timezone, users}
   POST /dshb/v1/system  {"ntpAutomatic","ntpServer","timezone"}  -> NTP + timezone
 
-  POST /apu/v1/settings {"radars":[{"radar_id","remote_base_url","name"},...]}
+  POST /apu/v1/settings {"radars":[{"radar_id","remote_base_url","name",
+                                    "range_gates","detector_threshold"},...]}
                         -> assign ALL controlled radars in one call (firmware
                            3.1.2+; replaces the old single-radar /phoenix_ip).
                            radar_id (e.g. "radar_0") is used as instanceId in
                            MASS. remote_base_url must be a FULL URL
                            ("http://192.168.88.50") — a bare IP is rejected
-                           with a pydantic url_parsing error.
+                           with a pydantic url_parsing error. range_gates and
+                           detector_threshold are sent as null, which is how
+                           the dashboard disables "Range Gates" and "Detector
+                           Threshold" for a radar.
   GET  /apu/v1/settings -> the same object, for reading the assignment back
                            (see APUClient.get_radars; treated as absent on
                            anything that doesn't answer with it).
@@ -232,19 +236,24 @@ class APUClient(MagosHttpClient):
 
     # --- controlled radars (firmware 3.1.2+) ---------------------------------
     def set_radars(self, radars: list[dict]) -> None:
-        """Assign ALL the APU's controlled radars in one call. Each entry is
+        """Assign ALL the APU's controlled radars in one call, with "Range
+        Gates" and "Detector Threshold" disabled on each. Each entry is
         {"radar_id","ip","name"}; POSTing the array replaces any previous
         assignment (the old single-radar /phoenix_ip is gone in 3.1.2)."""
         self._refuse_mutation("reassign the controlled radars")
         body = {"radars": [{"radar_id": r["radar_id"],
                             "remote_base_url": radar_base_url(r["ip"]),
-                            "name": r["name"]} for r in radars]}
+                            "name": r["name"],
+                            "range_gates": None,
+                            "detector_threshold": None} for r in radars]}
         r = self._post(f"{self.apu_base}/settings", json=body)
         if r.status_code not in (200, 204):
             raise MagosError(f"apu settings (controlled radars) update failed "
                              f"(HTTP {r.status_code}): {r.text[:300]}")
         log.info("Controlled radars set: %s.",
                  ", ".join(f"{x['radar_id']}={x['ip']}" for x in radars))
+        log.info("Range Gates and Detector Threshold disabled on %s.",
+                 ", ".join(x["radar_id"] for x in radars))
 
     def get_radars(self) -> Optional[list]:
         """The radars this APU is currently assigned to control, or None when

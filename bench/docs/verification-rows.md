@@ -189,13 +189,14 @@ error naming the credentials instead, which is louder than a red row.
 
 ## Magos APU
 
-The same builders, plus the two things only an APU has. Its firmware, timezone,
+The same builders, plus the things only an APU has. Its firmware, timezone,
 NTP, clock and networking rows are the radar's, read off the same dashboard API.
 
 | Row | Evidence | Class |
 | --- | --- | --- |
 | `firmware` | `/systemStatus`'s `softwareVersion` against the 3.1.2 floor the multi-radar assignment needs. A **row** on a verify pass, where a configure run refuses the unit outright: a finished APU on old firmware is a QA finding, and declining to look at it is not reporting it. | effect-based |
 | `controlled radars` | `GET /apu/v1/settings` — the assignment `set_radars` wrote — compared as a set against the radars in the configure record, since the firmware may hand the array back in any order. Confirmed answering on 3.1.2-rc5; amber on firmware where it doesn't. | read-back, degrades |
+| `range gates / detector threshold` | The same `GET /apu/v1/settings`: `range_gates` and `detector_threshold` must be `null` (disabled — what `set_radars` writes) on every radar entry; the row names each radar and field still set. Amber when the settings cannot be read or no radars were assigned. | read-back, degrades |
 | `reached at`, `NTP server`, `timezone`, `static IP`, `netmask`, `gateway`, `DNS` | As the radar table above. | see above |
 
 ## PLANET IGS-4215 PoE switch

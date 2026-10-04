@@ -297,6 +297,38 @@ def radars_row(client: APUClient, expected_radars: list) -> dict:
             "ok": sorted(hosts) == sorted(want)}
 
 
+RADAR_FILTER_FIELDS = (("range_gates", "Range Gates"),
+                       ("detector_threshold", "Detector Threshold"))
+
+
+def radar_filters_row(client: APUClient, expected_radars: list) -> dict:
+    """"Range Gates" and "Detector Threshold" are disabled (null) on every
+    radar the APU controls. Read-back off the same settings object
+    `set_radars` wrote."""
+    item = "range gates / detector threshold"
+    expected = "disabled on every controlled radar"
+    if not expected_radars:
+        return {"item": item, "expected": expected,
+                "actual": "not checked (no radars were assigned)", "ok": None}
+    got = client.get_radars()
+    if got is None:
+        return {"item": item, "expected": expected,
+                "actual": "this APU does not report its radar settings, so they "
+                          "cannot be re-read",
+                "ok": None}
+    enabled = []
+    for index, entry in enumerate(got):
+        if not isinstance(entry, dict):
+            continue
+        rid = entry.get("radar_id") or f"radar #{index}"
+        enabled += [f"{rid} {label}={entry[key]}"
+                    for key, label in RADAR_FILTER_FIELDS
+                    if entry.get(key) is not None]
+    return {"item": item, "expected": expected,
+            "actual": ", ".join(enabled) if enabled else "disabled",
+            "ok": not enabled}
+
+
 def apu_rows(client: APUClient, *, settings: dict, expected: dict,
              firmware: Optional[str] = None) -> list[dict]:
     """Every APU row except `reached at` and `prior run` (see `radar_rows`)."""
@@ -304,7 +336,8 @@ def apu_rows(client: APUClient, *, settings: dict, expected: dict,
     return ([firmware_row(firmware)]
             + system_rows(client, ntp=settings.get("ntp", ""),
                           tz=settings.get("timezone", ""))
-            + [radars_row(client, expected.get("radars") or [])]
+            + [radars_row(client, expected.get("radars") or []),
+               radar_filters_row(client, expected.get("radars") or [])]
             + network_rows(client, expected_ip=ip,
                            netmask=settings.get("netmask", ""),
                            gateway=settings.get("gateway", ""),
