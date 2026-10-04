@@ -81,8 +81,12 @@ class FakeAPU:
         self.ntp, self.ntp_automatic, self.tz = ntp, ntp_automatic, tz
         self.serial, self.firmware, self.password = serial, firmware, password
         self.radars = ([{"radar_id": r["radar_id"], "name": r["name"],
-                         "remote_base_url": f"http://{r['ip']}"} for r in RADARS]
+                         "remote_base_url": f"http://{r['ip']}",
+                         "range_gates": None, "mvdr_range_group_size": None,
+                         "mvdr_doppler_group_size": None,
+                         "detector_threshold": None} for r in RADARS]
                        if radars == "assigned" else radars)
+        self.posted: list[tuple[str, dict]] = []
         self.cookies = {"session": "abc"}
         self.headers: dict = {}
         self.verify = True
@@ -96,6 +100,8 @@ class FakeAPU:
     def _answer(self, method, url, body=None):
         path = "/" + url.split("//", 1)[-1].split("/", 1)[-1]
         self.requests.append((method, path))
+        if method == "POST":
+            self.posted.append((path, body))
 
         if path.endswith("/login"):
             ok = (body or {}).get("password") == self.password
@@ -285,6 +291,59 @@ def test_no_radars_assigned_by_the_configure_run_is_not_a_failure():
     check = row(result, "controlled radars")
     assert check["ok"] is None
     assert "no radars were assigned" in check["expected"]
+
+
+# ── range gates / detector threshold ─────────────────────────────────────────
+
+FILTERS = "range gates / detector threshold"
+
+
+def test_set_radars_disables_range_gates_and_detector_threshold():
+    # null is what the dashboard itself sends when both are switched off.
+    c = client()
+    c.set_radars(RADARS)
+    (path, body), = [(p, b) for p, b in c.s.posted if p.endswith("/apu/v1/settings")]
+    assert [(r["radar_id"], r["remote_base_url"]) for r in body["radars"]] == \
+        [("radar_0", "http://192.168.88.50"), ("radar_1", "http://192.168.88.51")]
+    for radar in body["radars"]:
+        assert "range_gates" in radar and radar["range_gates"] is None
+        assert "detector_threshold" in radar and radar["detector_threshold"] is None
+
+
+def test_disabled_range_gates_and_detector_threshold_pass():
+    c = client()
+    result = mod.verify_apu(c, settings=settings(), resolve=recorded(),
+                            reached=ASSIGNED)
+    check = row(result, FILTERS)
+    assert check["ok"] is True
+    assert check["actual"] == "disabled"
+
+
+@pytest.mark.parametrize("key,label", [("range_gates", "Range Gates"),
+                                       ("detector_threshold", "Detector Threshold")])
+def test_either_one_left_enabled_fails(key, label):
+    c = client()
+    c.s.radars[1][key] = 12
+    result = mod.verify_apu(c, settings=settings(), resolve=recorded(),
+                            reached=ASSIGNED)
+    check = row(result, FILTERS)
+    assert check["ok"] is False
+    assert check["actual"] == f"radar_1 {label}=12"
+    assert result["ok"] is False
+
+
+def test_filters_on_firmware_that_does_not_report_settings_are_amber():
+    c = client(radars=None)
+    result = mod.verify_apu(c, settings=settings(), resolve=recorded(),
+                            reached=ASSIGNED)
+    assert row(result, FILTERS)["ok"] is None
+
+
+def test_filters_not_checked_when_no_radars_were_assigned():
+    c = client()
+    result = mod.verify_apu(c, settings=settings(), resolve=recorded(radars=[]),
+                            reached=ASSIGNED)
+    assert row(result, FILTERS)["ok"] is None
 
 
 # ── the shared rows reach the APU too ────────────────────────────────────────

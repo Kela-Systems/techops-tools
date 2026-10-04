@@ -148,8 +148,9 @@ class ApuBench(MagosBench):
 
     def do_configure(self, target: dict, host: str,
                      avoid_serial: Optional[str]) -> dict:
-        """login → identity → firmware gate → NTP/TZ → controlled radars →
-        networking → re-read. Never raises.
+        """login → identity → firmware gate → NTP/TZ → controlled radars (with
+        Range Gates + Detector Threshold disabled) → networking → re-read.
+        Never raises.
 
         The re-read produces the same verification rows a Verify pass does
         (TEC-851), on a read-only client.

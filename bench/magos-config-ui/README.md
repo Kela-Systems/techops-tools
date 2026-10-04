@@ -28,7 +28,8 @@ APU side by side.
 2. Plug a device into the laptop. The page detects it on the factory IP.
 3. Pick the **channel** (0–3, radar) or which **APU** it is (0/1), or enter a
    manual IP, then click configure. The tool sets NTP + timezone and the static
-   IP (the APU also gets its two controlled radars assigned), verifies the
+   IP (the APU also gets its two controlled radars assigned, with "Range
+   Gates" and "Detector Threshold" disabled on each), verifies the
    device at its new address, and tells you to unplug it and plug in the next
    one.
 
