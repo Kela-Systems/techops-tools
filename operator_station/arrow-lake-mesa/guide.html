@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Arrow Lake Station Fix</title>
+<style>
+  :root { --ink:#1b1f24; --muted:#5b6570; --line:#d8dde3; --accent:#0b5cad; --bg:#ffffff;
+          --code:#f3f5f8; --ok:#1d7a3a; --warn:#9a5b00; --bad:#b3261e; }
+  @page { size: A4; margin: 16mm 15mm 16mm 15mm; }
+  body { font: 10.5pt/1.45 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink);
+         background: var(--bg); margin: 0; }
+  h1 { font-size: 19pt; margin: 0 0 2pt; }
+  .sub { color: var(--muted); margin: 0 0 12pt; }
+  h2 { font-size: 13pt; margin: 16pt 0 5pt; padding-bottom: 3pt; border-bottom: 1px solid var(--line);
+       color: var(--accent); break-after: avoid; }
+  h3 { font-size: 11pt; margin: 10pt 0 3pt; break-after: avoid; }
+  p, li { margin: 3pt 0; }
+  ul, ol { padding-left: 17pt; margin: 3pt 0; }
+  code { font: 9pt/1.4 ui-monospace, Menlo, Consolas, monospace; background: var(--code);
+         padding: 0 3pt; border-radius: 3px; }
+  pre { font: 8.8pt/1.45 ui-monospace, Menlo, Consolas, monospace; background: var(--code);
+        border: 1px solid var(--line); border-radius: 5px; padding: 6pt 8pt; margin: 4pt 0 6pt;
+        white-space: pre-wrap; word-break: break-all; break-inside: avoid; }
+  table { border-collapse: collapse; width: 100%; margin: 4pt 0 6pt; font-size: 9.6pt; break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 3pt 5pt; text-align: left; vertical-align: top; }
+  th { background: #eef2f6; }
+  .box { border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 4px;
+         padding: 6pt 9pt; margin: 6pt 0; break-inside: avoid; }
+  .warn { border-left-color: var(--warn); }
+  .bad { border-left-color: var(--bad); }
+  .ok { color: var(--ok); font-weight: 600; }
+  .w { color: var(--warn); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10pt; }
+</style>
+</head>
+<body>
+
+<h1>Arrow Lake operator stations: Mesa fix</h1>
+<p class="sub">TechOps support runbook · TEC-880 · tool: <code>techops-tools/operator_station/arrow-lake-mesa/arrow-lake-mesa.sh</code> · October 2026</p>
+
+<div class="box">
+<b>In one paragraph.</b> Operator stations with an Intel <b>Arrow Lake</b> GPU (PCI id <code>8086:7d67</code>)
+run our Ubuntu 22.04 image with Mesa 23.2.1, which does not support that GPU. Chrome and the desktop then
+draw everything on the CPU. The station runs close to its limit even when idle, and under load the
+screens freeze or lag and video stalls. <b>Rebooting does not help.</b> Installing a newer Mesa
+(25.x) moves the drawing back to the GPU. It needs no hardware change and no Ubuntu upgrade, and can be rolled back.
+</div>
+
+<h2>1. Is this station affected?</h2>
+<p>Signs on a station that needs the fix:</p>
+<ul>
+  <li>Frozen or slow screens, stuck video, or the kiosk relaunching, often on <b>busy, multi-screen</b> stations.</li>
+  <li><code>lspci</code> shows <code>8086:7d67</code>, and Mesa is <code>23.2.1</code>.</li>
+  <li>The desktop compositor (<code>gnome-shell</code>) uses ~70–80% of a CPU core, and CPU pressure is 4–18% at idle.</li>
+</ul>
+<p>Fleet scan, 4–5 Oct 2026 (stations reachable over SSH):</p>
+<table>
+  <tr><th>Status</th><th>Stations</th></tr>
+  <tr><td><b>Affected, not fixed (13)</b></td><td>kela-fob-04 (17.6% pressure, heaviest), fob-05, fob-08, fob-10, fob-11, fob-20, ogmar80 (both stations), palmam-bolem-103, palmam-bolem-104, palmam-einav, palmam-golan, palmam-negev</td></tr>
+  <tr><td><span class="ok">Fixed with Mesa 25 (2)</span></td><td>kela-tlv-dev-03 (pilot), kela-fob-06</td></tr>
+  <tr><td>Known Arrow Lake from tickets</td><td>kela-fob-21, kela-kanaf / kanaf-operator-3, afbp-ovda</td></tr>
+  <tr><td>Not affected: older GPU <code>8086:a780</code>, driver OK</td><td>kela-fob-12, 14, 15, 16, 17, 18, 19, 27</td></tr>
+  <tr><td>Not checked yet</td><td>kela-fob-01, 03, 07, 09, fob-96-hohit-hub, bolem-103 rugged station</td></tr>
+</table>
+<p><b>Priority</b>, by complaint count since July: <b>fob-08</b> (14 tickets), <b>fob-10</b> (11), <b>fob-04</b> (8), <b>fob-21</b> (9), then the rest.
+Arrow Lake sites file ~3× more screen and video tickets per site than sites with a working driver.</p>
+
+<h2>2. Before you start</h2>
+<ul>
+  <li><b>Coordinate with the site.</b> The final step reboots the station: <b>all its screens go dark for ~2–3 minutes</b>.
+      Pick a quiet moment and tell the position.</li>
+  <li>You need SSH to <code>KelaAdmin@&lt;site&gt;-operator</code> (over Tailscale) and the KelaAdmin password
+      (1Password). The tool never stores or passes the password; ssh/sudo prompt for it.</li>
+  <li>Get the tool: <code>git clone</code> / <code>git pull</code> the <code>techops-tools</code> repo, then
+      <code>cd operator_station/arrow-lake-mesa</code>. It runs on macOS or Linux (bash, ssh).</li>
+</ul>
+
+<h2>3. The fix: three commands</h2>
+<h3>Step 1: snapshot before (read-only, optional but recommended)</h3>
+<pre>./arrow-lake-mesa.sh check kela-fob-08-operator</pre>
+<p>Prints the GPU, Mesa version, CPU pressure, compositor/Xorg/Chrome CPU and Chrome's own GPU report, and saves
+it under <code>./arrow-lake-reports/</code>. The last line tells you whether the station is a candidate.</p>
+
+<h3>Step 2: apply (installs Mesa, then asks before rebooting)</h3>
+<pre>./arrow-lake-mesa.sh apply kela-fob-08-operator</pre>
+<ol>
+  <li>Saves a <b>before</b> snapshot automatically.</li>
+  <li>Refuses unless the GPU is <code>8086:7d67</code>, the OS is 22.04 and the kernel driver is <code>i915</code>. It does nothing if the station is already fixed.</li>
+  <li>Asks for the KelaAdmin password (sudo), adds <code>ppa:kisak/turtle</code> and upgrades the Mesa packages. This runs non-interactively, so the
+      "Daemons using outdated libraries" dialog does not appear.</li>
+  <li>Asks <i>"Reboot now? [y/N]"</i>. Answer <b>y</b> when the site is ready.</li>
+</ol>
+
+<h3>Step 3: verify (~5 minutes after the reboot)</h3>
+<pre>./arrow-lake-mesa.sh verify kela-fob-08-operator</pre>
+<p>Takes an <b>after</b> snapshot, prints it next to the <b>before</b>, and checks:</p>
+<table>
+  <tr><th>Check</th><th>Pass when</th></tr>
+  <tr><td>Mesa</td><td>version contains <code>kisak</code> (e.g. <code>25.0.7~kisak3~j</code>)</td></tr>
+  <tr><td>Chrome renderer</td><td>contains <code>Mesa Intel(R) Graphics (ARL)</code> (not <code>llvmpipe</code> / SwiftShader)</td></tr>
+  <tr><td>GPU compositing</td><td><code>enabled</code></td></tr>
+  <tr><td>Desktop compositor (gnome-shell)</td><td>under 20% CPU (was ~70–80%)</td></tr>
+  <tr><td>Kiosk</td><td>at least one C2 tab is open</td></tr>
+</table>
+<p>It ends with <span class="ok">RESULT: PASS</span> or <span class="w">RESULT: FAIL</span>. If the station has been up
+under 5 minutes it says so; run <code>verify</code> again a few minutes later.</p>
+
+<h2>4. What good looks like</h2>
+<div class="two">
+<table>
+  <tr><th colspan="3">kela-tlv-dev-03 (1 screen)</th></tr>
+  <tr><th></th><th>Before</th><th>After</th></tr>
+  <tr><td>gnome-shell</td><td>81%</td><td class="ok">3%</td></tr>
+  <tr><td>Xorg</td><td>16%</td><td class="ok">3–4%</td></tr>
+  <tr><td>Chrome GPU process</td><td>58%</td><td>30%</td></tr>
+  <tr><td>Load</td><td>3.9</td><td>~1.7–2</td></tr>
+  <tr><td>Renderer</td><td>software</td><td class="ok">Mesa Intel (ARL)</td></tr>
+</table>
+<table>
+  <tr><th colspan="3">kela-fob-06 (3 screens, 7 streams)</th></tr>
+  <tr><th></th><th>Before</th><th>After</th></tr>
+  <tr><td>gnome-shell</td><td>76%</td><td class="ok">4%</td></tr>
+  <tr><td>Xorg</td><td>20%</td><td class="ok">&lt;5%</td></tr>
+  <tr><td>CPU pressure</td><td>13–14%</td><td class="ok">~5.5%</td></tr>
+  <tr><td>Chrome (all)</td><td>~163%</td><td>~172%</td></tr>
+  <tr><td>Load</td><td>5.5</td><td>5.2</td></tr>
+</table>
+</div>
+<div class="box warn">
+<b>Expected limit:</b> the drawing load disappears, but <b>video decoding stays on the CPU</b>, because there is no
+Arrow Lake video driver for 22.04. That is why Chrome's own CPU barely changes on busy multi-screen
+stations. Hardware video decode comes with the 24.04 image (TEC-910). On the heaviest stations, also reduce load where the
+site agrees: force 1080p (<code>KIOSK_PREFERRED_RESOLUTION</code>), use the 2D map, keep one screen on camera,
+and disconnect unused screens.
+</div>
+
+<h2>5. If something goes wrong: rollback</h2>
+<pre>./arrow-lake-mesa.sh rollback kela-fob-08-operator</pre>
+<p>Removes the PPA, returns to Ubuntu's own Mesa 23.2.1 with <code>ppa-purge</code>, and asks before rebooting. Use it if the
+screens come back black, the kiosk does not start, or <code>verify</code> fails twice.</p>
+
+<h2>6. Doing it by hand (if the tool can't be used)</h2>
+<p class="muted">The same steps, run from your laptop. Each asks for the KelaAdmin password.</p>
+<h3>Before: read-only metrics</h3>
+<pre>ssh KelaAdmin@&lt;station&gt; 'lspci -nn | grep -i vga; lspci -k -s 00:02.0 | grep "driver in use"; dpkg-query -W libgl1-mesa-dri; head -1 /proc/pressure/cpu; uptime; top -b -n 2 -d 5 -w 200 | awk "/^top -/{n++} n==2" | grep -E "gnome-shell|Xorg|chrome" | head'</pre>
+<h3>Install</h3>
+<pre>ssh -t KelaAdmin@&lt;station&gt; 'sudo add-apt-repository -y ppa:kisak/turtle &amp;&amp; sudo apt-get update -q &amp;&amp; sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y -q --only-upgrade libgl1-mesa-dri libglx-mesa0 libegl-mesa0 libgbm1 mesa-vulkan-drivers'</pre>
+<p class="muted">One command on one line. Copy it whole.</p>
+<p>If a "Daemons using outdated libraries" dialog still appears: leave only <code>fwupd</code> ticked and press
+Enter on <b>&lt;Ok&gt;</b>. <b>Do not</b> tick <code>gdm3</code> (it would log the operator out mid-install).
+A line saying <code>packagekit.service is masked</code> is harmless.</p>
+<h3>Reboot (coordinate first)</h3>
+<pre>ssh -t KelaAdmin@&lt;station&gt; 'sudo reboot'</pre>
+<h3>After (~5 min): same read-only metrics as "Before". Success means the new Mesa version, gnome-shell well under 20%,
+and Xorg a few percent.</h3>
+<p>Chrome's own view: on the station screen (AnyDesk) open <code>chrome://gpu</code>. <i>Compositing</i> and
+<i>Rasterization</i> should say <b>Hardware accelerated</b>, and the GL renderer should be "Mesa Intel(R) Graphics (ARL)".</p>
+<h3>Rollback</h3>
+<pre>ssh -t KelaAdmin@&lt;station&gt; 'sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y -q ppa-purge &amp;&amp; sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l ppa-purge -y ppa:kisak/turtle'</pre>
+<p>Then reboot, after telling the site, with the same command as above: <code>ssh -t KelaAdmin@&lt;station&gt; 'sudo reboot'</code>.</p>
+
+<h2>7. Troubleshooting</h2>
+<table>
+  <tr><th>Symptom</th><th>What to do</th></tr>
+  <tr><td><code>apply</code> refuses: GPU not 7d67</td><td>Not an Arrow Lake station. This fix does not apply; follow the operator-station runbook.</td></tr>
+  <tr><td><code>apply</code> refuses: driver not i915</td><td>The kernel isn't driving the GPU. Don't apply; escalate to TechOps (it may need <code>i915.force_probe=7d67</code>).</td></tr>
+  <tr><td>Screens black after the reboot</td><td>Wait 5 minutes. If still black: <code>rollback</code>, then escalate.</td></tr>
+  <tr><td><code>verify</code> can't read Chrome's GPU report</td><td>The kiosk is not up yet, or Chrome's DevTools port is off. Wait and re-run, or check <code>chrome://gpu</code> on screen.</td></tr>
+  <tr><td>Video tiles drop all at once and C2 shows its connection error, then recovers</td><td>A different problem: the station loses its connection to the server (network/cable/switch).
+      Mesa does not fix it. Report it separately with the time it happened.</td></tr>
+  <tr><td>Still slow on a 3–4 screen station after PASS</td><td>Expected video-decode load (see §4). Apply the load reductions and report the station.</td></tr>
+</table>
+
+<h2>8. After the fix</h2>
+<ul>
+  <li>Add a note to the ticket: station, time, Mesa version, and the <code>verify</code> result (paste the output or attach the files from <code>arrow-lake-reports/</code>).</li>
+  <li>The incident-agent's station check still flags "Arrow Lake, no GPU driver" by GPU model alone, until it learns to read the Mesa version. Ignore that flag on fixed stations.</li>
+  <li>Fleet tracking: TEC-880 (this fix), TEC-910 (24.04 image, where video decode also gets fixed).</li>
+</ul>
+
+</body>
+</html>
