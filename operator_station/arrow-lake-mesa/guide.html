@@ -58,22 +58,33 @@ screens freeze or lag and video stalls. <b>Rebooting does not help.</b> Installi
 <table>
   <tr><th>Status</th><th>Stations</th></tr>
   <tr><td><b>Affected, not fixed (13)</b></td><td>kela-fob-04 (17.6% pressure, heaviest), fob-05, fob-08, fob-10, fob-11, fob-20, ogmar80 (both stations), palmam-bolem-103, palmam-bolem-104, palmam-einav, palmam-golan, palmam-negev</td></tr>
-  <tr><td><span class="ok">Fixed with Mesa 25 (2)</span></td><td>kela-tlv-dev-03 (pilot), kela-fob-06</td></tr>
-  <tr><td>Known Arrow Lake from tickets</td><td>kela-fob-21, kela-kanaf / kanaf-operator-3, afbp-ovda</td></tr>
+  <tr><td><span class="ok">Fixed with Mesa 25 (3)</span></td><td>kela-tlv-dev-03 (pilot), kela-fob-06, kela-fob-21</td></tr>
+  <tr><td>Known Arrow Lake from tickets</td><td>kela-kanaf / kanaf-operator-3, afbp-ovda</td></tr>
   <tr><td>Not affected: older GPU <code>8086:a780</code>, driver OK</td><td>kela-fob-12, 14, 15, 16, 17, 18, 19, 27</td></tr>
   <tr><td>Not checked yet</td><td>kela-fob-01, 03, 07, 09, fob-96-hohit-hub, bolem-103 rugged station</td></tr>
 </table>
-<p><b>Priority</b>, by complaint count since July: <b>fob-08</b> (14 tickets), <b>fob-10</b> (11), <b>fob-04</b> (8), <b>fob-21</b> (9), then the rest.
+<p><b>Priority</b>, by complaint count since July: <b>fob-08</b> (14 tickets), <b>fob-10</b> (11), <b>fob-04</b> (8), then the rest. fob-21 (9) is done.
 Arrow Lake sites file ~3× more screen and video tickets per site than sites with a working driver.</p>
 
 <h2>2. Before you start</h2>
 <ul>
   <li><b>Coordinate with the site.</b> The final step reboots the station: <b>all its screens go dark for ~2–3 minutes</b>.
       Pick a quiet moment and tell the position.</li>
-  <li>You need SSH to <code>KelaAdmin@&lt;site&gt;-operator</code> (over Tailscale) and the KelaAdmin password
-      (1Password). The tool never stores or passes the password; ssh/sudo prompt for it.</li>
+  <li>You need SSH to <code>KelaAdmin@&lt;site&gt;-operator</code> (over Tailscale) and the KelaAdmin station password.
+      The tool never stores or passes it; ssh and sudo ask for it, 2–3 times per run.
+      <ul>
+        <li><b>Paste the password, don't type it,</b> and make sure the keyboard is on <b>English</b>. A Hebrew layout makes
+            every character wrong. Typing <code>y</code> on Hebrew gives <code>ט</code>.</li>
+        <li>If the 1Password value is rejected, use the station password Tobee uses (known to work fleet-wide):
+            <code>ssh -t -i ~/.ssh/tobee.pem ubuntu@tobee "sudo grep '^TOBEE_OPERATOR_PASSWORD=' /opt/tobee/.env | cut -d= -f2-"</code>.
+            After several wrong tries the station may refuse logins for a minute or so.</li>
+      </ul></li>
   <li>Get the tool: <code>git clone</code> / <code>git pull</code> the <code>techops-tools</code> repo, then
-      <code>cd operator_station/arrow-lake-mesa</code>. It runs on macOS or Linux (bash, ssh).</li>
+      <code>cd operator_station/arrow-lake-mesa</code> and <b>run every command from that folder</b>. That's where it keeps the
+      before/after snapshots that <code>verify</code> compares. It runs on macOS or Linux (bash, ssh).</li>
+  <li>If ssh warns <b>REMOTE HOST IDENTIFICATION HAS CHANGED</b>, the station was reinstalled. Don't bypass it on your own;
+      ask TechOps to confirm the new fingerprint first. Then <code>ssh-keygen -R &lt;station&gt;</code> and reconnect.</li>
+  <li>Slow sites download ~27 MB: fob-21 took ~9 minutes at 52 kB/s. That's normal, not a hang.</li>
 </ul>
 
 <h2>3. The fix: three commands</h2>
@@ -127,6 +138,8 @@ under 5 minutes it says so; run <code>verify</code> again a few minutes later.</
   <tr><td>Load</td><td>5.5</td><td>5.2</td></tr>
 </table>
 </div>
+<p>kela-fob-21 (2 screens), 40 min after the fix: gnome-shell <span class="ok">3.4%</span>, Xorg <span class="ok">2.5%</span>,
+CPU pressure <span class="ok">3.5%</span>, both screens on C2, no kiosk relaunches.</p>
 <div class="box warn">
 <b>Expected limit:</b> the drawing load disappears, but <b>video decoding stays on the CPU</b>, because there is no
 Arrow Lake video driver for 22.04. That is why Chrome's own CPU barely changes on busy multi-screen
