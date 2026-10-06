@@ -1,0 +1,773 @@
+syntax = "proto3";
+
+package kela.ext.pathfinder.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+import "kela/types/v1alpha1/types.proto";
+
+// Sightec visual-GPS navigation status, as assembled by the Pathfinder
+// integration. `navigation_ok` gates the driver's preflight and the error and
+// warning labels already drive operator notices; this carries the raw status so
+// a degraded fix can be diagnosed rather than only its consequences.
+message NavStatus {
+  bool navigation_ok = 1;
+  repeated string active_errors = 2;
+  repeated string active_warnings = 3;
+  optional double confidence = 4;
+  optional uint32 custom_mode = 5;
+  optional uint64 uptime_ms = 6;
+  optional google.protobuf.Timestamp updated_at = 7;
+}
+
+// Pathfinder drone state that no core asset field owns. Shared by the tactical
+// and nest deployments — both run the same integration and drone.
+message DroneState {
+  optional NavStatus nav_status = 1;
+}
+
+// Pathfinder gimbal-camera state that no core sensor field owns. Nested on the
+// camera sensor, never on the asset.
+message CameraState {
+  // The camera's onboard ATR is running (bounding boxes on the feed). Unset on
+  // cameras with no onboard ATR.
+  optional bool detection_active = 1;
+  // Imaging mode the camera is running in. Reuses the command's enum so the
+  // commanded mode and the reported mode cannot drift. Unset until the camera
+  // reports one.
+  optional kela.types.v1alpha1.CameraOperatingMode system_mode = 2;
+}
+
+// EntityAsset what we display to the user
+message VtolFlightSettings {
+  optional kela.types.v1alpha1.ValueRange loiter_radius_m = 1;
+  optional kela.types.v1alpha1.ValueRange airspeed_cruise_mps = 2;
+  optional kela.types.v1alpha1.ValueRange vtol_takeoff_altitude = 3;
+  optional kela.types.v1alpha1.ValueRange qrtl_altitude = 4;
+  // Above the takeoff/home field (AFL), not HAE.
+  optional kela.types.v1alpha1.ValueRange waypoint_altitude = 5;
+  optional double target_airspeed_mps = 6;
+}
+
+// Consolidated VTOL-specific state reported by drone integrations.
+//
+// Per-check booleans (navigation_operational, ekf_healthy, etc.) follow
+// a three-state contract via `optional`:
+//   - unset  → check was skipped / not applicable
+//   - false  → check failed
+//   - true   → check passed
+message VtolState {
+  // Configurable flight parameters (loiter radius, airspeed, RTL altitude, etc.)
+  optional VtolFlightSettings flight_settings = 1;
+  // Autopilot flight mode string (e.g. "GUIDED", "AUTO", "RTL", "LOITER")
+  optional string flight_controller_mode = 2;
+  // navigation system is operational
+  optional bool navigation_operational = 3;
+  // Extended Kalman Filter convergence — true when attitude/position estimates are reliable
+  optional bool ekf_healthy = 4;
+  // Whether the geofence is enabled
+  optional bool fence_enabled = 5;
+  // Whether the terrain is active
+  optional bool terrain_enabled = 6;
+  // Whether the arming check is enforced
+  optional bool arming_check_enforced = 7;
+  // Status of the ready to arm check
+  optional bool ready_to_arm = 8;
+  // Recent pre-arm error messages
+  repeated string last_prearm_errors = 9 [deprecated = true];
+  // First safety waypoint after clearing the launch site
+  optional kela.types.v1alpha1.Waypoint exit_waypoint = 10;
+  // Battery voltage is above the configured minimum
+  optional bool battery_ok = 11;
+  // Home position has been set
+  optional bool home_position_set = 12;
+  // Operator has control
+  optional bool operator_has_control = 13;
+  // Airspeed reading in preflight
+  optional double calibration_speed_mps = 14;
+  // FCU arming state
+  optional bool armed = 15;
+  // Navigation confidence
+  optional kela.types.v1alpha1.ValueRange navigation_confidence = 16;
+  // Live status for an active or recently completed landing reposition session.
+  optional VtolLandingRepositionState landing_reposition = 17;
+  // EKF navigation source state (active source + independent per-source readings).
+  optional VtolEkfSourceState ekf_source = 18;
+  // Raw-GPS origin spoof check (pre-arm, on-ground validation of the first
+  // GPS fix against the operator-set home/origin).
+  optional GpsSpoofCheckState gps_spoof_check = 19;
+  // Canonical reasons the integration would currently reject Takeoff or an
+  // on-ground GoToPosition (point-and-hold). Empty means flight-ready.
+  repeated kela.types.v1alpha1.TranslatableText flight_readiness_blockers = 20;
+  // Telemetry-confirmed outcomes for the current or most recent Set Home
+  // attempt. Empty before the first attempt and after an FCU power cycle.
+  repeated VtolSetHomeStepState set_home_steps = 21;
+  // Structured, translatable pre-arm failures from the integration preflight
+  // monitor. Replaces last_prearm_errors.
+  repeated kela.types.v1alpha1.TranslatableText prearm_failures = 22;
+  // Live status for an active or recently ended fly-by-camera session.
+  optional VtolFlyByCameraState fly_by_camera = 23;
+  // How C2 should interpret physical game-controller input while the
+  // operator controls this asset; distinct from flight_controller_mode
+  // (the autopilot flight mode).
+  ControllerMode controller_mode = 24;
+  // Disarm availability, owned by the integration.
+  optional VtolDisarmState disarm = 25;
+  // Point most recently staged by kela.asset.v1alpha1.SetEmergencyLandingPosition.
+  // Unset means none is staged and Land would come down at the current position.
+  // Staged intent only: it does not imply the home position has moved.
+  optional kela.types.v1alpha1.Position emergency_landing_position = 26;
+  // Coarse return/landing phase, derived by the integration from the autopilot
+  // flight mode. C2 renders it (the RTL sonar ping, return affordances) and
+  // must never re-derive it from flight_controller_mode strings — the mode
+  // vocabulary is integration-internal. UNSPECIFIED means the integration has
+  // not published a verdict (older driver, or no FCU mode yet) and is treated
+  // as unknown, never as NOT_RETURNING.
+  VtolReturnPhase return_phase = 27;
+  // Coarse takeoff-readiness verdict — the same decision the integration's own
+  // takeoff sequence enforces (ready_to_fly). flight_readiness_blockers and
+  // prearm_failures stay the detail; this is the aggregate so C2 never
+  // re-assembles it from the armed bit and blocker lists. UNSPECIFIED is
+  // treated as not-yet-known, never as ready.
+  VtolFlightReadinessStatus flight_readiness_status = 28;
+  // Whether Set Home would be accepted right now, and why not. set_home_steps
+  // stays the record of what an attempt did; this is the verdict before one is
+  // made, so C2 can refuse the click instead of surfacing a refusal.
+  optional VtolSetHomeState set_home = 29;
+  // The raw-GPS posture the operator confirmed in preflight, as the integration
+  // recorded it. Distinct from ekf_source: this is whether the receiver is meant
+  // to be on, not which estimate the aircraft flies on. UNSPECIFIED means the
+  // operator has not chosen yet (or the integration predates this field) and
+  // must never be read as a choice to fly without GPS.
+  RawGps operator_raw_gps_mode = 30;
+  // Whether the aircraft is flying without a usable fix from its active
+  // navigation source. Absent means the integration has no verdict.
+  optional VtolDeadReckoning dead_reckoning = 31;
+  // Whether the wing and tail locks can be driven right now, and why not.
+  // The integration owns the verdict; C2 must not re-derive it from the armed
+  // bit, the asset state, or altitude — the same rule disarm follows.
+  optional VtolLockMechanismState lock_mechanism = 32;
+}
+
+// Whether the aircraft is navigating without a usable position fix from the
+// active navigation source — flying on dead reckoning until it returns.
+//
+// The integration owns every input: which source is active, whether the
+// aircraft is airborne, whether the flight phase has put the source above the
+// altitude where its reading becomes meaningful, and where the cut points on
+// its own confidence scale sit. C2 renders this verdict and derives none of
+// it — it can see no height above ground, so it could not reproduce the
+// altitude half at all.
+//
+// Advisory. Nothing switches navigation source on the operator's behalf, and
+// this never gates a command.
+message VtolDeadReckoning {
+  bool active = 1;
+  // Which condition put the aircraft here, for the operator. Set with active.
+  optional kela.types.v1alpha1.TranslatableText reason = 2;
+}
+
+// See VtolState.return_phase.
+enum VtolReturnPhase {
+  VTOL_RETURN_PHASE_UNSPECIFIED = 0;
+  VTOL_RETURN_PHASE_NOT_RETURNING = 1;
+  // RTL/QRTL — the aircraft is flying itself home.
+  VTOL_RETURN_PHASE_RETURNING = 2;
+  // QLAND — the final quad descent.
+  VTOL_RETURN_PHASE_LANDING = 3;
+}
+
+// See VtolState.flight_readiness_status.
+enum VtolFlightReadinessStatus {
+  VTOL_FLIGHT_READINESS_STATUS_UNSPECIFIED = 0;
+  VTOL_FLIGHT_READINESS_STATUS_NOT_READY = 1;
+  VTOL_FLIGHT_READINESS_STATUS_READY = 2;
+}
+
+// The flight controller's active steering target, mirrored from
+// POSITION_TARGET_GLOBAL_INT. Published only while a target is live; the whole
+// entry is dropped when the drone is not steering to one. The altitude is HAE
+// — the companion's own model is above-takeoff, and nothing resolves terrain
+// for it.
+message NavigationTarget {
+  kela.types.v1alpha1.Waypoint waypoint = 1;
+}
+
+// How C2 should interpret physical game-controller (gamepad / joystick)
+// input while the operator controls this asset. Declared by the driver on
+// VtolState; distinct from VtolState.flight_controller_mode (the autopilot
+// flight mode).
+//
+// UNSPECIFIED means the asset does not declare a mode and C2 keeps its
+// default controller behavior. Drivers that do declare a mode own the
+// precedence between values (e.g. an active landing-reposition session
+// supersedes camera control).
+enum ControllerMode {
+  CONTROLLER_MODE_UNSPECIFIED = 0;
+  // Controller input must not drive this asset right now.
+  CONTROLLER_MODE_DISABLED = 1;
+  // Controller input drives the camera (gimbal / zoom).
+  CONTROLLER_MODE_CAMERA = 2;
+  // Controller input drives landing-reposition nudges.
+  CONTROLLER_MODE_REPOSITION = 3;
+}
+
+// Outcome of one step in a multi-step operation (e.g. Set Home).
+enum StepStatus {
+  STEP_STATUS_UNSPECIFIED = 0;
+  STEP_STATUS_PENDING = 1;
+  STEP_STATUS_IN_PROGRESS = 2;
+  STEP_STATUS_OK = 3;
+  // The operation was accepted, but confirming telemetry did not arrive.
+  STEP_STATUS_UNCONFIRMED = 4;
+  STEP_STATUS_FAILED = 5;
+}
+
+// Lifecycle of a long-running multi-step sequence (see SequenceProgress).
+enum SequenceState {
+  SEQUENCE_STATE_UNSPECIFIED = 0;
+  // A step is actively executing.
+  SEQUENCE_STATE_RUNNING = 1;
+  // The sequence is blocked on a manual operator confirmation.
+  SEQUENCE_STATE_WAITING_OPERATOR = 2;
+  // Abort was requested; the sequence is winding down to a safe posture.
+  // Cancellation is cooperative, so this state can persist for a while.
+  SEQUENCE_STATE_ABORTING = 3;
+  // Terminal: the sequence was aborted.
+  SEQUENCE_STATE_CANCELED = 4;
+  // Terminal: a step failed; error_message carries the reason.
+  SEQUENCE_STATE_FAILED = 5;
+  // Terminal: all steps completed.
+  SEQUENCE_STATE_SUCCEEDED = 6;
+  // Terminal: completed, but some non-fatal checks degraded;
+  // error_message carries the warning summary.
+  SEQUENCE_STATE_SUCCEEDED_WITH_WARNINGS = 7;
+}
+
+// Live progress of a long-running, multi-step sequence an asset is
+// executing.
+message SequenceProgress {
+  // Driver-scoped identifier for this sequence run. Passed back verbatim
+  // in AbortSequence.
+  string sequence_id = 1;
+  // 1-based position of the current step within the sequence.
+  uint32 step_ordinal = 4;
+  // Total number of steps in the sequence.
+  uint32 step_count = 5;
+  SequenceState state = 6;
+  // The driver accepts AbortSequence for this sequence right now.
+  bool abortable = 8;
+  // The driver accepts an operator confirmation for the current step.
+  bool confirmable = 9;
+  // Operator-facing sequence name.
+  kela.types.v1alpha1.TranslatableText display_text = 10;
+  // Operator-facing label of the step currently executing.
+  kela.types.v1alpha1.TranslatableText current_step_text = 11;
+  // Populated when state is FAILED or SUCCEEDED_WITH_WARNINGS.
+  optional kela.types.v1alpha1.TranslatableText error_text = 12;
+}
+
+// The sequences an asset is executing right now. Published only while at
+// least one is live; the whole entry is dropped when none are.
+message ActiveSequences {
+  repeated SequenceProgress sequences = 1;
+}
+
+// ---------------------------------------------------------------------------
+// VTOL control tasks and published state
+//
+// Task payloads here are referenced by AssetTask / AssetCommand (task.proto,
+// command.proto); state messages are published on VtolState (asset.proto).
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Landing reposition
+// ---------------------------------------------------------------------------
+
+// Coordinate frame for VTOL landing reposition nudges.
+enum RepositionFrame {
+  REPOSITION_FRAME_UNSPECIFIED = 0;
+  // +x = North, +y = East in the local navigation frame.
+  REPOSITION_FRAME_LOCAL_NED = 1;
+  // +x = forward, +y = right relative to aircraft heading.
+  REPOSITION_FRAME_BODY_FRD = 2;
+}
+
+// Horizontal direction components for a landing reposition nudge.
+message Direction2D {
+  double x = 1;
+  double y = 2;
+}
+
+// Create a landing-reposition session. The driver returns/publishes a
+// server-generated session_id on the asset's VtolLandingRepositionState.
+message VtolLandingRepositionStart {
+  // Client-monotonically increasing sequence. Empty session_id on start;
+  // the integration accepts the seed and later nudges must advance it.
+  uint64 sequence = 1;
+}
+
+// Apply a short-lived motion command while a session is active.
+message VtolLandingRepositionNudge {
+  // Session ID returned by START / published in VtolLandingRepositionState.
+  string session_id = 1;
+  // Must be strictly greater than the last accepted sequence for the session.
+  uint64 sequence = 2;
+  RepositionFrame frame = 3;
+  // Non-zero direction vector. The integration normalizes before applying motion.
+  Direction2D direction = 4;
+  // Requested speed (m/s). The integration clamps to configured max (0.5) and
+  // hard absolute max (1.0). Zero is a valid neutral hold.
+  float speed_mps = 5;
+  // Per-nudge time-to-live in milliseconds. Expired nudges drop to QLOITER
+  // hold. Valid range is 50–2000; unset defaults to 400 on the integration.
+  optional int32 ttl_ms = 6;
+  // Normalized vertical direction on the nudge frame's down axis (+down, -up).
+  // Unset is equivalent to zero for compatibility with lateral-only clients.
+  optional float direction_z = 7;
+}
+
+// Exit repositioning and continue the vertical landing (QLAND).
+message VtolLandingRepositionStop {
+  string session_id = 1;
+  uint64 sequence = 2;
+}
+
+// Abort repositioning and release RC overrides without continuing landing.
+message VtolLandingRepositionAbort {
+  string session_id = 1;
+  uint64 sequence = 2;
+  // Integration abort action. Defaults to RELEASE_CONTROL when unset.
+  optional string action = 3;
+}
+
+// Operator-facing VTOL landing reposition control. One capability carries
+// START / NUDGE / STOP / ABORT actions so C2 and drivers share a single
+// lease-gated MOVE task.
+message VtolLandingReposition {
+  oneof action {
+    VtolLandingRepositionStart start = 1;
+    VtolLandingRepositionNudge nudge = 2;
+    VtolLandingRepositionStop stop = 3;
+    VtolLandingRepositionAbort abort = 4;
+  }
+}
+
+// Coarse C2-facing landing-reposition availability. Detailed flight modes,
+// FSM phases, and transition reasons stay integration-internal.
+enum VtolLandingRepositionStatus {
+  VTOL_LANDING_REPOSITION_STATUS_UNSPECIFIED = 0;
+  VTOL_LANDING_REPOSITION_STATUS_NOT_AVAILABLE = 1;
+  VTOL_LANDING_REPOSITION_STATUS_CAN_START = 2;
+  VTOL_LANDING_REPOSITION_STATUS_ACTIVE = 3;
+  VTOL_LANDING_REPOSITION_STATUS_LANDING_MANEUVER_ACTIVE = 4;
+}
+
+// Authoritative integration status for VTOL landing reposition, published by
+// the driver via PublishAsset / WatchAssets. C2 must not call the
+// integration's status REST endpoint directly.
+//
+// Deliberately minimal: every C2 affordance derives from `status` alone.
+// Flight modes, FSM phases, transition reasons and the AGL / link / age
+// diagnostics belong to the integration's event log. Publishing them here would
+// both invite C2 to reinterpret them and, for the monotonic age values, change
+// on every poll so that no publish-on-change gate can hold.
+message VtolLandingRepositionState {
+  optional string session_id = 1;
+  // Last sequence accepted by the integration for this session.
+  optional uint64 last_sequence = 2;
+  // Semantic availability for C2 prompts / Start affordances. Already accounts
+  // for the integration's minimum-altitude floor, so C2 must not gate its own
+  // Start affordance on altitude: the integration decides against the
+  // aircraft's rangefinder AGL, C2 could only approximate it.
+  VtolLandingRepositionStatus status = 3;
+  // Operator-facing reason that control ended unexpectedly.
+  optional kela.types.v1alpha1.TranslatableText control_loss = 4;
+  // Operator-facing reason a session ended as designed — reaching the altitude
+  // floor, where the landing simply continues on its own. Unset when the
+  // operator ended the session themselves, so C2 stays quiet about an action
+  // the operator just took. Carries the floor altitude in its translation
+  // params: the number belongs to the integration that enforces it.
+  optional kela.types.v1alpha1.TranslatableText release_notice = 5;
+  // Input-stream shaping for nudges, owned by the integration so clients carry
+  // no motion constants of their own. Hints only: the companion still clamps
+  // whatever arrives on the wire.
+  optional VtolLandingRepositionInputHints input_hints = 6;
+}
+
+// See VtolLandingRepositionState.input_hints.
+message VtolLandingRepositionInputHints {
+  // Cadence a client should repeat held-key nudges at.
+  optional uint32 send_interval_ms = 1;
+  // Speed a plain (unmodified) nudge requests.
+  optional double nominal_speed_mps = 2;
+  // Time-to-live a client should stamp on each nudge — long enough to bridge
+  // one missed send, short enough that a stalled stream stops the aircraft.
+  optional uint32 ttl_ms = 3;
+}
+
+// ---------------------------------------------------------------------------
+// EKF navigation source
+// ---------------------------------------------------------------------------
+
+// Navigation source feeding the flight controller's EKF position/velocity/yaw
+// estimate. Brand-neutral: integrations map OPTICAL to their concrete visual
+// navigation implementation.
+enum VtolEkfSource {
+  VTOL_EKF_SOURCE_UNSPECIFIED = 0;
+  // Raw GNSS receiver.
+  VTOL_EKF_SOURCE_GPS = 1;
+  // Optical/visual navigation (external vision system).
+  VTOL_EKF_SOURCE_OPTICAL = 2;
+}
+
+// Set the flight controller's active EKF navigation source. Expressed as a
+// desired target (not a toggle) so retries and concurrent requests are
+// idempotent. The driver reports success only after the FCU confirms the new
+// active source; switching never changes whether a source is powered/enabled.
+message SetVtolEkfSource {
+  VtolEkfSource source = 1;
+}
+
+// Independent state of one EKF navigation source, reported whether or not the
+// source is currently active. Consumers derive "alternative" as the non-active
+// source; a second designation is never persisted.
+message VtolEkfSourceReading {
+  VtolEkfSource source = 1;
+  // Authoritative FCU/device-reported enabled state. Unset means unknown,
+  // which is distinct from disabled — a missing position fix never implies
+  // the source is off.
+  optional bool enabled = 2;
+  // Latest position reported directly by this source, independent of the
+  // FCU's fused position output.
+  optional kela.types.v1alpha1.Position position = 3;
+  // When `position` was last updated. Consumers use this for staleness.
+  optional google.protobuf.Timestamp position_updated_at = 4;
+  // Source-specific quality metric (e.g. optical navigation confidence).
+  optional double confidence = 5;
+  // Whether this source is currently providing a usable, fresh navigation
+  // solution. Unset means health is unknown. This is distinct from `enabled`:
+  // an enabled source may be unhealthy (e.g. GPS without a fix or a stale
+  // optical-navigation heartbeat).
+  optional bool healthy = 6;
+  // Whether this reading sits below the integration's position-hold minimum.
+  // The integration owns the confidence scale and its cut points; C2 renders
+  // this bit and never compares raw confidence against a threshold of its
+  // own. Unset means the integration has no verdict (no confidence reading,
+  // or the concept does not apply to this source) — never "degraded".
+  optional bool position_hold_degraded = 7;
+}
+
+// Whether the operator may switch the navigation source right now, derived by
+// the integration from live device state. As with VtolFlyByCameraStatus, C2
+// gates its affordance on this alone and never re-derives it from arming
+// state, source enablement or flight modes — the integration is the only layer
+// that can see every blocker (a GPS held off after a failed origin check, for
+// one), so a frontend deriving its own answer can only get a different one.
+enum VtolEkfSourceSwapStatus {
+  VTOL_EKF_SOURCE_SWAP_STATUS_UNSPECIFIED = 0;
+  // Switching is refused right now; `unavailable_reason` says why.
+  VTOL_EKF_SOURCE_SWAP_STATUS_NOT_AVAILABLE = 1;
+  VTOL_EKF_SOURCE_SWAP_STATUS_CAN_SWAP = 2;
+  // A switch is commanded and awaiting FCU confirmation.
+  VTOL_EKF_SOURCE_SWAP_STATUS_SWITCHING = 3;
+}
+
+// EKF navigation source state published on VtolState by drone integrations.
+message VtolEkfSourceState {
+  // FCU-confirmed active source. UNSPECIFIED while unknown (e.g. after an FCU
+  // power cycle or link reconnect, before the FCU re-reports its source set).
+  VtolEkfSource active_source = 1;
+  // One record per known source.
+  repeated VtolEkfSourceReading sources = 2;
+  // True while a source switch has been commanded but the FCU has not yet
+  // confirmed the new active source. Raw telemetry: consumers gate the swap
+  // affordance on `swap_status`, never on this.
+  optional bool switching = 3;
+  // Whether the operator may switch to the non-active source right now.
+  // UNSPECIFIED means the integration has not published an answer (an older
+  // driver, or no telemetry yet) and must be treated as "not yet known" —
+  // never as permission.
+  VtolEkfSourceSwapStatus swap_status = 4;
+  // Why switching is refused. Set with NOT_AVAILABLE.
+  optional kela.types.v1alpha1.TranslatableText unavailable_reason = 5;
+  // Things the operator should know before switching but which never block it
+  // — the sources disagreeing on position, or low optical accuracy. Rendered
+  // in the confirmation; an empty list is the normal case.
+  repeated kela.types.v1alpha1.TranslatableText swap_cautions = 6;
+  // WGS84 distance between the two sources' latest positions, for the
+  // airborne swap confirmation. Unset when either reading lacks a position —
+  // C2 renders the number and never computes its own geodesic.
+  optional double sources_offset_meters = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Raw GPS posture and origin spoof check
+// ---------------------------------------------------------------------------
+
+// Operator posture for the raw GNSS receiver on VTOLs that establish their
+// EKF origin before enabling raw GPS.
+enum RawGps {
+  RAW_GPS_UNSPECIFIED = 0;
+  RAW_GPS_ENABLED = 1;
+  RAW_GPS_DISABLED = 2;
+}
+
+// Record the raw-GPS posture to apply after SetDroneHomePosition establishes
+// the EKF origin. This command does not itself change receiver state.
+message SetVtolGps {
+  RawGps mode = 1;
+}
+
+// Outcome of the driver's per-FCU-boot raw-GPS origin check. The driver
+// enables raw GPS on the ground after home/origin setup, compares the first
+// fix against operator intent, and disables GPS again on mismatch.
+enum GpsSpoofCheckStatus {
+  GPS_SPOOF_CHECK_STATUS_UNSPECIFIED = 0;
+  // A validation attempt is in progress (GPS enabled, awaiting fix/compare).
+  GPS_SPOOF_CHECK_STATUS_VALIDATING = 1;
+  // Validation completed without blocking flight readiness. `message`
+  // distinguishes a matched fix, operator-disabled GPS, or an externally
+  // established origin.
+  GPS_SPOOF_CHECK_STATUS_PASSED = 2;
+  // Validation reached an outcome that blocks or degrades flight readiness.
+  // `message` carries the operator-facing reason.
+  GPS_SPOOF_CHECK_STATUS_BLOCKED = 3;
+}
+
+// Raw-GPS origin spoof check state published on VtolState by drone
+// integrations. Reset to unset/UNSPECIFIED on driver restart and FCU power
+// cycle — consumers must treat unknown as "no live recommendation", never
+// act on stale state.
+message GpsSpoofCheckState {
+  GpsSpoofCheckStatus status = 1;
+  // Distance between the first GPS fix and the operator-set home intent.
+  optional double distance_m = 2;
+  // Mismatch threshold the check ran with.
+  optional double threshold_m = 3;
+  // When the check reached its current status.
+  optional google.protobuf.Timestamp checked_at = 4;
+  // Operator-facing detail for the current outcome.
+  optional kela.types.v1alpha1.TranslatableText message = 5;
+}
+
+// ---------------------------------------------------------------------------
+// FCU flight mode
+// ---------------------------------------------------------------------------
+
+// FCU flight modes an operator may command on the ground before arming.
+// Deliberately restricted to the quad hold modes; the integration rejects
+// anything else.
+enum VtolFcuMode {
+  VTOL_FCU_MODE_UNSPECIFIED = 0;
+  VTOL_FCU_MODE_QLOITER = 1;
+  VTOL_FCU_MODE_QHOVER = 2;
+}
+
+// Swap the FCU flight mode on the ground before arming. Rejected while armed
+// or in flight. The driver reports success only after the FCU's heartbeat
+// confirms the mode actually changed.
+message VtolSetFcuMode {
+  VtolFcuMode mode = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Disarm
+// ---------------------------------------------------------------------------
+
+// Disarm the motors. Ground-only: disarming in the air drops the aircraft.
+// The driver reports success only once the flight controller confirms the
+// motors are disarmed, and never force-disarms — a refusal from the flight
+// controller stands. There is deliberately no arm counterpart; arming
+// happens only inside the takeoff sequence.
+message VtolDisarm {}
+
+// Coarse C2-facing disarm availability. The integration owns this decision;
+// C2 must not derive it from the armed bit, the asset state, altitude, or
+// flight-mode strings.
+enum VtolDisarmStatus {
+  VTOL_DISARM_STATUS_UNSPECIFIED = 0;
+  // Motors are already inhibited — nothing to disarm.
+  VTOL_DISARM_STATUS_NOT_AVAILABLE = 1;
+  // Motors are live and the flight controller confirms the aircraft is down.
+  VTOL_DISARM_STATUS_CAN_DISARM = 2;
+  // Motors are live but the aircraft is not confirmed on the ground.
+  VTOL_DISARM_STATUS_BLOCKED = 3;
+}
+
+// Disarm availability published on VtolState by drone integrations.
+message VtolDisarmState {
+  VtolDisarmStatus status = 1;
+  // Operator-facing reason the control is blocked. Set only when BLOCKED.
+  optional kela.types.v1alpha1.TranslatableText blocked_reason = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Wing and tail lock
+// ---------------------------------------------------------------------------
+
+// Commanded position of the airframe's wing and tail locking servos.
+enum VtolLockMechanism {
+  VTOL_LOCK_MECHANISM_UNSPECIFIED = 0;
+  // Wings and tail held in the flight configuration.
+  VTOL_LOCK_MECHANISM_LOCKED = 1;
+  // Wings and tail released for folding, transport, or nest stowage.
+  VTOL_LOCK_MECHANISM_UNLOCKED = 2;
+}
+
+// Drive the wing and tail locking servos to `state`. Ground-only: the
+// integration rejects the command while armed or airborne.
+//
+// Expressed as a desired position rather than a toggle so a repeated press is
+// idempotent — the operator re-drives the servos to the position they already
+// asked for, which is the point of a mechanism with no position feedback.
+// Which servos move and the pulse widths that seat them are per-airframe
+// integration configuration and deliberately absent from the wire: C2 asks for
+// locked or unlocked and nothing more.
+message VtolSetLockMechanism {
+  VtolLockMechanism state = 1;
+}
+
+// Coarse C2-facing availability of the wing and tail locks. The integration
+// owns this decision; C2 must not derive it from the armed bit, the asset
+// state, altitude, or flight-mode strings.
+// There is no NOT_AVAILABLE: an airframe with no driveable locks, and an
+// integration that predates this field, both leave the optional message unset,
+// so a variant for it would only ever be a second way to say the same thing.
+enum VtolLockMechanismStatus {
+  VTOL_LOCK_MECHANISM_STATUS_UNSPECIFIED = 0;
+  // The aircraft is confirmed down and disarmed, so the locks can be driven.
+  VTOL_LOCK_MECHANISM_STATUS_CAN_DRIVE = 1;
+  // The locks exist but must not move right now.
+  VTOL_LOCK_MECHANISM_STATUS_BLOCKED = 2;
+}
+
+// Wing and tail lock availability published on VtolState by drone
+// integrations.
+//
+// Deliberately carries no current position. The mechanism has no feedback the
+// integration could publish, and what it holds between commands is decided by
+// the pilot's physical switch rather than by anything Kela sent — so a position
+// here would be a claim nothing backs. What a command actually achieved travels
+// as that command's own outcome.
+message VtolLockMechanismState {
+  VtolLockMechanismStatus status = 1;
+  // Operator-facing reason the control is blocked. Set only when BLOCKED.
+  optional kela.types.v1alpha1.TranslatableText blocked_reason = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Fly-by-camera
+// ---------------------------------------------------------------------------
+
+// Enter fly-by-camera. While the session is active the aircraft continuously
+// flies to wherever the camera's line of sight crosses the ground, refreshed
+// about once a second, and the operator steers by moving the camera. The driver
+// generates the session_id and publishes it on VtolFlyByCameraState.
+//
+// Starting does not change the flight mode; the aircraft enters GUIDED when the
+// first ground crossing is commanded. Altitude is NOT taken from the crossing —
+// the aircraft flies at the configured waypoint altitude, and a SetAltitude
+// task changes that altitude in flight without ending the session (the session
+// re-issues its current target at the new altitude).
+message VtolFlyByCameraStart {
+  // Client-monotonically increasing sequence, so a reconnecting client cannot
+  // regress the accepted watermark.
+  uint64 sequence = 1;
+}
+
+// Leave fly-by-camera and restore the flight mode the session started from.
+message VtolFlyByCameraStop {
+  // Session ID published in VtolFlyByCameraState.
+  string session_id = 1;
+  uint64 sequence = 2;
+}
+
+// Operator-facing fly-by-camera control. One capability carries START / STOP so
+// C2 and drivers share a single lease-gated MOVE task.
+//
+// There is deliberately no target action: the ground crossing comes from the
+// camera payload over MAVLink, which only the integration can see, so the
+// integration produces the targets itself. C2 turns the mode on and off.
+message VtolFlyByCamera {
+  oneof action {
+    VtolFlyByCameraStart start = 1;
+    VtolFlyByCameraStop stop = 2;
+  }
+}
+
+// Coarse C2-facing fly-by-camera state. As with landing reposition, flight
+// modes, FSM phases and transition reasons stay integration-internal.
+enum VtolFlyByCameraStatus {
+  VTOL_FLY_BY_CAMERA_STATUS_UNSPECIFIED = 0;
+  // The aircraft cannot enter the mode right now (on the ground, in a landing
+  // mode, no camera, RC has control). `unavailable_reason` says which.
+  VTOL_FLY_BY_CAMERA_STATUS_NOT_AVAILABLE = 1;
+  VTOL_FLY_BY_CAMERA_STATUS_CAN_START = 2;
+  // Session running and the aircraft is following the camera's ground crossing.
+  VTOL_FLY_BY_CAMERA_STATUS_ACTIVE = 3;
+  // Session running but the aircraft is holding position, because the camera's
+  // line of sight no longer crosses the ground (pointed at or above the horizon,
+  // stowed, handed to the RC pilot) or the payload stopped reporting. Following
+  // resumes on its own when the crossing comes back. `hold_reason` says which.
+  VTOL_FLY_BY_CAMERA_STATUS_HOLDING = 4;
+  // Session ended other than by operator request. `control_loss` says why.
+  VTOL_FLY_BY_CAMERA_STATUS_TERMINATED = 5;
+}
+
+// Authoritative integration status for fly-by-camera, published by the driver
+// via PublishAsset / WatchAssets.
+//
+// Deliberately minimal, for the reasons on VtolLandingRepositionState: every C2
+// affordance derives from `status`, and the three optional TranslatableText
+// fields exist only because a hold or a refusal is unintelligible to an operator
+// without a reason. The ground-crossing coordinate itself is not published — the
+// aircraft's own position and target already appear in telemetry, and the
+// crossing changes continuously, so it would defeat publish-on-change.
+message VtolFlyByCameraState {
+  optional string session_id = 1;
+  // Last sequence accepted by the integration for this session.
+  optional uint64 last_sequence = 2;
+  VtolFlyByCameraStatus status = 3;
+  // Why the session ended unexpectedly. Set with TERMINATED.
+  optional kela.types.v1alpha1.TranslatableText control_loss = 4;
+  // Why the aircraft is holding instead of following. Set with HOLDING.
+  optional kela.types.v1alpha1.TranslatableText hold_reason = 5;
+  // Why the mode cannot be entered. Set with NOT_AVAILABLE.
+  optional kela.types.v1alpha1.TranslatableText unavailable_reason = 6;
+}
+
+// ---------------------------------------------------------------------------
+// Set Home steps
+// ---------------------------------------------------------------------------
+
+message VtolSetHomeStepState {
+  // Stable machine identifier, never renamed for display-copy changes.
+  string step_id = 1;
+  kela.types.v1alpha1.TranslatableText label = 2;
+  StepStatus status = 3;
+  optional kela.types.v1alpha1.TranslatableText detail = 4;
+}
+
+// Coarse C2-facing Set Home availability. The integration owns this decision;
+// C2 must not derive it from its own record of the raw-GPS choice, the asset
+// state, or flight-mode strings. Several Set Home refusals are per-FCU-boot
+// integration state that is published nowhere else, so a frontend deriving its
+// own answer can only get a different one.
+enum VtolSetHomeStatus {
+  VTOL_SET_HOME_STATUS_UNSPECIFIED = 0;
+  // Setting home is not part of what C2 can offer right now — the aircraft is
+  // not on the ground.
+  VTOL_SET_HOME_STATUS_NOT_AVAILABLE = 1;
+  VTOL_SET_HOME_STATUS_CAN_SET_HOME = 2;
+  // On the ground but refused right now; `blocked_reason` says why.
+  VTOL_SET_HOME_STATUS_BLOCKED = 3;
+}
+
+// Set Home availability published on VtolState by drone integrations.
+message VtolSetHomeState {
+  // UNSPECIFIED means the integration has not published an answer (an older
+  // driver, or no telemetry yet) and must be treated as "not yet known" —
+  // never as permission.
+  VtolSetHomeStatus status = 1;
+  // Operator-facing reason the control is blocked. Set only when BLOCKED.
+  optional kela.types.v1alpha1.TranslatableText blocked_reason = 2;
+}

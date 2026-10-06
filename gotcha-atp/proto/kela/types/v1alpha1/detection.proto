@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package kela.types.v1alpha1;
+
+import "kela/types/v1alpha1/types.proto";
+
+// One class's score for a detection. Detectors in the RF-DETR family score
+// every class independently (sigmoid, not softmax), so the same box carries a
+// score for each class — e.g. an aerial target that is 0.51 drone and 0.34
+// bird. Consumers that reason about class ambiguity need both numbers, not
+// just the winner.
+message ClassScore {
+  string label = 1;
+  // Score for this class on this box, [0,1]. Independent of the other
+  // classes' scores: they do not sum to 1.
+  float score = 2;
+}
+
+// A detection of an object in an image, expressed in normalized image
+// coordinates. Lives in kela.types so it can be shared by both video-layer
+// frames (kela.media) and per-track snapshots (kela.track) without creating
+// a kela.media <-> kela.track package import cycle.
+message ObjectDetection {
+  repeated kela.types.v1alpha1.Point2D polygon = 1;
+  // Free text to describe the object
+  string label = 2;
+  // Confidence of the detection [0,1]
+  float confidence = 3;
+  // Unique ID for the detected object (if available)
+  optional string object_uid = 4;
+  // Per-class scores for this box, when the detector exposes them. `label` /
+  // `confidence` are the winning entry of this set; the rest are the runner-up
+  // hypotheses for the SAME box. Empty for detectors that only emit a winner
+  // (e.g. models that NMS on-device).
+  repeated ClassScore class_scores = 5;
+}

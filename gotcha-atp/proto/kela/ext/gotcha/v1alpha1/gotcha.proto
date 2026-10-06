@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package kela.ext.gotcha.v1alpha1;
+
+import "kela/asset/v1alpha1/asset.proto";
+
+// Health of the Gotcha unit's components that own no sensor of their own.
+//
+// Each radar is its own sensor and carries `Sensor.health`. The camera has a
+// single health spanning all of its video streams and the speaker has no
+// sensor at all, so both are reported at asset scope here rather than faking a
+// per-sensor granularity the source data does not have.
+message ComponentHealth {
+  kela.asset.v1alpha1.HealthStatus camera = 1;
+  kela.asset.v1alpha1.HealthStatus speaker = 2;
+}

@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package kela.archetype.v1alpha1;
+
+import "kela/archetype/v1alpha1/drone.proto";
+import "kela/archetype/v1alpha1/gimbal.proto";
+import "kela/archetype/v1alpha1/toggle.proto";
+
+// One archetype an asset or a sensor implements.
+//
+// A descriptor is addressed by the pair (name, archetype_kind), and the hub
+// rejects a publish in which that pair repeats across an asset and its sensors.
+// The name alone is not enough: asset-level and sensor-level archetype commands
+// share one control stream and carry no sensor id, so two sensors cannot both
+// advertise, say, a ptz_camera under the name "camera".
+message ArchetypeDescriptor {
+  string name = 1;
+  oneof archetype_kind {
+    kela.archetype.v1alpha1.ArchetypeToggle toggle = 2;
+    kela.archetype.v1alpha1.ArchetypeTwoAxisGimbal two_axis_gimbal = 3;
+    kela.archetype.v1alpha1.ArchetypePtzCamera ptz_camera = 4;
+    kela.archetype.v1alpha1.ArchetypeDrone drone = 5;
+    kela.archetype.v1alpha1.ArchetypeRovingCamera roving_camera = 6;
+  }
+}
+
+// A command targeting one archetype implemented by an asset or sensor.
+message ArchetypeCommand {
+  // Half of the address of the archetype this command targets: it matches
+  // ArchetypeDescriptor.name, while command_kind below matches that
+  // descriptor's archetype_kind. Both halves are needed, because one name may
+  // cover several kinds.
+  string archetype_name = 1;
+  oneof command_kind {
+    kela.archetype.v1alpha1.ArchetypeToggle.Command toggle = 2;
+    kela.archetype.v1alpha1.ArchetypeTwoAxisGimbal.Command two_axis_gimbal = 3;
+    kela.archetype.v1alpha1.ArchetypePtzCamera.Command ptz_camera = 4;
+    kela.archetype.v1alpha1.ArchetypeDrone.Command drone = 5;
+    kela.archetype.v1alpha1.ArchetypeRovingCamera.Command roving_camera = 6;
+  }
+}

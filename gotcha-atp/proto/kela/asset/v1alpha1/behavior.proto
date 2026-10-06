@@ -1,0 +1,414 @@
+// Behaviors are the common primitives for commands and tasks
+syntax = "proto3";
+
+package kela.asset.v1alpha1;
+
+import "kela/types/v1alpha1/types.proto";
+
+// Move a gimbal to absolute (azimuth, elevation) in degrees. The coordinate
+// frame is determined by the containing field: SensorTask.absolute_move and
+// SensorCommand.absolute_move are world ENU; SensorTask.absolute_device_axis_gimbal_move
+// is the camera's device frame (raw gimbal axes, no mounting orientation applied).
+message AbsoluteGimbalMove {
+  // Target azimuth in degrees
+  double azimuth_degrees = 1;
+  // Target elevation in degrees
+  double elevation_degrees = 2;
+  // Optional zoom factor to apply with the gimbal move.
+  // When set, drivers should apply the move and zoom as atomically as the device allows
+  // (e.g. as a single ONVIF AbsoluteMove, or as concurrent requests where native atomicity isn't available).
+  optional double zoom_factor = 3;
+  // Range to the target in metres. When set, the Hub also drives focus for
+  // this range from the sensor's focus model or default focus table, using
+  // the commanded zoom (or the current zoom when none is commanded). The task
+  // fails when the lens is not in MANUAL focus mode or the sensor has no
+  // focus source (see Sensor.focus_control).
+  optional double focus_range_m = 4;
+}
+
+message ContinuousGimbalMove {
+  // Normalized yaw speed (-1.0 to 1.0, where 1.0 is max speed for the device)
+  double yaw_speed = 1;
+  // Normalized pitch speed (-1.0 to 1.0, where 1.0 is max speed for the device)
+  double pitch_speed = 2;
+  // Duration to apply the speeds (seconds)
+  double duration_seconds = 3;
+}
+
+// Look at a position and attempt to maintain it
+message FixedLookAt {
+  types.v1alpha1.Position position = 1;
+  // Optional explicit zoom factor. When set, this value is used instead of
+  // the distance-based auto-zoom. Useful when the caller (e.g. drone mission)
+  // has a user-configured zoom preference.
+  optional double zoom_factor = 2;
+  // When true, the Hub also drives focus for the range from the sensor to
+  // `position`, under the same rules as AbsoluteGimbalMove.focus_range_m.
+  bool focus_on_target = 3;
+}
+
+message SetZoomFactor {
+  // Target zoom factor (between 1.0 and max zoom factor)
+  // Validation is done server-side
+  double zoom_factor = 1;
+  // This command is part of a coordinated operation that drives every lens
+  // of a multi-lens rig explicitly (the calibration zoom scan), so any
+  // driver-side coupled-lens automation (e.g. a thermal sensor syncing the
+  // day lens to its FOV) must not run for it — the automation would fight
+  // the sibling lens's own command. Leave unset everywhere else: normal
+  // flows always get the automation.
+  bool suppress_coupled_lens_sync = 2;
+  // Range to the target in metres. When set, the Hub also drives focus for
+  // this range from the sensor's focus model or default focus table at the
+  // commanded zoom. The task fails when the lens is not in MANUAL focus mode
+  // or the sensor has no focus source (see Sensor.focus_control).
+  optional double focus_range_m = 3;
+}
+
+message SetZoomRate {
+  // Rate of change of zoom factor (between -1.0 and 1.0)
+  // Negative values zoom out, positive values zoom in
+  double zoom_rate = 1;
+  // Duration to apply the rate (seconds)
+  double duration_seconds = 2;
+}
+
+enum FocusMode {
+  FOCUS_MODE_UNSPECIFIED = 0;
+  // Camera controls focus itself (continuous autofocus).
+  FOCUS_MODE_AUTO = 1;
+  // Focus holds position; only manual focus commands move it.
+  FOCUS_MODE_MANUAL = 2;
+}
+
+message SetFocusMode {
+  FocusMode mode = 1;
+}
+
+message SetFocusRate {
+  // Rate of focus change (between -1.0 and 1.0), normalized to the device's
+  // focus speed range. The near/far direction follows the device's own sign
+  // convention (ONVIF leaves it implementation-defined). 0 stops.
+  double focus_rate = 1;
+  // Duration to apply the rate (seconds). The driver stops focus when it
+  // elapses (the ONVIF imaging Move has no timeout of its own).
+  double duration_seconds = 2;
+}
+
+message SetFocusPosition {
+  // Absolute focus position in raw device units. The valid range is
+  // device-specific and published on SensorCamera.device_focus.
+  double position = 1;
+}
+
+message GoToCoordinates {
+  // Target latitude in decimal degrees
+  double latitude_degrees = 1;
+  // Target longitude in decimal degrees
+  double longitude_degrees = 2;
+  // Target speed in meters per second (optional)
+  optional double speed_mps = 3;
+  // Target altitude above ellipsoid (meters)
+  optional double altitude_hae_meters = 4;
+  // Vtol drones require a loiter radius
+  optional double loiter_radius_m = 5;
+  // Target altitude above ground level (meters). Driver resolves terrain
+  // at the target coordinate to compute HAE.
+  optional double altitude_agl_meters = 6;
+}
+
+message MoveRelative {
+  // Normalized forward speed (-1.0 to 1.0, where 1.0 is max speed for the device)
+  double front_speed = 1;
+  // Normalized rightward speed (-1.0 to 1.0, where 1.0 is max speed for the device)
+  double right_speed = 2;
+  // Normalized upward speed (-1.0 to 1.0, where 1.0 is max speed for the device)
+  double up_speed = 3;
+  // Normalized yaw speed (-1.0 to 1.0, where 1.0 is max speed for the device)
+  double yaw_speed = 4;
+  // Duration to apply the speeds (seconds)
+  double duration_seconds = 5;
+}
+
+message SetAltitude {
+  // Target altitude above ellipsoid (meters)
+  double altitude_hae_meters = 1;
+}
+
+message SetSpeed {
+  double speed_mps = 1;
+}
+
+message Takeoff {
+  // Target altitude above ellipsoid (meters)
+  // Device-specific default will be selected if unset
+  optional double altitude_hae_meters = 1;
+}
+
+// The drone ID comes from the device and propicated to the hub via publish detection.
+// (e.g. sentrycs sends the drone UID as part of the detection message)
+// Can be applied to other interceptor devices.
+message InterceptDrone {
+  // Target drone identifier to intercept.
+  string drone_uid = 1;
+}
+
+message CancelDroneInterception {
+  // Target drone identifier to stop intercepting.
+  string drone_uid = 1;
+}
+
+message ChangeCameraMode {
+  // Target camera mode
+  CameraMode mode = 1;
+}
+
+message SetWiperState {
+  WiperState state = 1;
+}
+
+message NotifyHostileTarget {
+  string target_id = 1;
+  types.v1alpha1.Position position = 2;
+  // Optional image of the target, used in the UVision integration
+  optional bytes image_jpeg = 3;
+}
+
+// The camera's imaging mode — what kind of picture the sensor produces.
+// Distinct from CameraOperatingMode (gimbal behavior).
+enum CameraMode {
+  CAMERA_MODE_UNSPECIFIED = 0;
+  // Color imaging of the visible spectrum; needs ambient visible light.
+  CAMERA_MODE_VISUAL = 1;
+  // Long-wave infrared (~8-14 µm): renders heat emitted by the scene, so it
+  // needs no illumination and shows temperature contrast rather than a
+  // likeness of the visible scene. Distinct from NEAR_IR, which images
+  // reflected light.
+  CAMERA_MODE_THERMAL = 2;
+  // The camera picks the mode itself (e.g. day/night switching by light level).
+  CAMERA_MODE_AUTO = 3;
+  // Near infrared (~850-940 nm): renders reflected light as a black-and-white
+  // likeness of the visible scene, and needs an infrared source to illuminate
+  // it. Distinct from THERMAL, which images emitted heat and needs no
+  // illumination.
+  CAMERA_MODE_NEAR_IR = 4;
+}
+
+enum AntennaMode {
+  ANTENNA_MODE_UNSPECIFIED = 0;
+  ANTENNA_MODE_OMNI = 1;
+  ANTENNA_MODE_DIRECTIONAL = 2;
+  // Extend with more antenna modes and use supported_antenna_mode to list avaialble modes
+}
+
+message SetAntennaMode {
+  AntennaMode mode = 1;
+}
+
+enum WiperState {
+  WIPER_STATE_UNSPECIFIED = 0;
+  WIPER_STATE_OFF = 1;
+  WIPER_STATE_ON = 2;
+}
+
+message SetFrequencyRange {
+  repeated FrequencyRange ranges = 1;
+}
+
+message FrequencyRange {
+  float start_frequency_mhz = 1;
+  float end_frequency_mhz = 2;
+}
+
+message VtolConfigureFlightSettings {
+  optional double loiter_radius_m = 1; // default loiter radius
+  optional double qrtl_altitude = 2; // default qrtl altitude
+  optional double airspeed_cruise_mps = 3; // default
+  optional double vtol_takeoff_altitude = 4; // default takeoff altitude
+  // Default altitude for any waypoint, above the takeoff/home field (AFL) —
+  // not HAE. Mirrored back on VtolFlightSettings.waypoint_altitude.
+  optional double waypoint_altitude = 5;
+}
+
+// Configure an ECM effector. The payload is the vendor-specific config.
+message ConfigureEcm {
+  oneof config {
+    RegulusRingConfig regulus_ring = 1;
+  }
+}
+
+// Regulus ring effector config. A mode is required (the oneof); its message
+// carries that mode's own required parameters. The shared fields below are a
+// patch: an unset (optional) field keeps its current value on the ring.
+message RegulusRingConfig {
+  // Fake a fixed position (the faked position is `spoof_location`).
+  message StaticMode {}
+  // Orbit the faked position within hold_radius.
+  message HoldMode {
+    double hold_radius_m = 1;
+    double speed_mps = 2;
+  }
+  // Walk the faked position along a bearing.
+  message PushbackMode {
+    double bearing_deg = 1;
+    double speed_mps = 2;
+  }
+  enum Band {
+    BAND_UNSPECIFIED = 0;
+    BAND_400M = 1;
+    BAND_900M = 2;
+    BAND_2_4G = 3;
+    BAND_5_2G = 4;
+    BAND_5_8G = 5;
+  }
+  // Spoof target fed to the drone. alt is meters above the geoid (MSL), not
+  // the AGL used for the ring's own position. Bespoke over types.Position,
+  // whose optional HAE/AGL-split altitude can't express a single geoid altitude.
+  message SpoofLocation {
+    double lat = 1;
+    double lng = 2;
+    double alt = 3;
+  }
+  // Wrapper so band presence is real: unset = leave bands untouched, set (even
+  // empty) = replace the enabled set.
+  message BandSet {
+    repeated Band bands = 1;
+  }
+  oneof mode {
+    // `static_mode` cause `static` is a reserved word in programming languages.
+    StaticMode static_mode = 1;
+    HoldMode hold = 2;
+    PushbackMode pushback = 3;
+  }
+  optional SpoofLocation spoof_location = 4;
+  // Spoof from the ring's own position instead of `spoof_location`.
+  optional bool use_ring_position_for_spoofing = 5;
+  // Spoofer transmit gain, in dB.
+  optional double tx_gain = 6;
+  optional BandSet jamming_bands = 7;
+}
+
+// Controls how the gimbal system behaves — pointing strategy, stabilization, and tracking.
+// Distinct from CameraMode, which selects the imaging source (visual, thermal, etc.).
+enum AltitudeFrame {
+  ALTITUDE_FRAME_UNSPECIFIED = 0;
+  ALTITUDE_FRAME_RELATIVE = 1;
+  ALTITUDE_FRAME_ABSOLUTE = 2;
+  ALTITUDE_FRAME_TERRAIN = 3;
+}
+
+// Sets the home position for a VTOL drone. The home position defines where the aircraft
+// will return to on RTL (return-to-launch) or failsafe.
+message SetDroneHomePosition {
+  optional kela.types.v1alpha1.Position position = 1;
+}
+
+message DroneReturnToLaunch {
+  // If true, the Drone will land on arrival to the launch position
+  // false, and it will loiter at the launch position
+  optional bool land_on_arrival = 1;
+}
+
+// Stages the point the asset's Land task should come down at. Each call
+// supersedes the previous point, and an unset position clears it so Land lands
+// in place again.
+//
+// Staging is intent only: it must not move the home position or command any
+// flight mode. Support for this command is how a driver declares that its Land
+// task honours a staged point at all — an asset that does not declare it lands
+// in place, and clients must not offer to stage one.
+message SetEmergencyLandingPosition {
+  optional kela.types.v1alpha1.Position position = 1;
+}
+
+// Aborts a long-running multi-step sequence the asset is executing
+// (see kela.ext.pathfinder.v1alpha1.ActiveSequences). Abort is cooperative:
+// the driver requests cancellation and the sequence winds down to a safe posture, reporting
+// SEQUENCE_STATE_ABORTING until it reaches SEQUENCE_STATE_CANCELED.
+message AbortSequence {
+  // SequenceProgress.sequence_id of the sequence to abort.
+  string sequence_id = 1;
+}
+
+// Confirms the step a sequence is paused on (state WAITING_OPERATOR with
+// confirmable = true — e.g. an operator launch confirmation). The driver
+// resolves which gate the sequence is waiting at; calling off the sequence
+// instead is AbortSequence.
+message ConfirmSequenceStep {
+  // SequenceProgress.sequence_id of the sequence to confirm.
+  string sequence_id = 1;
+}
+
+message VtolSetLoiterRadius {
+  double radius_m = 1;
+}
+
+// Vtol waypoint first safety waypoint after exiting launch
+// configured before flight
+message VtolSetExitWaypoint {
+  kela.types.v1alpha1.Waypoint waypoint = 1;
+}
+
+// Calibrate the VTOL airspeed sensor (fire-and-forget).
+message VtolCalibrateAirspeed {}
+
+// Play an audio clip on a speaker asset. The clip is identified by an
+// integration-defined string (typically a filename or preset name pre-loaded
+// on the device); the driver is responsible for resolving it.
+message PlayAudio {
+  // Integration-defined audio clip identifier (e.g. "siren.wav", "alert-1").
+  string audio_id = 1;
+  // Optional playback volume in 0.0–1.0 range. Drivers should clamp/round to
+  // whatever the device supports; unset means "use device default".
+  optional double volume = 2;
+}
+
+// Delete an audio clip from a speaker asset. The clip is identified by the
+// same integration-defined string used by ``PlayAudio.audio_id`` (typically a
+// numeric file ID). Drivers should also re-publish the asset's
+// ``SpeakerPayload`` after a successful delete so the C2 UI reflects the
+// freed slot without waiting for the next periodic refresh.
+message DeleteAudio {
+  // Integration-defined audio clip identifier — must match the same scheme
+  // used by ``PlayAudio.audio_id`` for the same asset.
+  string audio_id = 1;
+}
+
+message SetCameraOperatingMode {
+  kela.types.v1alpha1.CameraOperatingMode mode = 1;
+}
+
+// One-shot geo-pointing: point the sensor at a coordinate.
+// Sent directly to sensors that support native geo-pointing.
+// When lock is true, the sensor continuously tracks the position as the platform moves.
+message LookAtCoordinate {
+  kela.types.v1alpha1.Position position = 1;
+  bool lock = 2;
+}
+
+// Command the sensor to track a pixel in the video frame.
+// 0-1 normalized position
+message SetSensorTrackPixel {
+  double x = 1; // 0-1 normalized position
+  double y = 2; // 0-1 normalized position
+}
+
+// Enable or disable the sensor's visual tracking mode.
+message SetSensorVisualTrack {
+  bool enabled = 1;
+}
+
+// Command the sensor to track an object identified by a bounding box in the video frame.
+// 0-1 normalized position
+message SetSensorTrackRegion {
+  double x = 1; // Top-left corner X coordinate 0-1 normalized position
+  double y = 2; // Top-left corner Y coordinate 0-1 normalized position
+  double w = 3; // Width of the bounding box 0-1 normalized position
+  double h = 4; // Height of the bounding box 0-1 normalized position
+}
+
+// Turn the sensor's onboard ATR object detector on or off. Drivers report the
+// resulting state in their own extension.
+message SetSensorObjectDetection {
+  bool enabled = 1;
+}

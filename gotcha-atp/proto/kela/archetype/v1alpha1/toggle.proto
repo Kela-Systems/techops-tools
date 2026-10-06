@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package kela.archetype.v1alpha1;
+
+message ArchetypeToggle {
+  // Commands this archetype can currently accept, e.g. narrowed by device
+  // state. Empty means none are available; there is no "empty = all" default.
+  // Only each entry's command discriminant is read — payloads are ignored.
+  repeated Command available_commands = 1;
+
+  message Command {
+    oneof toggle_command {
+      SetToggleState set_toggle_state = 1;
+    }
+  }
+
+  message SetToggleState {
+    bool new_state = 1;
+  }
+}

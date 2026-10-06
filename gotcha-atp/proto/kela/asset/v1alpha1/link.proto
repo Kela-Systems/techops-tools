@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package kela.asset.v1alpha1;
+
+message LinkedAsset {
+  string asset_id = 1;
+  string target_asset_id = 2;
+}
+
+message LinkAssetRequest {
+  LinkedAsset linked_asset = 1;
+}
+
+message LinkAssetResponse {}
+
+message UnlinkAssetRequest {
+  LinkedAsset linked_asset = 1;
+}
+
+message UnlinkAssetResponse {}
+
+message ListLinkedAssetsRequest {}
+
+message ListLinkedAssetsResponse {
+  repeated LinkedAsset linked_assets = 1;
+}
+
+message ListAvailableLinksRequest {
+  string asset_id = 1;
+}
+
+message ListAvailableLinksResponse {
+  repeated string available_incoming_links = 1;
+  repeated string available_outgoing_links = 2;
+}
+
+message WatchLinkedAssetsRequest {}
+
+message WatchLinkedAssetsResponse {
+  repeated LinkedAsset updated_links = 1;
+  repeated LinkedAsset removed_links = 2;
+}

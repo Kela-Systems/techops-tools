@@ -1,0 +1,340 @@
+syntax = "proto3";
+
+package kela.asset.v1alpha1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "kela/asset/v1alpha1/asset.proto";
+import "kela/asset/v1alpha1/command.proto";
+import "kela/asset/v1alpha1/link.proto";
+import "kela/asset/v1alpha1/task.proto";
+
+service AssetService {
+  rpc PublishAsset(PublishAssetRequest) returns (PublishAssetResponse);
+
+  rpc ListAssets(ListAssetsRequest) returns (ListAssetsResponse);
+
+  rpc WatchAssets(WatchAssetsRequest) returns (stream WatchAssetsResponse);
+
+  // Execute a task on an asset, and wait for completion
+  rpc ExecuteTask(ExecuteTaskRequest) returns (ExecuteTaskResponse);
+  // Get the current status of a previously posted task
+  rpc GetTaskStatus(GetTaskStatusRequest) returns (GetTaskStatusResponse);
+  // List currently executing tasks
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+  // Watch for tasks being executed on assets
+  rpc WatchTasks(WatchTasksRequest) returns (stream WatchTasksResponse);
+  // Request a lease to control an asset / sensor's capabilities
+  rpc LeaseCapabilities(LeaseCapabilitiesRequest) returns (LeaseCapabilitiesResponse);
+  // Release a previously leased capability
+  rpc ReleaseCapabilities(ReleaseCapabilitiesRequest) returns (ReleaseCapabilitiesResponse);
+  // Wait for available lease on an asset / sensor's capabilities
+  rpc WaitForCapabilitiesLease(WaitForCapabilitiesLeaseRequest) returns (WaitForCapabilitiesLeaseResponse);
+  // Watch for changes in capability leases
+  rpc WatchCapabilityLeases(WatchCapabilityLeasesRequest) returns (stream WatchCapabilityLeasesResponse);
+  // Listen to control messages sent to an asset
+  rpc WatchControlMessages(WatchControlMessagesRequest) returns (stream WatchControlMessagesResponse);
+  // Observe every control message successfully dispatched to an integration.
+  // This live-only stream is independent of WatchControlMessages delivery.
+  rpc WatchDispatchedControlMessages(WatchDispatchedControlMessagesRequest) returns (stream WatchDispatchedControlMessagesResponse);
+  // Acknowledge and resolve a control message
+  rpc ResolveControlMessage(ResolveControlMessageRequest) returns (ResolveControlMessageResponse);
+  // Asset linking rpcs
+  rpc LinkAsset(LinkAssetRequest) returns (LinkAssetResponse);
+  rpc UnlinkAsset(UnlinkAssetRequest) returns (UnlinkAssetResponse);
+  rpc ListLinkedAssets(ListLinkedAssetsRequest) returns (ListLinkedAssetsResponse);
+  rpc ListAvailableLinks(ListAvailableLinksRequest) returns (ListAvailableLinksResponse);
+  rpc WatchLinkedAssets(WatchLinkedAssetsRequest) returns (stream WatchLinkedAssetsResponse);
+  // Approve or reject a permit ticket for a safety violation
+  rpc ApprovePermitTicket(ApprovePermitTicketRequest) returns (ApprovePermitTicketResponse);
+
+  // Request control from the current holder of a capability
+  rpc RequestControl(RequestControlRequest) returns (RequestControlResponse);
+
+  // Enable or disable camera guided flight mode for a drone
+  rpc SetCameraGuidedFlight(SetCameraGuidedFlightRequest) returns (SetCameraGuidedFlightResponse);
+
+  // Return all recorded asset rows within a time range
+  rpc GetHistoricalAssetEvents(GetHistoricalAssetEventsRequest) returns (stream GetHistoricalAssetEventsResponse);
+
+  // Return compact asset health events within a time range.
+  rpc GetAssetHealthEventsInTimespan(GetAssetHealthEventsInTimespanRequest) returns (GetAssetHealthEventsInTimespanResponse);
+
+  // Return the asset world-model state at a single point in time. For each
+  // asset, this is the most recent non-deleted row whose `time <= request.time`.
+  // Used by the history-mode UI to "seed" the playback snapshot so assets that
+  // are offline and stationary across the visible time window still appear at
+  // their real recorded position.
+  rpc GetAssetSnapshotAt(GetAssetSnapshotAtRequest) returns (GetAssetSnapshotAtResponse);
+}
+
+message ApprovePermitTicketRequest {
+  string permit_ticket_id = 1;
+  bool approved = 3;
+  string entity_id = 4;
+}
+
+message ApprovePermitTicketResponse {}
+
+message RequestControlRequest {
+  repeated Capability capabilities = 1;
+  optional TaskPrincipalPriority priority = 3;
+  string entity_id = 4;
+}
+
+enum RequestControlResult {
+  REQUEST_CONTROL_RESULT_UNSPECIFIED = 0;
+  // Request was sent to the holder, wait for CONTROL_REQUEST_RESULT alert
+  REQUEST_CONTROL_RESULT_REQUEST_SENT = 1;
+  // Control was granted immediately (no holder to request from)
+  REQUEST_CONTROL_RESULT_CONTROL_GRANTED = 2;
+  // Error: lease attempt failed (someone else took control)
+  REQUEST_CONTROL_RESULT_FAILED = 3;
+  // Error: there's already a pending request to this holder
+  REQUEST_CONTROL_RESULT_ALREADY_PENDING = 4;
+}
+
+message RequestControlResponse {
+  RequestControlResult result = 1;
+}
+
+message SetCameraGuidedFlightRequest {
+  // The entity ID of the drone
+  // The caller must have an active MOVE lease for the entity.
+  string entity_id = 1;
+  // Whether to enable or disable camera guided flight
+  bool enabled = 2;
+  // The sensor ID of the camera to use for guidance. If not provided, uses first camera sensor.
+  optional string sensor_id = 3;
+  optional TaskPrincipalPriority priority = 5;
+}
+
+enum SetCameraGuidedFlightResult {
+  SET_CAMERA_GUIDED_FLIGHT_RESULT_UNSPECIFIED = 0;
+  SET_CAMERA_GUIDED_FLIGHT_RESULT_OK = 1;
+  SET_CAMERA_GUIDED_FLIGHT_RESULT_ENTITY_NOT_FOUND = 2;
+  SET_CAMERA_GUIDED_FLIGHT_RESULT_NOT_IN_FLIGHT = 3;
+  SET_CAMERA_GUIDED_FLIGHT_RESULT_NO_MOVE_LEASE = 4;
+  SET_CAMERA_GUIDED_FLIGHT_RESULT_SENSOR_NOT_FOUND = 5;
+}
+
+message SetCameraGuidedFlightResponse {
+  SetCameraGuidedFlightResult result = 1;
+}
+
+message ExecuteTaskRequest {
+  string entity_id = 1;
+  Task task = 2;
+  // Maximum time to wait for task completion
+  // Maximum is 5 minutes, default is 5 seconds
+  optional uint32 timeout_secs = 3;
+  optional TaskPrincipalPriority priority = 5;
+  // If true, the task is posted for execution and the response returns immediately
+  // with a task ID, without waiting for completion.
+  bool async = 6;
+
+  // UUID scoping the lease to a workflow instance under the caller's identity
+  // (see TaskPrincipal.actor). Confers no authority; identity comes from the
+  // authentication layer.
+  optional string actor = 8;
+
+  // Wall-clock time on the client when this request was created. Lets the server
+  // observe the client-to-server transport latency. Subject to client/server
+  // clock skew; the server drops samples where the client clock is ahead.
+  optional google.protobuf.Timestamp requested_at = 7;
+}
+
+enum SafetyViolationType {
+  SAFETY_VIOLATION_TYPE_UNSPECIFIED = 0;
+  // The task would cause the entity to fly through a no-fly zone
+  SAFETY_VIOLATION_TYPE_NFZ_FLY_TO_BREACH = 1;
+  // The entity is moving inside a no-fly zone buffer
+  SAFETY_VIOLATION_TYPE_NFZ_BUFFER_BREACH = 2;
+  // The task would cause the entity to exit a restricted zone
+  SAFETY_VIOLATION_TYPE_RESTRICTED_ZONE_EXIT = 3;
+  // The entity is moving inside a restricted zone inner buffer (near boundary from inside)
+  SAFETY_VIOLATION_TYPE_RESTRICTED_ZONE_BUFFER_BREACH = 4;
+}
+
+message SafetyViolationDetails {
+  SafetyViolationType type = 1;
+  // A unique ID for this violation that can be used to approve/reject it
+  string permit_ticket_id = 2;
+  // The ID of the feature (NFZ or Restricted Zone) that was violated
+  optional string feature_id = 3;
+}
+
+// Result of a task posted for asynchronous execution
+message TaskPosted {
+  string task_id = 1;
+}
+
+// Result of a completed task
+message TaskCompleted {
+  bool success = 1;
+}
+
+message ExecuteTaskResult {
+  oneof result {
+    // The task has been posted to the entity for execution
+    TaskPosted posted = 1;
+    // The task completed (successfully or with failure)
+    TaskCompleted completed = 2;
+    // The task failed due to failing to lease required capabilities
+    google.protobuf.Empty lease_failed = 3;
+    // The task did not execute due to safety constraints
+    SafetyViolationDetails safety_violation = 4;
+    // The caller's bounded wait for the task to finish elapsed first (a wait
+    // timeout, distinct from the task missing its own completion deadline,
+    // which arrives as task_timeout).
+    google.protobuf.Empty timeout = 5;
+    // The task could not be dispatched because the asset's integration is not
+    // subscribed to receive commands (the driver is disconnected).
+    google.protobuf.Empty integration_not_subscribed = 6;
+    // The task missed its own completion deadline (a task timeout), distinct
+    // from the caller's bounded wait elapsing (the timeout variant).
+    google.protobuf.Empty task_timeout = 7;
+    // The task was cut short so a newer task could take over.
+    google.protobuf.Empty preempted = 8;
+    // No archetype on the asset (or the target sensor) implements this task.
+    // Carries a human-readable explanation.
+    string unsupported_task = 9;
+    // The implementing archetype does not currently advertise the command, so
+    // the device isn't accepting it right now. Carries a human-readable
+    // explanation.
+    string command_unavailable = 10;
+    // The task's arguments are invalid (e.g. a look-at with no position).
+    // Carries a human-readable explanation.
+    string invalid_task = 11;
+  }
+}
+
+message ExecuteTaskResponse {
+  ExecuteTaskResult result = 1;
+}
+
+message GetTaskStatusRequest {
+  string task_id = 1;
+  string entity_id = 2;
+}
+
+message GetTaskStatusResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_NOT_FOUND = 1;
+    STATUS_IN_PROGRESS = 2;
+    STATUS_COMPLETED_SUCCESS = 3;
+    STATUS_COMPLETED_FAILURE = 4;
+    // The task missed its completion deadline before the asset reached the
+    // expected state (a task timeout).
+    STATUS_TASK_TIMEOUT = 5;
+    // The task was cut short so a different task could take over.
+    STATUS_PREEMPTED = 6;
+  }
+  Status status = 1;
+}
+
+message ListTasksRequest {
+  string entity_id = 1;
+}
+
+message ListTasksResponse {
+  repeated WatchTasksResponse tasks = 1;
+}
+
+message WatchTasksRequest {}
+
+// Whether a task is still running and, once finished, how it ended. The
+// COMPLETED_* variants are terminal.
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_IN_PROGRESS = 1;
+  TASK_STATUS_COMPLETED_SUCCESS = 2;
+  TASK_STATUS_COMPLETED_FAILURE = 3;
+  // The task missed its own completion deadline (a task timeout).
+  TASK_STATUS_TASK_TIMEOUT = 4;
+  // The task was cut short so a newer task could take over.
+  TASK_STATUS_PREEMPTED = 5;
+}
+
+message WatchTasksResponse {
+  string entity_id = 1;
+  string task_id = 2;
+  Task task = 3;
+  TaskStatus status = 4;
+}
+
+message LeaseCapabilitiesRequest {
+  repeated Capability capabilities = 1;
+  // The desired lease duration in seconds.
+  uint64 lease_duration_secs = 2;
+  optional TaskPrincipalPriority priority = 4;
+  // UUID scoping the lease to a workflow instance under the caller's identity
+  // (see TaskPrincipal.actor). Confers no authority; identity comes from the
+  // authentication layer.
+  optional string actor = 5;
+}
+
+message WaitForCapabilitiesLeaseRequest {
+  LeaseCapabilitiesRequest lease_request = 1;
+  // Maximum time to wait for the lease to become available in seconds.
+  uint64 max_wait_secs = 2;
+  string entity_id = 3;
+}
+
+message LeaseCapabilitiesResponse {
+  // The lease UUID. Present when the lease was acquired, absent on failure.
+  optional string lease_id = 2;
+  // Present when acquisition failed because another principal held the lease.
+  // Clients may use the principal reason to explain why control was lost.
+  optional TaskPrincipal blocking_principal = 3;
+}
+
+// Response for WaitForCapabilitiesLease RPC.
+message WaitForCapabilitiesLeaseResponse {
+  // The lease UUID. Present when the lease was acquired, absent on failure.
+  optional string lease_id = 2;
+}
+
+message ReleaseCapabilitiesRequest {
+  repeated Capability capabilities = 1;
+}
+
+message ReleaseCapabilitiesResponse {
+  bool success = 1;
+}
+
+message WatchCapabilityLeasesRequest {}
+
+message WatchCapabilityLeasesResponse {
+  // Leases that were acquired or updated since the last response
+  repeated CapabilityLeaseInfo updated_leases = 1;
+  // Capabilities whose leases were released since the last response
+  repeated Capability removed_leases = 2;
+}
+
+message WatchControlMessagesRequest {
+  string entity_id = 1;
+}
+
+message WatchControlMessagesResponse {
+  string message_id = 1;
+  ControlMessage message = 2;
+}
+
+message WatchDispatchedControlMessagesRequest {}
+
+message WatchDispatchedControlMessagesResponse {
+  string entity_id = 1;
+  string message_id = 2;
+  ControlMessage message = 3;
+  optional string task_id = 4;
+  google.protobuf.Timestamp dispatched_at = 5;
+}
+
+message ResolveControlMessageRequest {
+  string message_id = 1;
+  bool success = 2;
+}
+
+message ResolveControlMessageResponse {}

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gotcha ATP</title>
+  <link rel="icon" type="image/png" href="/static/favicon.png">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="brand">
+      <img class="brand-logo" src="/static/favicon.png" alt="Kela">
+      <h1>Gotcha ATP<span class="sub">Acceptance test before production</span></h1>
+    </div>
+    <span id="unit-tag" class="unit-tag hidden"></span>
+    <nav id="nav" class="steps">
+      <button data-screen="home" class="on"><span class="n">1</span>Unit</button>
+      <button data-screen="run"><span class="n">2</span>Run</button>
+      <button data-screen="manual"><span class="n">3</span>Questions <span id="nav-q" class="count hidden"></span></button>
+      <button data-screen="result"><span class="n">4</span>Result</button>
+    </nav>
+  </header>
+
+  <!-- 1 · Unit ------------------------------------------------------------ -->
+  <section id="screen-home" class="screen">
+    <div class="card">
+      <div class="strip">
+        <span id="st-tailnet" class="badge badge-pend">Tailnet …</span>
+        <span id="st-central" class="badge badge-pend">bench-central …</span>
+        <span id="st-fleet" class="badge badge-pend">Fleet …</span>
+        <span class="spacer"></span>
+        <span id="st-release" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>Pick the unit in front of you</h3><span class="spacer"></span>
+        <button id="refresh" class="link">↻ refresh</button></div>
+      <div id="units" class="units"></div>
+      <div class="form-row">
+        <div class="field"><label>Site</label>
+          <input id="site" placeholder="filter, or type e.g. gotcha-rev3-dev"></div>
+        <div class="field"><label>Engineer</label>
+          <input id="engineer" placeholder="printed on the report"></div>
+        <div class="field"><label>kela password</label>
+          <input id="password" type="password" autocomplete="off"><span id="pw-note" class="fhint"></span></div>
+      </div>
+      <details style="margin-top:10px">
+        <summary>Operator station has a non-standard name</summary>
+        <div class="field" style="margin-top:8px;max-width:340px">
+          <input id="operator" placeholder="operator tailnet name (default <site>-operator)"></div>
+      </details>
+      <div class="btn-row">
+        <button id="connect" class="btn-primary btn-big">Connect</button>
+        <span id="connect-status" class="muted"></span>
+      </div>
+    </div>
+
+    <div id="confirm" class="status hidden">
+      <span class="dot" id="confirm-dot"></span>
+      <div class="txt">
+        <div class="phase" id="confirm-title"></div>
+        <div class="confirm-lines" id="confirm-lines"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;align-items:stretch;min-width:200px">
+        <button id="run-full" class="btn-primary btn-big">Yes — run ATP</button>
+        <button id="run-soak" class="btn-outline" title="Adds S9: a full power cut, ~20 min, someone at the breaker">Run ATP + power-cycle soak</button>
+        <button id="disconnect" class="btn-outline">Not this unit</button>
+      </div>
+    </div>
+    <details id="advanced" class="card hidden">
+      <summary>Advanced</summary>
+      <div class="btn-row">
+        <input id="stages" placeholder="Stages, e.g. S1,S2" style="max-width:220px">
+        <button id="run-stages" class="btn-outline">Run these stages</button>
+        <span class="muted small">Partial runs are never stamp-eligible.</span>
+      </div>
+    </details>
+  </section>
+
+  <!-- 2 · Run -------------------------------------------------------------- -->
+  <section id="screen-run" class="screen hidden">
+    <div id="run-status" class="status">
+      <span class="dot"></span>
+      <div class="txt">
+        <div class="phase" id="run-phase">No run yet</div>
+        <div class="msg" id="run-msg">Connect to a unit and start a run.</div>
+        <div class="progress" id="run-bar"></div>
+      </div>
+      <button id="to-questions" class="btn-primary hidden">Answer questions →</button>
+      <button id="cancel" class="btn-outline hidden">Cancel</button>
+    </div>
+    <div class="grid-run">
+      <div class="card stage-list" id="stage-list"></div>
+      <div>
+        <div id="rows"></div>
+        <details class="card"><summary>Log</summary><pre id="log" class="log"></pre></details>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 · Questions -------------------------------------------------------- -->
+  <section id="screen-manual" class="screen hidden">
+    <p id="manual-empty" class="empty">The questions appear once the automated stages have run.</p>
+    <div id="questions"></div>
+    <div class="btn-row"><span class="spacer"></span>
+      <button id="finish" class="btn-primary btn-big hidden">See the result →</button></div>
+  </section>
+
+  <!-- 4 · Result ----------------------------------------------------------- -->
+  <section id="screen-result" class="screen hidden">
+    <p id="result-empty" class="empty">No finished run yet.</p>
+    <div id="result" class="hidden">
+      <div id="verdict" class="verdict"></div>
+
+      <div class="card">
+        <div class="card-head"><h3>What needs fixing</h3><span id="fix-count" class="badge badge-err"></span></div>
+        <div id="res-fix"></div>
+      </div>
+
+      <details class="card" id="warn-card">
+        <summary><b style="color:var(--text)">Warnings</b> <span id="warn-count" class="badge badge-warn"></span>
+          <span class="muted small">— medium/low, do not block the stamp</span></summary>
+        <div id="res-warn" style="margin-top:12px"></div>
+      </details>
+
+      <details class="card" id="amber-card">
+        <summary><b style="color:var(--text)">Not checked</b> <span id="amber-count" class="badge badge-pend"></span></summary>
+        <ul id="res-amber" class="notchecked" style="list-style:none;margin-top:12px"></ul>
+      </details>
+
+      <div class="card">
+        <div class="actions">
+          <button id="rerun" class="btn-primary">Re-run failed stages</button>
+          <button id="full-again" class="btn-outline">Full run</button>
+          <a id="dl-pdf" class="btn-outline" style="padding:8px 16px;border-radius:6px" target="_blank">PDF report</a>
+          <a id="dl-html" class="btn-outline" style="padding:8px 16px;border-radius:6px" target="_blank">HTML report</a>
+          <button id="copy" class="btn-outline">Copy summary</button>
+          <span class="spacer"></span>
+          <span id="upload"></span>
+        </div>
+        <div id="result-foot" class="muted small" style="margin-top:12px"></div>
+      </div>
+    </div>
+  </section>
+</div>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

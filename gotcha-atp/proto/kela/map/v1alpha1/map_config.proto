@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package kela.map.v1alpha1;
+
+import "buf/validate/validate.proto";
+import "kela/config/v1alpha1/options.proto";
+import "kela/types/v1alpha1/types.proto";
+
+// Available map views for the site
+enum AvailableMapViews {
+  AVAILABLE_MAP_VIEWS_UNSPECIFIED = 0;
+  AVAILABLE_MAP_VIEWS_2D = 1;
+  AVAILABLE_MAP_VIEWS_3D = 2;
+  AVAILABLE_MAP_VIEWS_BOTH = 3;
+}
+
+// Map view settings. Stored in the generic ConfigService under owner "hub.map"
+// and consumed by the C2 frontend and, for the DEM center, the Hub's
+// projection actor. Zoom levels are Leaflet zoom levels; the 3D view converts
+// them to camera altitudes.
+message MapConfig {
+  option (kela.config.v1alpha1.config_owner) = "hub.map";
+
+  option (buf.validate.message).cel = {
+    id: "map_config.min_zoom_not_above_max"
+    message: "min_zoom must not exceed max_zoom"
+    expression: "!has(this.min_zoom) || !has(this.max_zoom) || this.min_zoom <= this.max_zoom"
+  };
+  option (buf.validate.message).cel = {
+    id: "map_config.initial_zoom_within_range"
+    message: "initial_zoom must be between min_zoom and max_zoom"
+    expression: "!has(this.initial_zoom) || ((!has(this.min_zoom) || this.initial_zoom >= this.min_zoom) && (!has(this.max_zoom) || this.initial_zoom <= this.max_zoom))"
+  };
+  option (buf.validate.message).cel = {
+    id: "map_config.tooltip_zoom_not_above_max"
+    message: "min_zoom_for_showing_tooltip must not exceed max_zoom"
+    expression: "!has(this.min_zoom_for_showing_tooltip) || !has(this.max_zoom) || this.min_zoom_for_showing_tooltip <= this.max_zoom"
+  };
+
+  // Where the map centers on load. Absent means "no site center": the map fits
+  // to its loaded layers instead, and the projection actor has no DEM center.
+  optional kela.types.v1alpha1.Position initial_position = 1;
+
+  optional uint32 initial_zoom = 2 [
+    (buf.validate.field).uint32.lte = 22,
+    (kela.config.v1alpha1.field_default).uint = 15
+  ];
+
+  // Beyond native tile zoom, tiles are scaled up.
+  optional uint32 max_zoom = 3 [
+    (buf.validate.field).uint32.lte = 22,
+    (kela.config.v1alpha1.field_default).uint = 22
+  ];
+
+  optional uint32 min_zoom = 4 [
+    (buf.validate.field).uint32.lte = 22,
+    (kela.config.v1alpha1.field_default).uint = 10
+  ];
+
+  // Zoom at or above which tooltips for map objects are shown.
+  optional uint32 min_zoom_for_showing_tooltip = 5 [
+    (buf.validate.field).uint32.lte = 22,
+    (kela.config.v1alpha1.field_default).uint = 2
+  ];
+
+  AvailableMapViews available_map_views = 6 [(buf.validate.field).enum.defined_only = true];
+}

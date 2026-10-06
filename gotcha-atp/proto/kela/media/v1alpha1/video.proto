@@ -1,0 +1,235 @@
+syntax = "proto3";
+
+package kela.media.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+import "kela/asset/v1alpha1/asset.proto";
+
+service VideoService {
+  // Registers video streams for a sensor. The integration provides stream descriptors
+  // (stream_id and metadata only — the raw device URL stays in the integration process);
+  // the hub assigns mediamtx paths and returns which streams are currently selected
+  // for restreaming, and the integration then pushes the device stream to those paths.
+  rpc CreateVideoStreams(CreateVideoStreamsRequest) returns (CreateVideoStreamsResponse);
+  // Watches for video stream creation events.
+  rpc WatchVideoStreams(WatchVideoStreamsRequest) returns (stream WatchVideoStreamsResponse);
+  // Signals intent to view a video stream and acts as a heartbeat to keep it alive.
+  // For federated assets, this triggers the parent hub to set up an on-demand RTSP
+  // pull from the child hub's MediaMTX. Clients should call this periodically while
+  // viewing; the stream is automatically torn down when heartbeats stop.
+  // For local assets, this is a no-op.
+  rpc HeartbeatVideoStream(HeartbeatVideoStreamRequest) returns (HeartbeatVideoStreamResponse);
+  rpc ConfigureStreams(ConfigureStreamsRequest) returns (ConfigureStreamsResponse);
+  // Lists the configured streams of a sensor straight from the hub's video_streams
+  // table: each row's device-reported metadata plus its publish/record/cache flags.
+  // Unlike WatchVideoStreams this carries no mediamtx paths — it is the source for
+  // the admin stream-configuration UI, which must see every stream (including
+  // unpublished ones) with full metadata.
+  rpc ListStreamConfigs(ListStreamConfigsRequest) returns (ListStreamConfigsResponse);
+  // Sets runtime ingest state (Active / Suspended / Probe) within the operator
+  // Publish ceiling. Does not change Publish / Record / Cache / Enhance intent.
+  // Used by dynamic-ingest policy (and tests); not by the admin Publish checkbox.
+  rpc SetStreamIngestStates(SetStreamIngestStatesRequest) returns (SetStreamIngestStatesResponse);
+  // stream-inspector pushes raw per-path ingest metrics (no health verdict).
+  // The hub scores substreams and aggregates congestion groups.
+  rpc ReportStreamMetrics(ReportStreamMetricsRequest) returns (ReportStreamMetricsResponse);
+  // Snapshot + delta of scored substreams and congestion-group aggregates.
+  rpc WatchStreamHealth(WatchStreamHealthRequest) returns (stream WatchStreamHealthResponse);
+}
+
+// A stream the integration should restream, with its hub-assigned mediamtx destination.
+message EnabledStream {
+  string stream_id = 1;
+  // Full MediaMTX destination URL (e.g. "rtsp://mediamtx:8554/hub/asset-.../sensor-.../stream/<uuid>").
+  string destination_url = 2;
+}
+
+message CreateVideoStreamsRequest {
+  string entity_id = 1;
+  string sensor_id = 2;
+  // Stream descriptors available in the integration. Hub assigns mediamtx paths.
+  repeated kela.asset.v1alpha1.StreamDescriptor streams = 3;
+}
+
+message CreateVideoStreamsResponse {
+  // Currently selected streams — integration should restream these.
+  repeated EnabledStream enabled_streams = 1;
+}
+
+message ConfigureStreamsRequest {
+  string entity_id = 1;
+  string sensor_id = 2;
+  repeated string selected_stream_ids = 3;
+  repeated string recorded_stream_ids = 4;
+  repeated string cached_stream_ids = 5;
+  // Subset of selected_stream_ids. At most one id. When empty, enhance is disabled
+  // (no `-enhance` path). Synthetic demo assets may default one stream server-side.
+  repeated string transcoded_stream_ids = 6;
+}
+
+message ConfigureStreamsResponse {}
+
+message WatchVideoStreamsRequest {}
+
+// Snapshot + delta of video stream state, grouped per asset. The first message
+// carries every asset; subsequent messages carry only changed/removed assets.
+message WatchVideoStreamsResponse {
+  repeated AssetVideoStreams updated_assets = 1;
+  repeated string removed_asset_ids = 2;
+}
+
+message AssetVideoStreams {
+  string asset_id = 1;
+  repeated SensorVideoStreams sensors = 2;
+}
+
+message SensorVideoStreams {
+  string sensor_id = 1;
+  repeated kela.asset.v1alpha1.StreamConfig stream_configs = 3;
+}
+
+message ListStreamConfigsRequest {
+  string entity_id = 1;
+  string sensor_id = 2;
+}
+
+message ListStreamConfigsResponse {
+  repeated StreamConfigRow streams = 1;
+}
+
+// A single row of the hub's video_streams table: device-reported stream metadata
+// plus the hub-managed publish/record/cache flags. Carries no mediamtx path.
+message StreamConfigRow {
+  kela.asset.v1alpha1.StreamDescriptor stream_descriptor = 1;
+  bool published = 2;
+  bool recorded = 3;
+  bool cached = 4;
+  bool transcoded = 5;
+  // Runtime ingest state. Present only when published=true; an unpublished row
+  // has no runtime state and leaves it absent, which is distinct from a state
+  // this client does not recognize.
+  optional kela.asset.v1alpha1.StreamIngestState ingest_state = 6;
+}
+
+message SetStreamIngestStatesRequest {
+  string entity_id = 1;
+  string sensor_id = 2;
+  repeated StreamIngestStateUpdate updates = 3;
+}
+
+message StreamIngestStateUpdate {
+  string stream_id = 1;
+  kela.asset.v1alpha1.StreamIngestState state = 2;
+}
+
+message SetStreamIngestStatesResponse {}
+
+message HeartbeatVideoStreamRequest {
+  string entity_id = 1;
+  string sensor_id = 2;
+}
+
+message HeartbeatVideoStreamResponse {}
+
+// Raw per-path measurements from stream-inspector. No health score / verdict —
+// the Hub media service owns scoring (and may use different weights than the
+// inspector's local dashboard).
+message StreamPathMetrics {
+  // Structured identity — Hub does not parse MediaMTX paths.
+  string asset_id = 1;
+  string sensor_id = 2;
+  // Path segment; may include `-dilution` / `-enhance` suffixes.
+  string stream_id = 3;
+  // RTSP publisher remote IP — congestion-group key when set.
+  optional string source_ip = 4;
+  google.protobuf.Timestamp observed_at = 5;
+
+  // MediaMTX readiness triad:
+  // - has_ready_info: the MediaMTX API returned a ready bit for this path
+  // - ready: that bit's value (only meaningful when has_ready_info)
+  // - has_inspection: stream-inspector completed at least one probe cycle
+  bool ready = 10;
+  bool has_ready_info = 11;
+  bool has_inspection = 12;
+  optional string inspect_error = 13;
+
+  optional uint32 width = 20;
+  optional uint32 height = 21;
+  optional double measured_fps = 22;
+  optional double measured_bitrate_kbps = 23;
+  optional string video_codec = 24;
+  optional string audio_codec = 25;
+  optional int32 pct10_y = 26;
+  optional int32 pct90_y = 27;
+  bool has_luma_stats = 28;
+
+  // Trailing RTP loss window deltas from MediaMTX counters.
+  optional int32 rtp_lost = 30;
+  optional int32 rtp_received = 31;
+  bool has_rtp_loss = 32;
+
+  // Expected specs from MediaMTX path metadata when present.
+  optional string expected_resolution = 40;
+  optional double expected_fps = 41;
+  optional string expected_bitrate = 42;
+  optional string expected_codec = 43;
+  optional string expected_audio = 44;
+}
+
+message ReportStreamMetricsRequest {
+  // Per-path measurements for this cycle. Empty batches are no-ops.
+  // The Hub evicts paths by per-stream last_updated_at TTL.
+  repeated StreamPathMetrics paths = 1;
+}
+
+message ReportStreamMetricsResponse {}
+
+message WatchStreamHealthRequest {}
+
+// First message on a subscription is a full snapshot; later messages are deltas
+// (Hub Watch convention — no explicit is_snapshot flag).
+message WatchStreamHealthResponse {
+  repeated StreamHealthScore streams = 1;
+  repeated CongestionGroupHealth congestion_groups = 2;
+  // Streams removed since the previous message (empty on the initial snapshot).
+  repeated StreamHealthId removed_streams = 3;
+  // Congestion group UUID v5 strings removed since the previous message.
+  repeated string removed_group_ids = 4;
+}
+
+enum StreamPathKind {
+  STREAM_PATH_KIND_UNSPECIFIED = 0;
+  STREAM_PATH_KIND_NATIVE = 1;
+  STREAM_PATH_KIND_DILUTION = 2;
+  STREAM_PATH_KIND_ENHANCE = 3;
+}
+
+// Structured identity for a scored MediaMTX substream (Watch key / removals).
+message StreamHealthId {
+  string asset_id = 1;
+  string sensor_id = 2;
+  // Path segment; may include `-dilution` / `-enhance` suffixes.
+  string stream_id = 3;
+}
+
+message StreamHealthScore {
+  string asset_id = 1;
+  string sensor_id = 2;
+  string stream_id = 3;
+  StreamPathKind path_kind = 4;
+  optional string source_ip = 5;
+  // 1–100. Absent when health cannot be determined yet.
+  optional uint32 score = 6;
+  google.protobuf.Timestamp last_updated_at = 7;
+  // Congestion group this native contributes to (empty for derived paths).
+  // UUID v5 of the semantic key (ip:… / sensor:asset/sensor) — opaque + restart-stable.
+  string group_id = 8;
+}
+
+message CongestionGroupHealth {
+  // UUID v5 of the semantic key (ip:… / sensor:asset/sensor).
+  string group_id = 1;
+  // Weakest-link (min) of native member scores. Absent if no member is scored.
+  optional uint32 score = 2;
+  google.protobuf.Timestamp last_updated_at = 3;
+}

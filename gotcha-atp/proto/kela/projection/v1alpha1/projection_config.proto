@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package kela.projection.v1alpha1;
+
+import "buf/validate/validate.proto";
+import "kela/config/v1alpha1/options.proto";
+
+// DEM download settings for the Hub's projection engine. Stored in the generic
+// ConfigService under owner "hub.projection". The DEM is centered on the map
+// config's initial position (owner "hub.map"), composed at the projection
+// actor rather than pre-joined here.
+message ProjectionConfig {
+  option (kela.config.v1alpha1.config_owner) = "hub.projection";
+
+  // Radius around the site center for DEM download. An explicit 0 downloads the
+  // full QGIS layer, which may fail for large layers.
+  optional double dem_radius_km = 1 [
+    (buf.validate.field).double = {
+      gte: 0
+      lte: 50
+    },
+    (kela.config.v1alpha1.field_default).double = 5
+  ];
+
+  optional double dem_target_resolution_m = 2 [
+    (buf.validate.field).double = {
+      gt: 0
+      lte: 50
+    },
+    (kela.config.v1alpha1.field_default).double = 2
+  ];
+
+  // Maximum DEM dimension in pixels (width or height).
+  optional uint32 dem_max_pixels = 3 [
+    (buf.validate.field).uint32 = {
+      gte: 256
+      lte: 16384
+    },
+    (kela.config.v1alpha1.field_default).uint = 8192
+  ];
+}

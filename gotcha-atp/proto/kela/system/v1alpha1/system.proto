@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package kela.system.v1alpha1;
+
+// System status service for health checks, version info, and runtime capabilities.
+service SystemService {
+  // Get the current system status including version information
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  // Get this hub's federation identity
+  rpc GetHubIdentity(GetHubIdentityRequest) returns (GetHubIdentityResponse);
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  // Hub version
+  string version = 1;
+
+  // Site identifier, sourced from the SITE_ID environment variable on the hub.
+  // Empty when the hub was started without one.
+  string site_id = 2;
+
+  // Product-owned in-process service profile mounted by this Hub.
+  ProductServiceProfile product_service_profile = 3;
+}
+
+enum ProductServiceProfile {
+  PRODUCT_SERVICE_PROFILE_UNSPECIFIED = 0;
+  PRODUCT_SERVICE_PROFILE_NONE = 1;
+  PRODUCT_SERVICE_PROFILE_ALL = 2;
+  PRODUCT_SERVICE_PROFILE_CUAS = 3;
+  PRODUCT_SERVICE_PROFILE_GOTCHA = 4;
+  PRODUCT_SERVICE_PROFILE_ZONE_PROTECTION = 5;
+}
+
+message GetHubIdentityRequest {}
+
+message GetHubIdentityResponse {
+  string hub_id = 1;
+  string display_name = 2;
+}

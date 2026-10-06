@@ -1,0 +1,76 @@
+# techops-tools/gotcha-atp/release.yaml — one file for the whole fleet (PR-reviewed)
+# Values are what the repos/bench pin as revalidated on 2026-10-04; Techops confirms before v1.
+# A pin left empty or starting with "TODO" is "not pinned": rows that compare against it
+# record the value and go amber instead of passing or failing.
+schema: gotcha-release/1
+name: 2026.10-a
+hub:
+  image_tag: "gotcha-rc-23.9"         # SystemService.GetStatus.version == IMAGE_TAG env on hub-server. CI sets IMAGE_TAG to the git tag on tag builds; newest gotcha tag in kela (2026-09-23) — confirm against Fleet desired
+  product_services: gotcha            # HUB_PRODUCT_SERVICES → PRODUCT_SERVICE_PROFILE_GOTCHA
+  magos_agent: "3.25.6"               # vendor/magos-agent tag in integrations/drivers/gotcha/manifest.json
+  # No integration image digests here: they follow from the hub release (S4.1). S4.2
+  # checks what the node staged against Fleet's images report for its release.
+  integration_config: { mass_processing_enabled: false, apu_sweep_recovery_enabled: false, stream_apu_raw_detections: false, apu_no_sweep_timeout_minutes: 2 }
+  detector: { package: gradz-704-clsw3, model: gradz-704-clsw3, version: "2026-09-18-44f2cb49" }   # variants/gotcha.ts
+server:
+  init_version: "2026-08-25.2"        # scripts/init_gotcha_server.sh SETUP_VERSION → build-info setup_version
+  # Floors, not pins: the node installs exactly what Fleet's system configuration
+  # for its hardware model says (S4.3 checks that); these are the oldest we certify.
+  k3s_floor: "v1.36.2+k3s1"
+  node_controller_floor: "0.3.56"     # rev3-dev's model is served 0.3.56, the prototype's 0.3.60 (2026-10-06)
+  l4t: "R36.4.3"                      # S2.6 (low): /etc/nv_tegra_release; rev3-dev R36.4.3, the prototype R36.3.0 (2026-10-06)
+  timezone: Asia/Jerusalem            # S2.5 (catalogue value)
+magos:
+  apu_firmware: "3.1.2"               # bench apu_configure refuses other families
+  radar_firmware: "3.1.0"             # from a live AR-300 systemStatus (confirm the fleet pin)
+camera:
+  generation: rest                    # /v1 REST cameras only; RPC2 'General… build:' strings are legacy
+  firmware: "B1.0.22.29.16, 2026-09-03"   # bench floor; compared BY BUILD DATE
+  streams: { main: "1920x1080", thermal: "" }   # thermal not pinned: S6.7b records its resolution without judging it
+speaker:
+  firmware: "V3.3.39-PR1"             # overview.get version (TM-CS20 family)
+  outvolume_min: 1                    # S6.13: not muted. The operator sets the volume from the C2 (the driver applies it); S10.3 checks it is audible
+teltonika:                            # S4.7: mismatch = warning
+  rutm08: "RUTM_R_00.07.24.3"         # bench rutm.config.json expected_version
+  otd500: "OTD5_R_00.07.24.3"         # bench site.config.json expected_version
+  tsw202_floor: "TSW2_R_00.01.07.1"   # bench treats TSW as a floor, not a pin
+planet:
+  firmware_floor: "1.305b260324"      # below this the IGS-4215 SSH server is broken
+operator:
+  setup_version: "2026-07-19.1"       # rugged_operator/setup.sh SETUP_VERSION
+plan:                                 # network plan, same for every unit (bench magos.config.json / planet.config)
+  router: 192.168.88.1
+  switch: 192.168.88.2
+  poe_switch: 192.168.88.3
+  server: 192.168.88.10
+  camera: 192.168.88.203 # TODO: should be pinned to 88.30
+  radars: { radar_0: 192.168.88.50, radar_1: 192.168.88.51, radar_2: 192.168.88.52, radar_3: 192.168.88.53 }
+  apus:   { "192.168.88.60": [radar_0, radar_1], "192.168.88.61": [radar_2, radar_3] }
+  speaker: 192.168.88.70
+  modem: 192.168.1.1                  # OTD500 LAN address, upstream of the router (bench site.config host); reached through the router's WAN
+  pan_nominal_deg: { radar_0: 45, radar_1: -45, radar_2: -135, radar_3: 135 }   # hub site-seed values, informational only
+  # S5.5 does NOT compare against pan_nominal_deg: mounted pans are offset per unit and the
+  # sensor-to-asset sweep refines them. The rule is the hub's: 4 distinct quadrants, no cardinals.
+  # no PoE port map on purpose: cabling may differ per unit — S1.4 discovers port→device from the switch MAC table
+thresholds:
+  poe_budget_w: 240
+  ping_avg_ms: 5
+  ping_loss_pct: 0
+  ping_jitter_ms: 5                   # S1.1 (catalogue value)
+  ping_count: 20                      # S1.1 (catalogue value)
+  ntp_offset_s: 1.0                   # S7.1: every device vs the server clock
+  hub_api_p95_ms: 200                 # S7.3: unary hub gRPC calls (health, Watch* streams and ExecuteTask excluded)
+  hub_ttfb_ms: 300                    # S7.3: https://kela.local/ time to first byte (median of 5)
+  chrony_offset_max_ms: 50            # S2.4 (catalogue value)
+  disk_used_max_pct: 80               # S2.2 / S2.3 (catalogue value)
+  mem_available_min_mb: 2048          # S2.3 (catalogue value)
+  modem_signal_min_dbm: -105          # S1.6; bench site.config sim_switch.weak_signal_dbm
+  pod_stable_min_minutes: 30          # S3.2: every container up at least this long (older restarts are recorded, not judged)
+  magos_time_sync_offset_s: 0.5      # radar/APU self-reported timeSyncOffset
+  magos_temp_max_c: 75               # max(perfTemperature)
+  magos_ethernet_speed: 1000
+  poe_radar_w: [20, 45]
+  stream_health_min: 70
+  detection_sample_s: 15
+  calib_yaw_vs_declared_max_deg: 45   # S5.10: solved yaw must stay in the declared pan's quadrant
+  calib_tilt_spread_max_deg: 15       # S5.10: calibration-service max_tilt_deviation_deg default

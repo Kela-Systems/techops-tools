@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Gotcha ATP
+Comment=Techops acceptance test of an assembled Gotcha unit
+# %k is this file's own path; the checkout is one level up from launcher/.
+Exec=bash -c 'cd "$(dirname "$(readlink -f "%k")")/.." && exec uv run gotcha-atp ui'
+Terminal=true
+Categories=Utility;

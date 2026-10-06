@@ -1,0 +1,43 @@
+[project]
+name = "gotcha-atp"
+version = "0.1.0"
+description = "Gotcha ATP — mutation-free acceptance test of an assembled Gotcha unit, run from a Techops laptop over Tailscale"
+readme = "README.md"
+# tomllib (the local credentials file) is 3.11+.
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi~=0.128",
+    "uvicorn~=0.39",
+    "httpx[socks]~=0.28",
+    # websockets' own `proxy=` support needs python-socks for SOCKS proxies.
+    "websockets~=16.0",
+    "python-socks[asyncio]~=2.7",
+    "paramiko~=4.0",
+    "pyyaml~=6.0",
+    # The Raythink REST login encrypts the password with AES-128-CBC.
+    "cryptography>=42",
+    "grpcio~=1.76",
+    # Stubs are generated from the vendored proto/ on first use (access/grpc.py),
+    # so the tools are a runtime dependency rather than a dev-only one.
+    "grpcio-tools~=1.76",
+    "protobuf>=6.31",
+    # PDF report. Needs pango from the OS (brew install pango); without it the
+    # HTML report is still written and the Result screen says the PDF is missing.
+    "weasyprint>=66",
+]
+
+[project.scripts]
+gotcha-atp = "gotcha_atp.cli:main"
+
+[dependency-groups]
+dev = ["pytest~=8.4"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gotcha_atp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

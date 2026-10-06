@@ -1,0 +1,55 @@
+# Gotcha ATP — local laptop config. Copy to ~/.config/gotcha-atp/config.toml
+# (chmod 600) and fill in the passwords there. NEVER commit the real file:
+# the repo only ships this example, and the tool never writes any of these
+# values into a run record, log, event or report.
+
+# Pre-fills the "Engineer" field on Home; printed on the PDF cover.
+engineer = ""
+
+[ssh]
+# Both hops: kela@<site>-operator and kela@192.168.88.10. The password is
+# fleet-wide; Home pre-fills it from here and you confirm once per run. When
+# the Techops ATP key is in kela's authorized_keys on both hosts, the key is
+# used and the password is not needed.
+user = "kela"
+password = ""
+
+[devices]
+# Shared device password, used by every family below that has no password of
+# its own.
+password = ""
+
+[devices.magos]        # AR-300 radars .50–.53 (dashboard API)
+username = "admin"
+password = ""
+
+[devices.apu]          # MIC-711 APUs .60/.61 (dashboard API); empty = same as [devices.magos]
+username = "admin"
+password = ""
+
+[devices.camera]       # Raythink PC464A1 .30 (REST /v1)
+username = "admin"
+password = ""
+
+[devices.speaker]      # Provision-ISR speaker .70 (CGI)
+username = "admin"
+password = ""
+
+[devices.teltonika]    # RUTM08 .1, TSW202 .2, OTD500 192.168.1.1 (SSH)
+username = "root"
+password = ""
+
+[devices.planet]       # IGS-4215 PoE switch .3 (web + SSH CLI)
+username = "admin"
+password = ""
+
+[bench_central]
+# Run-record collector on the tailnet (the BENCH_CENTRAL_URL env var also works).
+url = "http://techops-automations-host:8100"
+
+[fleet]
+# Fleet admin API for S0.5 (adopted, check-in, applied == desired) and S4 (desired
+# release, desired k3s / node-controller, model versions). Optional: without it
+# S0.5 is amber "Fleet not configured" and S4 compares against release.yaml only.
+url = ""
+token = ""

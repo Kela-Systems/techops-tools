@@ -1,0 +1,135 @@
+syntax = "proto3";
+
+package kela.archetype.v1alpha1;
+
+import "google/protobuf/empty.proto";
+
+message ArchetypeTwoAxisGimbal {
+  GimbalState state = 1;
+  // Commands this archetype can currently accept, e.g. narrowed by device
+  // state. Empty means none are available; there is no "empty = all" default.
+  // Only each entry's command discriminant is read — payloads are ignored.
+  repeated Command available_commands = 2;
+
+  message Command {
+    oneof kind {
+      AbsoluteGimbalMove absolute_gimbal_move = 1;
+      ContinuousGimbalMove continuous_gimbal_move = 2;
+      Stop stop = 3;
+    }
+  }
+
+  message AbsoluteGimbalMove {
+    // Requested pan in degrees, relative to device 0.
+    double pan = 1;
+    // Requested tilt in degrees, relative to device 0.
+    double tilt = 2;
+  }
+
+  // Halt any in-progress gimbal motion.
+  message Stop {}
+}
+
+// A fixed-mount pan/tilt/zoom camera: pointed by absolute device-frame pan/tilt.
+message ArchetypePtzCamera {
+  GimbalState state = 1;
+  // Indicates whether the zoom factor is an integer (true) or a floating point (false).
+  bool zoom_factor_is_integer = 2;
+  // Commands this archetype can currently accept, e.g. narrowed by device
+  // state. Empty means none are available; there is no "empty = all" default.
+  // Only each entry's command discriminant is read — payloads are ignored.
+  repeated Command available_commands = 3;
+
+  message Command {
+    oneof kind {
+      AbsoluteGimbalMove absolute_gimbal_move = 1;
+      ContinuousGimbalMove continuous_gimbal_move = 2;
+      SetZoomFactor set_zoom_factor = 3;
+      Stop stop = 4;
+      SetZoomRate set_zoom_rate = 5;
+    }
+  }
+
+  message AbsoluteGimbalMove {
+    // Requested pan in degrees, relative to device 0.
+    double pan = 1;
+    // Requested tilt in degrees, relative to device 0.
+    double tilt = 2;
+    // Optional zoom level. When set, drivers must
+    // apply the zoom at the same time as the pan and tilt.
+    optional double zoom_factor = 3;
+  }
+
+  // Halt any in-progress gimbal motion, including zoom.
+  message Stop {}
+}
+
+// A camera on a moving platform (e.g. a drone gimbal). Because the platform
+// moves, it is pointed at geographic coordinates rather than absolute device
+// pan/tilt; it can also be slewed continuously and zoomed.
+message ArchetypeRovingCamera {
+  // Indicates whether the zoom factor is an integer (true) or a floating point (false).
+  bool zoom_factor_is_integer = 1;
+  // Commands this archetype can currently accept, e.g. narrowed by device
+  // state. Empty means none are available; there is no "empty = all" default.
+  // Only each entry's command discriminant is read — payloads are ignored.
+  repeated Command available_commands = 2;
+
+  message Command {
+    oneof kind {
+      LockToCoordinates lock_to_coordinates = 1;
+      ContinuousGimbalMove continuous_gimbal_move = 2;
+      SetZoomFactor set_zoom_factor = 3;
+      SetZoomRate set_zoom_rate = 4;
+      Stop stop = 5;
+    }
+  }
+
+  message Stop {}
+
+  message LockToCoordinates {
+    // Target latitude in decimal degrees.
+    double latitude_degrees = 1;
+    // Target longitude in decimal degrees.
+    double longitude_degrees = 2;
+    // Target altitude above ellipsoid (meters), if known.
+    optional double altitude_hae_meters = 3;
+    // When true, keep tracking the coordinate as the platform moves; when
+    // false, point at it once.
+    bool lock = 4;
+  }
+}
+
+// Movement state of a fixed-mount gimbal: MOVING while any axis the archetype
+// controls (pan/tilt, and zoom for a PTZ camera) is in motion. Devices that
+// don't report motion state directly must have their integration derive it
+// (e.g. from position deltas between telemetry polls).
+message GimbalState {
+  oneof gimbal_state {
+    google.protobuf.Empty idle = 1;
+    google.protobuf.Empty moving = 2;
+  }
+}
+
+message ContinuousGimbalMove {
+  // Normalized pan speed (-1.0 to 1.0, where 1.0 is max speed for the device)
+  double pan_speed = 1;
+  // Normalized tilt speed (-1.0 to 1.0, where 1.0 is max speed for the device)
+  double tilt_speed = 2;
+  // Movement duration (seconds)
+  double duration_seconds = 3;
+}
+
+message SetZoomFactor {
+  // Target zoom factor (between 1.0 and max zoom factor)
+  double zoom_factor = 1;
+}
+
+message SetZoomRate {
+  // Normalized zoom speed (-1.0 to 1.0; positive zooms in, 0 stops).
+  double zoom_speed = 1;
+  // How long the device should keep applying the
+  // rate before auto-halting if the client stops re-sending.
+  // 0 means the driver leaves the device to its own default.
+  double duration_seconds = 2;
+}

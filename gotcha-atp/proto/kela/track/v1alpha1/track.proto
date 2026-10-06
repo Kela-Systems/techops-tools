@@ -1,0 +1,717 @@
+syntax = "proto3";
+
+package kela.track.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+import "kela/blob/v1alpha1/blob.proto";
+import "kela/types/v1alpha1/detection.proto";
+import "kela/types/v1alpha1/types.proto";
+
+service TrackService {
+  // Raw track APIs (sensors, video analytics)
+  rpc PublishRawTrack(PublishRawTrackRequest) returns (PublishRawTrackResponse);
+  // Publish a batch of raw tracks in a single request. Partial success is possible.
+  rpc PublishRawTrackBatch(PublishRawTrackBatchRequest) returns (PublishRawTrackBatchResponse);
+  rpc WatchRawTracks(WatchRawTracksRequest) returns (stream WatchRawTracksResponse);
+
+  // Fused track APIs (generated in fusion service, consumed by applications)
+  rpc PublishFusedTrack(PublishFusedTrackRequest) returns (PublishFusedTrackResponse);
+  // Publish a batch of fused tracks in a single request. Partial success is possible.
+  rpc PublishFusedTrackBatch(PublishFusedTrackBatchRequest) returns (PublishFusedTrackBatchResponse);
+  rpc WatchFusedTracks(WatchFusedTracksRequest) returns (stream WatchFusedTracksResponse);
+
+  // Stream every raw_tracks update within a time range, ordered by last_detected_at ASC.
+  rpc GetHistoricalRawTracks(GetHistoricalRawTracksRequest) returns (stream GetHistoricalRawTracksResponse);
+
+  // Return all recorded fused track rows within a time range
+  rpc GetHistoricalFusedTrackEvents(GetHistoricalFusedTrackEventsRequest) returns (stream GetHistoricalFusedTrackEventsResponse);
+
+  // Return the lifetime and classification of each fused track whose
+  // first_detected_at falls within a time range — one entry per track.
+  rpc GetTracksCreatedInTimespan(GetTracksCreatedInTimespanRequest) returns (GetTracksCreatedInTimespanResponse);
+
+  // Get assets that can mitigate a given track
+  rpc GetTrackMitigationAssets(GetTrackMitigationAssetsRequest) returns (GetTrackMitigationAssetsResponse);
+
+  // Target APIs: targets are persistent operator-workflow objects attached to a fused track.
+  // Created automatically when a track alarms or is manually created, and carry resolution status
+  // (open/dismissed/mitigated) that the operator controls from the UI.
+  rpc WatchTargets(WatchTargetsRequest) returns (stream WatchTargetsResponse);
+  rpc UpdateTargetStatus(UpdateTargetStatusRequest) returns (UpdateTargetStatusResponse);
+  rpc GetHistoricalTargetEvents(GetHistoricalTargetEventsRequest) returns (stream GetHistoricalTargetEventsResponse);
+  rpc GetTargetEventsInTimespan(GetTargetEventsInTimespanRequest) returns (GetTargetEventsInTimespanResponse);
+  rpc GetTargetsSnapshotAt(GetTargetsSnapshotAtRequest) returns (GetTargetsSnapshotAtResponse);
+
+  // Enricher services patch VLM-derived tags/summary onto an existing fused track.
+  rpc UpdateFusedTrackEnrichment(UpdateFusedTrackEnrichmentRequest) returns (UpdateFusedTrackEnrichmentResponse);
+}
+
+// The detection domain of an asset or track — whether it's primarily airborne
+// or ground-based. Used by the fusion service to apply different tracking
+// parameters per domain, and by assets to indicate what they detect.
+enum DetectionDomain {
+  DETECTION_DOMAIN_UNSPECIFIED = 0;
+  DETECTION_DOMAIN_AIR = 1;
+  DETECTION_DOMAIN_GROUND = 2;
+}
+
+enum TrackClassification {
+  TRACK_CLASSIFICATION_UNSPECIFIED = 0;
+  TRACK_CLASSIFICATION_PERSON = 1;
+  TRACK_CLASSIFICATION_CAR = 2;
+  TRACK_CLASSIFICATION_TRUCK = 3;
+  TRACK_CLASSIFICATION_ANIMAL = 4;
+  TRACK_CLASSIFICATION_DRONE = 5;
+  TRACK_CLASSIFICATION_BIRD = 6;
+}
+
+enum FusedTrackState {
+  FUSED_TRACK_STATE_UNSPECIFIED = 0;
+  FUSED_TRACK_STATE_TENTATIVE = 1; // Not yet confirmed
+  FUSED_TRACK_STATE_CONFIRMED = 2; // Confirmed track
+  FUSED_TRACK_STATE_COASTING = 3; // No recent updates, predicting
+}
+
+// Activity tier of a fused track, derived by the hub from two clocks: how
+// recently the track was published, and — for a track that has alarmed — how
+// recently the hub considered it alarming. The more decayed of the two wins,
+// so a track that stops alarming starts decaying even while detections keep
+// arriving. Transitions are driven by the manager's cleanup tick:
+// ACTIVE -> RECENTLY_ACTIVE once `timeout_secs` elapses on either clock,
+// RECENTLY_ACTIVE -> STALE after an additional ~5 minutes.
+enum FusedTrackActivityStatus {
+  FUSED_TRACK_ACTIVITY_STATUS_UNSPECIFIED = 0;
+  FUSED_TRACK_ACTIVITY_STATUS_ACTIVE = 1;
+  FUSED_TRACK_ACTIVITY_STATUS_RECENTLY_ACTIVE = 2;
+  FUSED_TRACK_ACTIVITY_STATUS_STALE = 3;
+}
+
+// A ray represents a bearing-only detection from a sensor (e.g. radar).
+// The sensor knows the direction of the target but not its precise position.
+message Ray {
+  // The position of the sensor (origin of the ray)
+  kela.types.v1alpha1.Position origin = 1;
+  // Azimuth (horizontal angle) from true north in degrees, clockwise positive
+  double azimuth_degrees = 2;
+  // Elevation (vertical angle) from horizontal in degrees, positive up
+  double elevation_degrees = 3;
+  // Maximum detection range in meters
+  double max_range_meters = 4;
+  // Symmetric error margin for azimuth in degrees (+/- value)
+  optional double azimuth_error_degrees = 5;
+  // Symmetric error margin for elevation in degrees (+/- value)
+  optional double elevation_error_degrees = 6;
+  // DEM ground intersection of this ray. Server-populated: the hub resolves it
+  // at raw-track publish time via its in-process projection engine and
+  // overwrites whatever the publisher sent. Consumers that need a positioned
+  // estimate for a bearing-only detection (e.g. fusion's ray2world ground-track
+  // birth) read it from here instead of resolving the ray themselves. Unset
+  // when the ray misses the terrain, there is no DEM coverage, or the origin
+  // lacks an HAE altitude.
+  optional RayGroundHit ground_hit = 7;
+  // Apparent angular size of the detected object in degrees — the larger of
+  // the bounding box's width/height as seen from the sensor. Lets consumers
+  // that know (or learn) the object's physical size estimate its range along
+  // the ray. Set by video-analytics; absent when the producer has no bbox.
+  optional double angular_size_degrees = 8;
+  // Size in pixels of the detected object's bounding box — the larger of its
+  // width/height in the source image. Unlike `angular_size_degrees`, this grows
+  // when the camera zooms in. Reported only by producers that expose pixel box
+  // geometry. Compare values only within one stream at one resolution.
+  optional double bbox_extent_pixels = 9;
+}
+
+// DEM ground intersection of a bearing-only ray: the ground point the ray
+// implies plus the slant range to it.
+message RayGroundHit {
+  // Ground intersection point; altitude_hae_meters carries the DEM elevation.
+  kela.types.v1alpha1.Position position = 1;
+  // Slant range from the ray origin to the intersection, in meters.
+  double distance_meters = 2;
+}
+
+// Identification details for a detected drone, when the sensor can report
+// them (e.g. Sentrycs RF/RemoteID feed). All fields are best-effort and may
+// be empty when the sensor does not provide them.
+message DroneIdentification {
+  // Manufacturer / factory model name (e.g. "DJI Mavic 3").
+  optional string model = 1;
+  // Human-readable name for the drone, when provided by the sensor.
+  optional string name = 2;
+  // Serial number reported by the sensor, when available.
+  optional string serial_number = 3;
+}
+
+// Whether a detected drone is considered friendly, hostile, or unknown.
+// Distinct from identification (model/serial) — allegiance is the operational
+// disposition assigned by the producing sensor (e.g. Sentrycs allowlist =
+// FRIENDLY, blocklist = HOSTILE, "unknown" category = UNKNOWN). Operators
+// colour map icons by allegiance to surface threats at a glance.
+//
+// UNSPECIFIED and UNKNOWN are deliberately distinct: UNSPECIFIED means the
+// sensor did not report any allegiance (e.g. a non-Sentrycs producer, or a
+// field we never set), while UNKNOWN means the sensor explicitly told us it
+// could not determine the disposition.
+enum Allegiance {
+  ALLEGIANCE_UNSPECIFIED = 0;
+  ALLEGIANCE_FRIENDLY = 1;
+  ALLEGIANCE_HOSTILE = 2;
+  ALLEGIANCE_UNKNOWN = 3;
+}
+
+// Wraps an `Allegiance` value so callers can attach further provenance fields
+// (e.g. who set it, when, why) without bumping the track schema again.
+message DroneAllegiance {
+  Allegiance allegiance = 1;
+  // Asset id of the friendly drone this track was correlated to, when the
+  // allegiance was derived by the fusion service's own-drone correlation
+  // (geometric match against the drone's own telemetry). Unset when the
+  // allegiance came from a sensor report (e.g. Sentrycs RF allowlist).
+  optional string associated_asset_id = 2;
+}
+
+// Image associated with a track
+message TrackImage {
+  // Stable blob storage key. Use BlobService.BatchGetBlobs (with `bucket`)
+  // to mint a presigned download URL when displaying the image.
+  string blob_key = 1;
+  // When the image was captured
+  google.protobuf.Timestamp captured_at = 2;
+  // Bucket the blob lives in. Required for BatchGetBlobs lookups, since
+  // different producers (e.g. trailcams → CAPTURES, video-analytics →
+  // ANNOTATED_FRAMES) write to different buckets.
+  kela.blob.v1alpha1.KnownBucket bucket = 3;
+  // The detection captured in this frame, in normalized image coords.
+  // The producer (video-analytics) uploads a vanilla frame and attaches
+  // the bbox here so the FE can render an overlay on top of the image
+  // rather than relying on a server-baked rectangle.
+  optional kela.types.v1alpha1.ObjectDetection detection = 4;
+}
+
+// Video clip used to produce a track enrichment.
+message SceneAnalysisVideo {
+  // Stable blob storage key. Consumers mint a fresh browser URL with
+  // BlobService.BatchGetBlobs using `bucket`.
+  string blob_key = 1;
+  kela.blob.v1alpha1.KnownBucket bucket = 2;
+  google.protobuf.Timestamp started_at = 3;
+  google.protobuf.Timestamp ended_at = 4;
+}
+
+// The detecting unit that produced a raw track: the asset, and — when the
+// asset has more than one sensor (e.g. a CUAS system with several sub-radars)
+// — the specific sensor within it.
+message TrackSource {
+  // The asset that detected this track.
+  string asset_id = 1;
+  // The sensor within the asset that detected this track (matches
+  // `Sensor.sensor_id` on the asset). Absent when the producer has no
+  // meaningful sensor attribution.
+  optional string sensor_id = 2;
+}
+
+// Raw track from sensors/video analytics
+message RawTrack {
+  // Hub-generated UUID for this raw track (derived from source_id and the
+  // origin hub id). Server-populated on the raw-track read paths; publishers
+  // cannot set it (PublishRawTrackRequest has no such field). This is the id
+  // `WatchRawTracks.removed_track_ids` reports, so clients must key their own
+  // state by it to be able to act on removals — the derivation is one-way and
+  // not reproducible outside the hub.
+  //
+  // Absent when the hub does not know the raw track's origin hub, which today
+  // means the copies nested in a fusion-published `FusedTrack.source_tracks`.
+  // Absent means "not identifiable" — there is no value to match on.
+  optional string id = 15;
+  // External/sensor-provided ID (used to derive internal UUID)
+  string source_id = 1;
+  // Deprecated: use `source.asset_id`. Dual-written (always equals
+  // `source.asset_id`) until removal in the next version.
+  string source_asset_id = 2 [deprecated = true];
+  // The asset (and, for multi-sensor assets, the sensor within it) that
+  // detected this track. Server-normalized: always set on read paths, with
+  // `asset_id` mirrored into `source_asset_id`.
+  TrackSource source = 16;
+  // Either a precise location or a ray (bearing from sensor)
+  oneof location_data {
+    kela.types.v1alpha1.Location location = 3;
+    Ray ray = 9;
+  }
+  TrackClassification classification = 4;
+  google.protobuf.Timestamp first_detected_at = 5;
+  google.protobuf.Timestamp last_detected_at = 6;
+  // Seconds before track expires if not updated
+  uint32 timeout_secs = 7;
+  // Detection confidence [0, 1]
+  optional float confidence = 8;
+  // Whether this track was manually created by an operator
+  bool is_manual = 10;
+  // Image associated with this track (e.g., trail camera capture, annotated frame)
+  optional TrackImage image = 11;
+  // Radar cross section in dBsm (decibels per square meter), when reported by
+  // the sensor (typically radar). Can be negative.
+  optional double radar_cross_section_dbsm = 12;
+  // Drone identification details (model, name, serial number) when the
+  // sensor can report them. Only meaningful when `classification` is
+  // `TRACK_CLASSIFICATION_DRONE`.
+  optional DroneIdentification drone_identification = 13;
+  // Drone allegiance (friendly/hostile/unspecified) when the sensor reports
+  // it. Only meaningful when `classification` is `TRACK_CLASSIFICATION_DRONE`.
+  optional DroneAllegiance drone_allegiance = 14;
+  // The publisher keeps this track out of fusion: no fused track is created
+  // or updated from it. The track is still served on WatchRawTracks and can
+  // be recorded and exported.
+  bool excluded_from_fusion = 17;
+  // Per-class scores for this detection, when the detector exposes them.
+  // Labels are the detector's own, not the `TrackClassification` names. Empty
+  // when the detector does not expose per-class scores.
+  repeated kela.types.v1alpha1.ClassScore class_scores = 18;
+}
+
+// Fused track (from fusion service or forwarded raw)
+message FusedTrack {
+  // Hub-generated UUID for this fused track (derived from source_id)
+  string id = 1;
+  // Fusion-service-provided ID (used to derive hub UUID, like RawTrack.source_id)
+  string source_id = 10;
+  // Either a precise location or a ray (bearing from sensor)
+  oneof location_data {
+    kela.types.v1alpha1.Location location = 2;
+    Ray ray = 12;
+  }
+  TrackClassification classification = 3;
+  google.protobuf.Timestamp first_detected_at = 4;
+  google.protobuf.Timestamp last_detected_at = 5;
+  uint32 timeout_secs = 6;
+  // How much the producer trusts this track, not what the track is. For
+  // whether the object is a drone, see `fused_metadata.drone_probability`.
+  optional float confidence = 7;
+
+  // Fusion-specific data (optional - null when forwarding raw tracks as trivial fused)
+  optional FusedTrackMetadata fused_metadata = 8;
+
+  // Full source tracks that contributed to this fused track
+  repeated RawTrack source_tracks = 9;
+
+  optional google.protobuf.Timestamp expires_at_utc = 11;
+
+  // Whether this track is airborne or ground-based
+  DetectionDomain detection_domain = 13;
+
+  // Activity tier derived by the hub. Defaults to ACTIVE on publish; the
+  // manager's cleanup tick transitions to RECENTLY_ACTIVE and STALE as the
+  // track ages, and emits an updated FusedTrack on every transition.
+  FusedTrackActivityStatus activity_status = 14;
+
+  // Optional enrichment from scene-context-enricher (or similar). Ephemeral;
+  // preserved across fusion upserts until the fused track is removed.
+  optional TrackEnrichment track_enrichment = 15;
+
+  // Drone allegiance (friendly/hostile/unspecified). Derived by the fusion
+  // service from source raw tracks (first non-UNSPECIFIED wins), from its
+  // own-drone correlation (geometric match against a friendly drone's
+  // telemetry — see `DroneAllegiance.associated_asset_id`), or copied
+  // through when fusion is disabled. Not gated on `classification`: a track
+  // riding a friendly drone may be classified UNKNOWN by its sensors.
+  optional DroneAllegiance drone_allegiance = 16;
+
+  reserved 17;
+  reserved "in_alarm_zone_id";
+}
+
+// Application-level analysis attached to a fused track by an enricher service.
+message TrackEnrichment {
+  repeated string tags = 1;
+  string summary = 2;
+  // Categorical severity for this enrichment.
+  // - Absent (not set): this enricher did not emit a severity opinion.
+  // - SEVERITY_UNSPECIFIED: enricher ran but could not assess the media
+  //   (e.g. unusable video). Distinct from "not set".
+  // - LOW / MEDIUM / HIGH / CRITICAL: assessed confidence levels.
+  // The Hub does not aggregate severity across enrichers; consumers merge as
+  // they see fit.
+  optional kela.types.v1alpha1.Severity severity = 3;
+  // Exact video clip supplied to the VLM. The media bytes live in object
+  // storage; this ephemeral enrichment carries only the stable reference.
+  optional SceneAnalysisVideo analyzed_video = 4;
+}
+
+// Metadata specific to fused tracks (from actual fusion processing)
+message FusedTrackMetadata {
+  // Current fusion state
+  FusedTrackState state = 1;
+  // State covariance (6x6 matrix as row-major array: [P00, P01, ..., P55])
+  // Covers position (x,y,z) and velocity (vx,vy,vz) in ECEF
+  repeated double covariance = 2;
+  // Number of measurements incorporated
+  int32 measurement_count = 3;
+  // Physical object size in meters, as fusion believes it. Absent when fusion
+  // holds no belief; consumers must not substitute a size of their own. Always
+  // finite and greater than zero when set.
+  optional double estimated_size_m = 4;
+  // Number of range/angular-size pairs behind `estimated_size_m`. Zero with a
+  // size set means the size is the current classification's prior.
+  int32 size_sample_count = 5;
+  // P(this track is a drone) in [0, 1], from fusion's radar and camera
+  // evidence. Distinct from `confidence`, which reports how well the filter is
+  // converging and says nothing about what the object is. Absent when fusion
+  // has not scored the track; consumers must treat that as "unknown" and use
+  // their own prior rather than reading it as zero.
+  optional double drone_probability = 6;
+  // The two log-odds channels behind `drone_probability`, as they were
+  // combined: `radar_llr` after the radar channel's cap, `camera_llr` after its
+  // floor and ceiling. Their sum plus fusion's prior is the logit of
+  // `drone_probability`. Absent together whenever `drone_probability` is absent.
+  optional double radar_llr = 7;
+  optional double camera_llr = 8;
+}
+
+// Publish request for raw tracks (from sensors/video analytics)
+message PublishRawTrackRequest {
+  // External/sensor-provided ID (used to derive internal UUID)
+  string source_id = 1;
+  // Deprecated: use `source`. Publishers may still set only this field; the
+  // hub normalizes (fills `source.asset_id` from it, and vice versa; `source`
+  // wins on mismatch). Removal planned for the next version.
+  string source_asset_id = 2 [deprecated = true];
+  // The asset (and, for multi-sensor assets, the sensor within it) that
+  // detected this track. Preferred over `source_asset_id`.
+  TrackSource source = 15;
+  // Either a precise location or a ray (bearing from sensor)
+  oneof location_data {
+    kela.types.v1alpha1.Location location = 3;
+    Ray ray = 9;
+  }
+  TrackClassification classification = 4;
+  google.protobuf.Timestamp first_detected_at = 5;
+  google.protobuf.Timestamp last_detected_at = 6;
+  // Seconds before track expires if not updated
+  uint32 timeout_secs = 7;
+  // Detection confidence [0, 1]
+  optional float confidence = 8;
+  // Whether this track was manually created by an operator
+  bool is_manual = 10;
+  // Image associated with this track (e.g., trail camera capture, annotated frame)
+  optional TrackImage image = 11;
+  // Radar cross section in dBsm (decibels per square meter), when reported by
+  // the sensor (typically radar). Can be negative.
+  optional double radar_cross_section_dbsm = 12;
+  // Drone identification details (model, name, serial number) when the
+  // sensor can report them. Only meaningful when `classification` is
+  // `TRACK_CLASSIFICATION_DRONE`.
+  optional DroneIdentification drone_identification = 13;
+  // Drone allegiance (friendly/hostile/unspecified) when the sensor reports
+  // it. Only meaningful when `classification` is `TRACK_CLASSIFICATION_DRONE`.
+  optional DroneAllegiance drone_allegiance = 14;
+  // The publisher keeps this track out of fusion: no fused track is created
+  // or updated from it. The track is still served on WatchRawTracks and can
+  // be recorded and exported.
+  bool excluded_from_fusion = 16;
+  // Per-class scores for this detection, when the detector exposes them.
+  // Labels are the detector's own, not the `TrackClassification` names. Empty
+  // when the detector does not expose per-class scores.
+  repeated kela.types.v1alpha1.ClassScore class_scores = 17;
+}
+
+message PublishRawTrackBatchRequest {
+  repeated PublishRawTrackRequest tracks = 1;
+}
+
+message PublishRawTrackBatchResponse {
+  repeated string track_ids = 1;
+}
+
+message PublishFusedTrackBatchRequest {
+  repeated PublishFusedTrackRequest tracks = 1;
+}
+
+message PublishFusedTrackBatchResponse {
+  repeated string track_ids = 1;
+}
+
+message PublishRawTrackResponse {
+  string track_id = 1;
+}
+
+// Publish request for fused tracks (from fusion service)
+message PublishFusedTrackRequest {
+  // Fusion-service-provided ID (hub derives UUID from this)
+  string source_id = 1;
+  // Either a precise location or a ray (bearing from sensor)
+  oneof location_data {
+    kela.types.v1alpha1.Location location = 2;
+    Ray ray = 12;
+  }
+  TrackClassification classification = 3;
+  google.protobuf.Timestamp first_detected_at = 4;
+  google.protobuf.Timestamp last_detected_at = 5;
+  uint32 timeout_secs = 6;
+  optional float confidence = 7;
+  // Fusion-specific data (optional - null when forwarding raw tracks as trivial fused)
+  optional FusedTrackMetadata fused_metadata = 8;
+  // Full source tracks that contributed to this fused track
+  repeated RawTrack source_tracks = 9;
+  // Whether this track is airborne or ground-based
+  DetectionDomain detection_domain = 13;
+  // Drone allegiance (friendly/hostile/unspecified). Derived by the fusion
+  // service from source raw tracks or from its own-drone correlation. Not
+  // gated on `classification`: a track riding a friendly drone may be
+  // classified UNKNOWN by its sensors.
+  optional DroneAllegiance drone_allegiance = 14;
+}
+
+message PublishFusedTrackResponse {
+  string track_id = 1;
+}
+
+// Watch requests for new track APIs
+message WatchRawTracksRequest {
+  // Override the server's default per-track coalescing window, in milliseconds.
+  // Unset => server default. 0 => no coalescing: every update is delivered
+  // immediately as its own response (minimum latency and no dedup).
+  optional uint32 override_batching_interval_ms = 1;
+  // Opts into byte-bounded initial snapshot chunks.
+  bool supports_chunked_snapshots = 2;
+}
+
+message WatchFusedTracksRequest {
+  // See WatchRawTracksRequest.override_batching_interval_ms.
+  optional uint32 override_batching_interval_ms = 1;
+  // Opts into byte-bounded initial snapshot chunks.
+  bool supports_chunked_snapshots = 2;
+}
+
+// Watch responses for new track APIs
+message WatchRawTracksResponse {
+  repeated RawTrack updated_tracks = 1;
+  repeated string removed_track_ids = 2;
+  // Present only for clients that opt into chunked snapshots. False means more
+  // initial snapshot chunks follow; true marks the final snapshot chunk.
+  optional bool initial_snapshot_complete = 3;
+}
+
+message WatchFusedTracksResponse {
+  repeated FusedTrack updated_tracks = 1;
+  repeated string removed_track_ids = 2;
+  // Present only for clients that opt into chunked snapshots. False means more
+  // initial snapshot chunks follow; true marks the final snapshot chunk.
+  optional bool initial_snapshot_complete = 3;
+}
+
+message GetHistoricalRawTracksRequest {
+  // Inclusive lower bound on RawTrack.last_detected_at.
+  google.protobuf.Timestamp start_time = 1;
+  // Inclusive upper bound on RawTrack.last_detected_at.
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message GetHistoricalRawTracksResponse {
+  RawTrack raw_track = 1;
+}
+
+message GetHistoricalFusedTrackEventsRequest {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message GetHistoricalFusedTrackEventsResponse {
+  google.protobuf.Timestamp time = 1;
+  FusedTrack fused_track = 2;
+  // No `deleted` field: fused_tracks have no soft-delete or expiration event
+  // in the persistence layer. Tracks "disappear" implicitly when no event for
+  // the id is observed within the freshness window — clients should derive
+  // expiry from `last_detected_at + timeout`.
+}
+
+message GetTracksCreatedInTimespanRequest {
+  // Inclusive lower bound on FusedTrack.first_detected_at.
+  google.protobuf.Timestamp start_time = 1;
+  // Inclusive upper bound on FusedTrack.first_detected_at.
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message CreatedTrack {
+  string track_id = 1;
+  // When the track was created / first detected (FusedTrack.first_detected_at).
+  google.protobuf.Timestamp created_at = 2;
+  TrackClassification classification = 3;
+  // When the track was last detected (FusedTrack.last_detected_at), so a caller
+  // has how long the track lasted without reading its snapshots. A track the Hub
+  // is still seeing has this at its newest snapshot, which is not the same as the
+  // track having gone away.
+  google.protobuf.Timestamp last_detected_at = 4;
+}
+
+message GetTracksCreatedInTimespanResponse {
+  repeated CreatedTrack tracks = 1;
+}
+
+message GetTrackMitigationAssetsRequest {
+  // The ID of the fused track to find mitigation assets for
+  string track_id = 1;
+}
+
+message GetTrackMitigationAssetsResponse {
+  // Asset IDs of assets that can mitigate the given track
+  repeated string asset_ids = 1;
+  // The asset ID of the default (recommended) mitigating asset
+  optional string default_asset_id = 2;
+}
+
+// Operator-workflow object attached to a fused track. Persisted and loaded on startup.
+message Target {
+  string id = 1;
+  string track_id = 2;
+  TargetStatus status = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  TargetLifecycle lifecycle = 6;
+}
+
+message TargetWithFusedTrack {
+  Target target = 1;
+  FusedTrack fused_track = 2;
+  // Hub-computed display name for the target. The serial is the
+  // disambiguator the UI shows after the (client-localized) classification
+  // label; `scheme` tells the UI how to format it.
+  TargetName name = 3;
+}
+
+message HistoricalTarget {
+  Target target = 1;
+  optional TargetName name = 2;
+}
+
+// How a target's display serial was derived. Chosen per track by the hub so
+// the result no longer depends on whether the fusion service is enabled.
+enum TargetNameScheme {
+  TARGET_NAME_SCHEME_UNSPECIFIED = 0;
+  // serial = the fusion source id with the "track-" prefix removed.
+  TARGET_NAME_SCHEME_SOURCE_ID = 1;
+  // serial = a time-derived "HHMM - <base62>" string (UTC).
+  TARGET_NAME_SCHEME_TIME = 2;
+}
+
+// Display name for a target, computed by the hub. The classification label
+// (e.g. "Person") is prepended client-side so it stays localized; this
+// message carries only the disambiguating serial and how to format it.
+message TargetName {
+  string serial = 1;
+  TargetNameScheme scheme = 2;
+}
+
+// How the operator has resolved a target. Orthogonal to `TargetLifecycle`:
+// a target can be closed and dismissed, closed and mitigated, or closed with
+// no operator action at all.
+enum TargetStatus {
+  TARGET_STATUS_UNSPECIFIED = 0;
+  // No operator action taken yet. Not a liveness signal — see TargetLifecycle.
+  TARGET_STATUS_OPEN = 1;
+  TARGET_STATUS_DISMISSED = 2;
+  TARGET_STATUS_MITIGATED = 3;
+}
+
+// Whether the hub still considers a target live. Owned by the hub, and never
+// reads or writes TargetStatus. Which conditions make a track worth targeting
+// is the hub's to decide and is expected to grow beyond geometry, so consumers
+// must treat this as the verdict and not re-derive it.
+enum TargetLifecycle {
+  TARGET_LIFECYCLE_UNSPECIFIED = 0;
+  // The track currently warrants being a target.
+  TARGET_LIFECYCLE_OPEN = 1;
+  // The track no longer warrants being a target, or never did — the birth
+  // state for a target created for a manually plotted track.
+  TARGET_LIFECYCLE_CLOSED = 2;
+}
+
+enum TargetEventKind {
+  TARGET_EVENT_KIND_UNSPECIFIED = 0;
+  TARGET_EVENT_KIND_CREATED = 1;
+  TARGET_EVENT_KIND_STATUS_UPDATED = 2;
+  TARGET_EVENT_KIND_DELETED = 3;
+}
+
+message WatchTargetsRequest {
+  // Only include targets whose track was updated within this window. Unset
+  // means no recency bound. Measured on the track, not the target: a target
+  // does not change while its track merely moves.
+  optional uint32 seconds_back = 1;
+  // Only include targets in these statuses. Empty selects no targets; set
+  // `all_statuses` to lift the filter instead of enumerating every status.
+  repeated TargetStatus statuses = 2;
+  // Opts into byte-bounded initial snapshot chunks.
+  bool supports_chunked_snapshots = 3;
+  // Leave `TargetWithFusedTrack.fused_track` unset. For callers that already
+  // hold the tracks (e.g. from WatchFusedTracks) and only need each track's
+  // disposition — the embedded track is by far the larger half of the message
+  // and is re-sent on every track update.
+  //
+  // Phrased as an opt-out so the default keeps the track, which existing
+  // callers depend on.
+  bool omit_fused_track = 4;
+  // Send every target regardless of status; `statuses` is ignored. Callers
+  // that want an unfiltered stream set this so they never have to keep in
+  // step with the TargetStatus enum.
+  bool all_statuses = 5;
+}
+
+message WatchTargetsResponse {
+  repeated TargetWithFusedTrack updated_targets = 1;
+  repeated string removed_target_ids = 2;
+  // Present only for clients that opt into chunked snapshots. False means more
+  // initial snapshot chunks follow; true marks the final snapshot chunk.
+  optional bool initial_snapshot_complete = 3;
+}
+
+message UpdateTargetStatusRequest {
+  string target_id = 1;
+  TargetStatus status = 2;
+}
+
+message UpdateTargetStatusResponse {
+  Target target = 1;
+}
+
+message GetHistoricalTargetEventsRequest {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message GetHistoricalTargetEventsResponse {
+  google.protobuf.Timestamp time = 1;
+  HistoricalTarget target = 2;
+  bool deleted = 3;
+  TargetEventKind kind = 4;
+}
+
+message GetTargetEventsInTimespanRequest {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message TargetTimelineEvent {
+  google.protobuf.Timestamp time = 1;
+  string target_id = 2;
+  TargetStatus status = 3;
+  TargetEventKind kind = 4;
+  optional TargetName name = 5;
+}
+
+message GetTargetEventsInTimespanResponse {
+  repeated TargetTimelineEvent events = 1;
+}
+
+message GetTargetsSnapshotAtRequest {
+  google.protobuf.Timestamp time = 1;
+}
+
+message GetTargetsSnapshotAtResponse {
+  repeated HistoricalTarget targets = 1;
+}
+
+message UpdateFusedTrackEnrichmentRequest {
+  string track_id = 1;
+  TrackEnrichment track_enrichment = 2;
+}
+
+message UpdateFusedTrackEnrichmentResponse {}
