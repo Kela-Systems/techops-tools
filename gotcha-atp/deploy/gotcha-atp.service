@@ -1,0 +1,34 @@
+# Gotcha ATP — systemd unit for the tailnet host (techops-automations-host, same
+# box as bench-central and hub-admin-web). Install per gotcha-atp/README.md.
+[Unit]
+Description=Gotcha ATP (acceptance test UI for assembled Gotcha units, TEC-647)
+# Tailscale must be up before we bind; harmless if the unit name differs.
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as the checkout's owner, same reasoning as bench-central: the repo lives
+# in ec2-user's home, and this is a single-process tailnet-only host.
+User=ec2-user
+Group=ec2-user
+# /var/lib/gotcha-atp, created and owned for us by systemd, OUTSIDE the checkout:
+# a git pull or re-clone never touches the run records or the credentials file.
+# 0700 because config.toml holds the kela and device passwords and the Fleet token.
+StateDirectory=gotcha-atp
+StateDirectoryMode=0700
+Environment=GOTCHA_ATP_CONFIG=/var/lib/gotcha-atp/config.toml
+Environment=GOTCHA_ATP_RUNS=/var/lib/gotcha-atp/runs
+# bench-central runs on this box ([bench_central] url in config.toml wins).
+Environment=BENCH_CENTRAL_URL=http://127.0.0.1:8100
+WorkingDirectory=/home/ec2-user/techops-tools/gotcha-atp
+# 0.0.0.0 is safe here only because the instance has NO inbound security-group
+# rules: just tailnet peers reach the port. The UI has no login of its own —
+# whoever reaches it runs ATPs with the credentials above, so limit who can reach
+# this host's port 8190 in the tailnet ACL. 8100 is bench-central, 8200 hub-admin-web.
+ExecStart=/home/ec2-user/techops-tools/gotcha-atp/.venv/bin/gotcha-atp ui --host 0.0.0.0 --port 8190 --no-browser
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
