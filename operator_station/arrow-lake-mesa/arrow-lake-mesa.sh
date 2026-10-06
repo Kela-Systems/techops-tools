@@ -121,7 +121,13 @@ snapshot() {  # snapshot <label> -> path of the saved file
   local label="$1" file
   mkdir -p "$REPORT_DIR"
   file="$REPORT_DIR/${TARGET#*@}-$(date -u +%Y%m%dT%H%M%SZ)-${label}.txt"
-  rsh "bash -s" <<<"$SNAPSHOT" >"$file"
+  # $(...) does not inherit set -e on bash 3.2, so check the login explicitly: an empty
+  # snapshot must never read as "this station is not Arrow Lake".
+  if ! rsh "bash -s" <<<"$SNAPSHOT" >"$file" || ! grep -q '^gpu_id=' "$file"; then
+    rm -f "$file"
+    echo "error: could not log in to $TARGET or read the station (wrong password? Hebrew keyboard layout? station busy?)" >&2
+    return 1
+  fi
   echo "label=$label" >>"$file"
   echo "$file"
 }
@@ -148,7 +154,7 @@ cmd_check() {
   local label="check"
   [[ "${1:-}" == "--label" ]] && label="${2:?--label needs a name}"
   echo "Read-only snapshot of $TARGET ..."
-  local f; f="$(snapshot "$label")"
+  local f; f="$(snapshot "$label")" || exit 1
   show "$f"
   echo "Saved: $f"
   if [[ "$(val gpu_id "$f")" != "8086:7d67" ]]; then
@@ -166,7 +172,7 @@ cmd_apply() {
     case "$a" in --no-reboot) reboot=0 ;; --force) force=1 ;; *) die "unknown option $a" ;; esac
   done
   echo "== 1/4 pre-checks + 'before' snapshot (read-only)"
-  local f; f="$(snapshot before)"
+  local f; f="$(snapshot before)" || exit 1
   show "$f"
   echo "Saved: $f"
   [[ "$(val gpu_id "$f")" == "8086:7d67" || $force == 1 ]] \
@@ -207,7 +213,7 @@ cmd_verify() {
   if [[ -z "$before" ]]; then
     before="$(ls -t "$REPORT_DIR/${TARGET#*@}"-*-before.txt 2>/dev/null | head -1 || true)"
   fi
-  local after; after="$(snapshot after)"
+  local after; after="$(snapshot after)" || exit 1
   if [[ -n "$before" && -f "$before" ]]; then
     echo "BEFORE ($before)"; show "$before"
   else
