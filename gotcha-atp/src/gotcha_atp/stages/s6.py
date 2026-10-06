@@ -513,7 +513,8 @@ def _s67a(ctx: Context) -> Row:
 def _s67b(ctx: Context) -> Row:
     spec = STAGE.spec("S6.7b")
     if shutil.which("ffprobe") is None:
-        return amber(spec, "ffprobe is not installed on this laptop (brew install ffmpeg)")
+        return amber(spec, "ffprobe is not installed where the ATP runs (macOS: brew install ffmpeg; "
+                           "Amazon Linux: a static ffmpeg build in /usr/local/bin)")
     natives = ctx.facts.get("video_natives") or {}
     if not natives:
         return amber(spec, "no video paths (S6.6)")

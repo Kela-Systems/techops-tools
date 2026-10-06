@@ -28,11 +28,11 @@ def _ui(args: argparse.Namespace) -> int:
     import uvicorn
 
     from .ui.app import create_app
-    url = f"http://127.0.0.1:{args.port}"
-    print(f"Gotcha ATP {__version__} — {url}")
+    url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host}:{args.port}"
+    print(f"Gotcha ATP {__version__} — {url}" + (f" (listening on {args.host})" if args.host != "127.0.0.1" else ""))
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    uvicorn.run(create_app(), host="127.0.0.1", port=args.port, log_level="warning")
+    uvicorn.run(create_app(), host=args.host, port=args.port, log_level="warning")
     return 0
 
 
@@ -139,6 +139,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd")
 
     ui = sub.add_parser("ui", help="the web UI (default)")
+    ui.add_argument("--host", default="127.0.0.1",
+                    help="address to listen on; 0.0.0.0 only on a host whose port is reachable "
+                         "from the tailnet alone (the UI has no login of its own)")
     ui.add_argument("--port", type=int, default=8190)
     ui.add_argument("--no-browser", action="store_true")
     ui.set_defaults(fn=_ui)

@@ -55,6 +55,54 @@ uv run gotcha-atp catalogue                              # every declared row
 uv run pytest
 ```
 
+## Deploy (EC2 tailnet host, e.g. `techops-automations-host`)
+
+Same host and conventions as bench-central and hub-admin-web: checkout in
+ec2-user's home, the service runs as `ec2-user`, state outside the checkout in
+`/var/lib/gotcha-atp` (run records and `config.toml`), port 8190 reachable from
+the tailnet only (the instance has no inbound security-group rules). Engineers
+then open `http://<host>:8190` (MagicDNS name or 100.x address) in a browser.
+
+Before you deploy, know what changes when it runs on a shared host:
+
+- **No login.** Whoever reaches port 8190 connects to units and runs ATPs with
+  the credentials in the host's `config.toml` (kela and device passwords, Fleet
+  token). Limit who can reach this host's 8190 in the tailnet ACL.
+- **One run at a time.** The UI holds one connection and one run for everyone;
+  a second engineer sees (and can cancel) the first one's run.
+- **The host must reach the units.** It needs the same tailnet access as an
+  engineer's laptop: SSH to `<site>` and `<site>-operator`. Units that accept
+  Tailscale SSH only for user identities fall back to the kela password.
+- **Video decode (S6.7b)** needs `ffprobe` on the host; without it that row is
+  "not checked". Amazon Linux has no ffmpeg package — use a static build.
+
+```bash
+# as ec2-user
+curl -LsSf https://astral.sh/uv/install.sh | sh          # uv in ~/.local/bin
+sudo dnf install -y pango                                  # PDF report
+# ffprobe: static build (x86_64 shown; use the arm64 build on t4g)
+curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ -C /tmp
+sudo install /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/
+
+git -C ~/techops-tools pull                                # or clone, as for bench-central
+cd ~/techops-tools/gotcha-atp
+~/.local/bin/uv sync --frozen                              # .venv with the gotcha-atp command
+.venv/bin/python scripts/gen_protos.py                     # hub gRPC stubs (else built on first use)
+
+sudo cp deploy/gotcha-atp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start gotcha-atp                            # creates /var/lib/gotcha-atp (0700)
+sudo -u ec2-user cp config.example.toml /var/lib/gotcha-atp/config.toml
+sudo -u ec2-user chmod 600 /var/lib/gotcha-atp/config.toml # fill in the passwords there
+sudo systemctl enable --now gotcha-atp && sudo systemctl restart gotcha-atp
+
+tailscale status | grep -i gotcha                          # the units are visible from here
+curl -s http://127.0.0.1:8190/api/home | head -c 200       # the UI answers
+```
+
+To update: `git -C ~/techops-tools pull`, `cd ~/techops-tools/gotcha-atp && ~/.local/bin/uv sync --frozen`,
+`sudo systemctl restart gotcha-atp`. Run records and the config survive it.
+
 ## Access model
 
 The laptop never joins the unit LAN; everything goes through SSH over the tailnet.
