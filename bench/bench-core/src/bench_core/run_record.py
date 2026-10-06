@@ -49,7 +49,10 @@ only by the per-run JSON writer — `parse_run_record()` still accepts those.)
 `device` extension blocks (per-family fields, everything else stays core):
 
     otd           hostname, site_name, imei, password_source
-    rutm          hostname, site_name, password_source
+    rutm          hostname, site_name, password_source, role ("server" | "edge";
+                  absent on older records, which read as server), ip (the LAN
+                  the router ended on), wan_ip (edge only: the static WAN
+                  address on the server-box subnet)
     tsw           ip (the management address the switch was moved to),
                   password_source, firmware_note (why the firmware step did
                   what it did — the config names a floor, not a pin, so a unit

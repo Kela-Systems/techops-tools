@@ -156,6 +156,26 @@ Plug the router in. The page reads it and asks for two things:
 Click **Configure**. The tool does everything else (password, name, time, firmware, RMS, Tailscale,
 checks) and, for the RUTM08, **moves the LAN to** `192.168.88.1` **as the last step**.
 
+### RUTM08: Server or Edge
+
+The RUTM08 page has a **Server / Edge** switch above the site name. Pick it **before** the batch —
+it stays where you left it, across units and restarts, and the Configure button says which one it
+will do (**Configure as Server** / **Configure as Edge**).
+
+- **Server** — the main router of a Gotcha **server box**. Named `rut-<site>`, ends on `192.168.88.1`.
+  This is what the page has always done.
+- **Edge** — the router inside a Gotcha **edge box** (camera, radars, APUs, speaker behind it).
+  Named `rut-edge-<site>`, ends on `192.168.89.1`, and its WAN is fixed to `192.168.88.20`. The QA
+  label shows that `192.168.88.20` address, and says **EDGE** in the header.
+
+> ⚠️ **Edge needs a different uplink.** The edge router's WAN is fixed to `192.168.88.20` after
+> Tailscale, so on the bench **plug its WAN into a LAN port of a provisioned server-role RUTM08**
+> (not the normal bench uplink) — otherwise it loses internet halfway through the run.
+
+If you plug in a router that already answers on the **other** role's address, the page says so
+and Configure is disabled: switch the role to match, or just press **Verify** — Verify always checks a
+unit as the role it was configured as, whatever the switch says.
+
 ### Scan the label instead of typing the password
 
 If the station has a barcode scanner, **scan the QR code on the device's sticker** instead of
@@ -175,7 +195,8 @@ re-setting up.
 
 > **Re-running a device that was already configured?** Leave the label-password field **empty** —
 > it's already on the shared password. Don't scan the label; the factory password no longer applies.
-> The RUTM08 page can also pick it up again on its new `192.168.88.1` address.
+> The RUTM08 page can also pick it up again on its new `192.168.88.1` (or, for an edge router,
+> `192.168.89.1`) address.
 
 **The label password is kept, so get it right.** On the OTD500, RUTM08 and TSW202 the bench sends
 each unit's factory password to bench-central, filed under its serial. If that device is ever

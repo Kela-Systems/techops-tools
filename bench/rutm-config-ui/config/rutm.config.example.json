@@ -77,5 +77,38 @@
     "tailnet": "example.com",
     "tags": ["tag:rutm"],
     "login_server": ""
+  },
+
+  "roles": {
+    "_comment": "Overrides merged over the top-level settings for the role picked in the UI. server = main router of a server box (today's behaviour). edge = router inside a Gotcha edge box. Dicts merge, lists and scalars replace, keys starting with _ are ignored. The role itself is NOT stored here — it is the operator's toggle, kept in role-state.json beside the tool, so flipping it does not change config_hash. The edge values below are also the tool's built-in defaults, so a config without this block still provisions edge units.",
+    "server": {},
+    "edge": {
+      "_comment_name": "rut-edge-<site>, so RMS, Tailscale and the tailnet never hold two rut-<site> devices for one site.",
+      "name_prefix": "rut-edge-",
+      "_comment_lan": "The edge box's own subnet. The devices stay on statics below .100 with gateway 192.168.89.1. Must not be 192.168.88.1 (a second gateway on the server-box subnet) — the tool refuses to run if it is.",
+      "lan_ip": "192.168.89.1",
+      "_comment_ntp": "Interval 60, not the 3600 a server config may use: an edge router has no RTC and often boots before the server answers, and a long interval can leave it unable to reach RMS and Tailscale for up to an hour.",
+      "ntp": { "enabled": true, "server": "192.168.88.10", "interval": 60 },
+      "_comment_wan": "The WAN cable goes into the server-box switch. Pinned after Tailscale, like the server role's WAN — on the bench, plug WAN into a LAN port of a provisioned server-role RUTM08 so the unit keeps internet.",
+      "wan": { "enabled": true, "ipaddr": "192.168.88.20", "netmask": "255.255.255.0",
+               "gateway": "192.168.88.1", "dns": "192.168.88.1" },
+      "ntp_forward": { "enabled": false },
+      "_comment_dhcp": "Leases .200-.249 on the LAN, served. The pool follows the LAN move, so the station's lease follows the router and a later Verify needs no manual adapter setup.",
+      "dhcp": { "enabled": true, "start": 200, "limit": 50 },
+      "_comment_wan_access": "Enables RutOS's own Enable_HTTP_WAN / Enable_HTTPS_WAN / Enable_SSH_WAN rules; nothing is added. A port forward on 22, 80 or 443 would shadow these and is refused.",
+      "wan_access": { "webui": true, "ssh": true },
+      "_comment_forwards": "TCP from wan to lan, named kela-fwd-<name> on the router. Reconciled on every run: updated in place, missing ones added, owned ones no longer listed here deleted. proto defaults to tcp.",
+      "port_forwards": [
+        { "name": "cam-web", "ext_port": 8080, "dest_ip": "192.168.89.30", "dest_port": 80 },
+        { "name": "cam-rtsp", "ext_port": 554, "dest_ip": "192.168.89.30", "dest_port": 554 },
+        { "name": "radar1-web", "ext_port": 8050, "dest_ip": "192.168.89.50", "dest_port": 80 },
+        { "name": "radar2-web", "ext_port": 8051, "dest_ip": "192.168.89.51", "dest_port": 80 },
+        { "name": "radar3-web", "ext_port": 8052, "dest_ip": "192.168.89.52", "dest_port": 80 },
+        { "name": "radar4-web", "ext_port": 8053, "dest_ip": "192.168.89.53", "dest_port": 80 },
+        { "name": "apu1-web", "ext_port": 8060, "dest_ip": "192.168.89.60", "dest_port": 80 },
+        { "name": "apu2-web", "ext_port": 8061, "dest_ip": "192.168.89.61", "dest_port": 80 },
+        { "name": "speaker-web", "ext_port": 8070, "dest_ip": "192.168.89.70", "dest_port": 80 }
+      ]
+    }
   }
 }
