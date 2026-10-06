@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package kela.archetype.v1alpha1;
+
+import "google/protobuf/empty.proto";
+
+message ArchetypeDrone {
+  DroneState state = 1;
+  // Commands this archetype can currently accept, e.g. narrowed by device
+  // state. Empty means none are available; there is no "empty = all" default.
+  // Only each entry's command discriminant is read — payloads are ignored.
+  repeated Command available_commands = 2;
+
+  message Command {
+    oneof drone_command {
+      TakeOff take_off = 1;
+      google.protobuf.Empty land = 2;
+      google.protobuf.Empty dock = 3;
+      FlyToCoordinates fly_to_coordinates = 4;
+      google.protobuf.Empty stop = 5;
+      SetAltitude set_altitude = 6;
+    }
+  }
+
+  message TakeOff {
+    // Target altitude above ellipsoid (meters)
+    // Device-specific default will be selected if unset
+    optional double altitude_hae_meters = 1;
+  }
+
+  message SetAltitude {
+    // Target altitude above ellipsoid (meters)
+    double altitude_hae_meters = 1;
+  }
+}
+
+message FlyToCoordinates {
+  // Target latitude in decimal degrees
+  double latitude_degrees = 1;
+  // Target longitude in decimal degrees
+  double longitude_degrees = 2;
+  // Target speed in meters per second (optional)
+  optional double speed_mps = 3;
+  // Target altitude above ellipsoid (meters)
+  optional double altitude_hae_meters = 4;
+  // Target altitude above ground level (meters). Driver resolves terrain
+  // at the target coordinate to compute HAE.
+  optional double altitude_agl_meters = 5;
+}
+
+message DroneState {
+  oneof drone_state {
+    google.protobuf.Empty docked = 1;
+    google.protobuf.Empty grounded = 2;
+    google.protobuf.Empty taking_off = 3;
+    google.protobuf.Empty landing = 4;
+    google.protobuf.Empty hovering = 5;
+    DroneStateFlyingToCoordinate flying_to_coordinate = 6;
+  }
+}
+
+message DroneStateFlyingToCoordinate {
+  FlyToCoordinates target_coordinates = 1;
+}

@@ -1,0 +1,128 @@
+syntax = "proto3";
+
+package kela.blob.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+
+service BlobService {
+  // Get a presigned URL to upload a blob directly to storage
+  rpc CreateUploadUrl(CreateUploadUrlRequest) returns (CreateUploadUrlResponse);
+
+  // List all blobs for an entity
+  rpc ListBlobs(ListBlobsRequest) returns (ListBlobsResponse);
+
+  // Get presigned download URLs for multiple blobs
+  rpc BatchGetBlobs(BatchGetBlobsRequest) returns (BatchGetBlobsResponse);
+
+  // Delete a blob
+  rpc DeleteBlob(DeleteBlobRequest) returns (DeleteBlobResponse);
+}
+
+enum KnownBucket {
+  KNOWN_BUCKET_UNSPECIFIED = 0;
+  KNOWN_BUCKET_CAPTURES = 1;
+  KNOWN_BUCKET_ANNOTATED_FRAMES = 2;
+  KNOWN_BUCKET_MEDIA_EXPORT = 3;
+  KNOWN_BUCKET_EVENT_LOG = 4;
+  KNOWN_BUCKET_CALIBRATION_CHECKPOINTS = 5;
+  KNOWN_BUCKET_CALIBRATION_EXPORT = 6;
+  KNOWN_BUCKET_INTEGRATION_FILES = 7;
+  KNOWN_BUCKET_GRPC_TAP = 8;
+  KNOWN_BUCKET_INTEGRATION_DATA_EXPORT = 9;
+  // Legacy alias of KNOWN_BUCKET_FOLLOWER_RECORDINGS, kept while the bda
+  // worker still sends it. Remove with that service.
+  KNOWN_BUCKET_BDA_RECORDINGS = 10;
+  KNOWN_BUCKET_SCENE_ANALYSIS = 11;
+  // Resolves into the event-log bucket, under caller-supplied keys. What the
+  // object-follower's session recordings upload to.
+  KNOWN_BUCKET_FOLLOWER_RECORDINGS = 12;
+}
+
+// Audience for presigned URLs returned by hub. Hub rewrites presigned URLs
+// from the internal MinIO endpoint to a browser-reachable host (controlled by
+// MINIO_PUBLIC_ENDPOINT) for PUBLIC; INTERNAL skips the rewrite so internal
+// services on the cluster network can use the URL directly. UNSPECIFIED keeps
+// the historical behavior (== PUBLIC) so existing callers don't have to change.
+enum UrlAudience {
+  URL_AUDIENCE_UNSPECIFIED = 0;
+  URL_AUDIENCE_PUBLIC = 1;
+  URL_AUDIENCE_INTERNAL = 2;
+}
+
+message Blob {
+  string key = 1;
+  string entity_id = 2;
+  string name = 3;
+  string content_type = 4;
+  int64 size_bytes = 5;
+  google.protobuf.Timestamp created_at = 6;
+  map<string, string> metadata = 7;
+}
+
+message CreateUploadUrlRequest {
+  string entity_id = 1;
+  string name = 2;
+  string content_type = 3;
+  map<string, string> metadata = 4;
+  KnownBucket bucket = 5;
+  // Optional: timestamp to use for blob key generation (defaults to current time if not provided)
+  optional google.protobuf.Timestamp timestamp = 6;
+  // Whether the returned upload URL targets a browser (PUBLIC) or an in-cluster
+  // (INTERNAL) uploader. Browsers on an HTTPS page must request PUBLIC, else the
+  // URL points at the internal MinIO endpoint and is blocked as mixed content.
+  // Defaults to PUBLIC (browser-reachable URLs); in-cluster uploaders should set
+  // INTERNAL to skip the public-endpoint rewrite.
+  UrlAudience audience = 7;
+  // Optional: full object key to store the blob under, used verbatim. Supported for specific buckets.
+  optional string object_key = 8;
+}
+
+message CreateUploadUrlResponse {
+  // Presigned URL for direct upload to storage
+  string upload_url = 1;
+  // URL expiration
+  google.protobuf.Timestamp expires_at = 2;
+  // Stable blob key the server will use to address the uploaded object.
+  // Callers should pass this to BatchGetBlobs to mint a download URL,
+  // and persist it (not upload_url) when storing a long-lived reference.
+  string blob_key = 3;
+}
+
+message ListBlobsRequest {
+  string entity_id = 1;
+  KnownBucket bucket = 2;
+  // Maximum number of blobs to return per page (default 50, max 1000)
+  uint32 page_size = 3;
+  // Offset for pagination (0-based)
+  uint32 offset = 4;
+  // Optional: filter blobs created at or after this time
+  optional google.protobuf.Timestamp start_time = 5;
+  // Optional: filter blobs created at or before this time
+  optional google.protobuf.Timestamp end_time = 6;
+}
+
+message ListBlobsResponse {
+  repeated Blob blobs = 1;
+  // Total number of blobs for this entity (for pagination UI)
+  int32 total_count = 2;
+}
+
+message BatchGetBlobsRequest {
+  repeated string blob_keys = 1;
+  KnownBucket bucket = 2;
+  // Defaults to PUBLIC (browser-reachable URLs). Internal services on the
+  // cluster network should set INTERNAL to skip the public-endpoint rewrite.
+  UrlAudience audience = 3;
+}
+
+message BatchGetBlobsResponse {
+  // Map of blob_key to presigned download URL
+  map<string, string> urls = 1;
+}
+
+message DeleteBlobRequest {
+  string blob_key = 1;
+  KnownBucket bucket = 2;
+}
+
+message DeleteBlobResponse {}

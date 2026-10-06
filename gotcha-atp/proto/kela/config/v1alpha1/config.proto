@@ -1,0 +1,123 @@
+syntax = "proto3";
+
+package kela.config.v1alpha1;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
+
+// Generic, per-owner config store. Config is keyed by a free-form namespaced
+// owner string (e.g. "hub.fusion", "c2.map_ui") with per-owner version history
+// and an append-only revert.
+service ConfigService {
+  // Latest entry for an owner.
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+  // Write a new version. The server assigns the version.
+  rpc SetConfig(SetConfigRequest) returns (SetConfigResponse);
+  // Emits the current state immediately (an entry, or an explicit "no config"
+  // frame with `entry` unset), then one entry per change.
+  rpc WatchConfig(WatchConfigRequest) returns (stream WatchConfigResponse);
+  rpc ListConfigVersions(ListConfigVersionsRequest) returns (ListConfigVersionsResponse);
+  rpc GetConfigVersion(GetConfigVersionRequest) returns (GetConfigVersionResponse);
+  // Copy an old version's payload into a brand-new version (history is never
+  // rewritten).
+  rpc RevertConfig(RevertConfigRequest) returns (RevertConfigResponse);
+  rpc ListConfigOwners(ListConfigOwnersRequest) returns (ListConfigOwnersResponse);
+}
+
+// A single versioned config entry for one owner. The payload is an opaque
+// google.protobuf.Any; the config service never inspects the concrete type.
+message ConfigEntry {
+  string config_owner = 1;
+  // Monotonic per owner, starts at 1.
+  int64 version = 2;
+  google.protobuf.Any payload = 3;
+  google.protobuf.Timestamp created_at = 4;
+  // Optional free-form description (e.g. "Reverting to version 3"). May be empty.
+  string note = 5;
+}
+
+// Version metadata without the payload, for listing history cheaply.
+message ConfigVersionInfo {
+  int64 version = 1;
+  google.protobuf.Timestamp created_at = 2;
+  string note = 3;
+}
+
+// Summary of one owner's current state.
+message ConfigOwnerInfo {
+  string config_owner = 1;
+  int64 latest_version = 2;
+}
+
+message GetConfigRequest {
+  string config_owner = 1;
+}
+
+message GetConfigResponse {
+  // Absent when no version has been written for this owner.
+  optional ConfigEntry entry = 1;
+}
+
+message SetConfigRequest {
+  string config_owner = 1;
+  google.protobuf.Any payload = 2;
+  string note = 3;
+  // Compare-and-swap guard. The write succeeds only if the owner's current
+  // latest version equals this; otherwise it is rejected. Pass the version the
+  // client last read so a stale read-modify-write can never silently clobber a
+  // concurrent write. Mandatory: the server always compares against it, so any
+  // owner that already has a version requires the real latest version here; the
+  // default 0 only succeeds for a brand-new owner with no versions yet.
+  int64 expected_version = 4;
+}
+
+message SetConfigResponse {
+  int64 version = 1;
+}
+
+message WatchConfigRequest {
+  string config_owner = 1;
+}
+
+message WatchConfigResponse {
+  // Unset signals "this owner has no config" (snapshot of an empty owner). When
+  // set, it is the current/changed entry. Watchers can therefore distinguish an
+  // absent config from a present one without a separate GetConfig.
+  optional ConfigEntry entry = 1;
+}
+
+message ListConfigVersionsRequest {
+  string config_owner = 1;
+}
+
+message ListConfigVersionsResponse {
+  repeated ConfigVersionInfo versions = 1;
+}
+
+message GetConfigVersionRequest {
+  string config_owner = 1;
+  int64 version = 2;
+}
+
+message GetConfigVersionResponse {
+  // Absent when the requested version does not exist.
+  optional ConfigEntry entry = 1;
+}
+
+message RevertConfigRequest {
+  string config_owner = 1;
+  int64 to_version = 2;
+  string note = 3;
+  // Compare-and-swap guard, see SetConfigRequest.expected_version.
+  int64 expected_version = 4;
+}
+
+message RevertConfigResponse {
+  int64 version = 1;
+}
+
+message ListConfigOwnersRequest {}
+
+message ListConfigOwnersResponse {
+  repeated ConfigOwnerInfo owners = 1;
+}

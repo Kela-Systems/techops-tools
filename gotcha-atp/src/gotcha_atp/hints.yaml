@@ -1,0 +1,291 @@
+# Plain-language hint per row id, shown under a red (or amber) row.
+# Keep them short and actionable: what to look at first, in the order to check.
+S0.1: >-
+  release.yaml in this checkout is broken. Pull the latest techops-tools main
+  (git pull) — do not edit release.yaml on the laptop to get past this.
+S0.2: >-
+  The laptop or the operator station is not on the tailnet. Check Tailscale is
+  connected on this laptop, then that the Toughbook is powered, has its LAN
+  cable in the PwF switch and shows as online in the Tailscale admin console.
+  If only the server is online the run continues through it, but cannot be
+  stamped.
+S0.3: >-
+  An SSH session failed. "refused the login": confirm the kela password on
+  Home (a server without Tailscale SSH, a kela password or the laptop key cannot
+  be logged into). "did not answer": the host is off the tailnet. An operator
+  failure only affects the operator rows; the server session carries the rest.
+S0.4: >-
+  The unit does not identify as the site you picked. Make sure you selected the
+  unit in front of you; a wrong hostname or build-info means
+  init_gotcha_server.sh / operator setup was run with a different --site, or a
+  re-imaged box was never re-initialised.
+S0.5: >-
+  Fleet does not show this node adopted and current. Check the node in the
+  Fleet admin console: adopt it into the site if pending, and wait for the
+  check-in if it is just behind.
+S0.6: >-
+  A part did not tell us who it is. "no answer": the device is off the LAN —
+  check its cable and power first (S1.1 shows whether it pings). "login
+  refused": the device password in ~/.config/gotcha-atp/config.toml does not
+  match what the bench set. "answered, but reported no …": the device is up;
+  its identity fields are not where the tool reads them — report it.
+S1.1: >-
+  Packet loss or slow replies from the server to a device. Re-seat that
+  device's cable at both ends (PwF switch / Edge-box PoE switch); loss on every
+  Edge-box device points at the uplink between the two switches.
+S1.2: >-
+  Two devices answer for the same address. Something on the LAN was configured
+  by hand or by DHCP onto a planned address — find the second MAC on the
+  switch MAC table and move that device.
+S1.3: >-
+  A switch port negotiated below 1000 Mb/s or is counting errors. Swap the
+  patch cable on that port first; a 100 Mb/s link usually means a damaged pair.
+S1.4: >-
+  The PoE switch is not powering the parts the way the Edge box needs. A radar
+  port outside 20–45 W means that radar is off or the cable is bad; a missing
+  power input (PWR1/PWR2) halves the budget — check both PSU feeds.
+S1.5: >-
+  The RUTM08 is not fully set up. RMS disabled/not connected: check the WAN from
+  the OTD500 and that the router was provisioned on the bench. NTP must point
+  at 192.168.88.10.
+S1.6: >-
+  The modem is not online on LTE. Check the SIM is in a physical slot and
+  active, the antennas are connected, and the signal at this location; then that
+  8.8.8.8 is reachable from the modem.
+S1.7: >-
+  The TSW202 is unreachable over SSH or not using the server for time. Re-run the
+  TSW bench tool on it if NTP is wrong.
+S1.8: >-
+  The operator station does not resolve kela.local to the server. Check the
+  Toughbook's /etc/hosts entry from operator setup.
+S1.9: >-
+  MagicDNS is on on the server, which breaks LAN name resolution for pods. On
+  the server: sudo tailscale set --accept-dns=false.
+S2.1: >-
+  Hostname or machine-id is wrong. Re-run init_gotcha_server.sh with the right
+  --site; a duplicated JetPack machine-id breaks DHCP on the .10 reservation.
+S2.2: >-
+  The data SSD is not mounted at /mnt/data, not in fstab, or too full. Check the
+  SSD is seated; re-running init_gotcha_server.sh is safe (it never reformats a
+  KELADATA disk).
+S2.3: >-
+  The root disk or memory is under pressure. Look for a runaway log or a
+  container image cache on the eMMC.
+S2.4: >-
+  The server clock is not synced, or a device is not taking time from it. A
+  missing chrony client is usually a device whose NTP was not set on the bench.
+S2.5: >-
+  The server timezone is wrong: sudo timedatectl set-timezone Asia/Jerusalem.
+S2.6: >-
+  The JetPack/L4T release differs from the pinned one. Re-flash only after
+  checking with the platform team.
+S2.7: >-
+  tailscaled or k3s is not running, or the server has no tailnet address.
+  sudo systemctl status tailscaled k3s on the server for the reason.
+S3.1: >-
+  The k3s node is not Ready or kela-node-controller has not reported "system
+  converged" since boot. On the server: journalctl -u kela-node-controller -b
+  for what it is stuck on; check Fleet shows the node adopted.
+S3.2: >-
+  A pod is not ready, or a container restarted in the last minutes (it is not
+  stable yet). kubectl -n <ns> describe pod <pod> and kubectl logs --previous
+  for the reason; if the unit just booted or converged, wait and re-run S3.
+S3.3: >-
+  A pod is stuck. ImagePullBackOff: the image was not staged (check the
+  node-controller and Fleet). CrashLoopBackOff: kubectl logs --previous.
+S3.4: >-
+  A workload of the gotcha variant is missing or not ready. Check Fleet's
+  desired release for this site and the node-controller converge log; a missing
+  int-gotcha deployment means the integration was not created in the hub.
+S3.5: >-
+  hub-server does not answer its gRPC health check. kubectl -n kela logs
+  deploy/hub-server; check the postgresql pod is ready first.
+S3.6: >-
+  The hub runs the wrong product profile or site id. HUB_PRODUCT_SERVICES must
+  be gotcha and SITE_ID must match the site in /etc/kela/build-info — check the
+  site's application settings in Fleet.
+S3.7: >-
+  The int-gotcha pod's health endpoint is not healthy. kubectl -n kela logs
+  <int-gotcha pod> -c svc-0.
+S3.8: >-
+  The operator station cannot open the C2. Curl error 60: the station does not
+  trust the hub certificate (re-run operator setup's CA step). No answer: check
+  kela.local resolves (S1.8) and the hub ingress (traefik) is running.
+S4.1: >-
+  The hub is not on the release this ATP certifies. Point the site at the
+  release in Fleet (Sites → release) and wait for the node to converge (S3.1);
+  "running ≠ desired" means the node has not applied it yet.
+S4.2: >-
+  The integration images are not the pinned ones. Staged digest wrong: the node
+  has not staged the release's images yet — check Fleet's images report. Pod
+  runs something else: the integration pod predates the staging; the
+  integration-orchestrator rolls it on its next reconcile.
+S4.3: >-
+  The node-controller or k3s is not at the pinned version. "vs Fleet" failing:
+  the node has not applied its desired system configuration — check the node's
+  system configuration report in Fleet. Only "vs release.yaml" failing: the
+  Fleet configuration for this model differs from the pin — raise it with
+  Techops before changing either.
+S4.4: >-
+  An APU is not on the pinned firmware. Re-run it on the bench (apu_configure),
+  which flashes the multi-radar 3.1.2 family; mixed APUs cannot ship.
+S4.5: >-
+  A radar is not on the pinned firmware, or the four differ. Re-flash the odd
+  one on the bench; all four must run the same build.
+S4.6: >-
+  The camera is below the firmware floor (compared by build date) or is the
+  legacy RPC2 generation. Re-run it on the Raythink bench, which flashes the
+  floor build; a legacy camera must be swapped.
+S4.7: >-
+  Network gear firmware differs from the pin — a warning, it does not block the
+  stamp. Re-run the device on its bench tool (rutm / otd / tsw / planet) when
+  convenient. Below the IGS-4215 floor its SSH is broken: fix that one first.
+S4.8: >-
+  The operator station was set up with a different rugged_operator/setup.sh
+  version. Re-run the current operator setup on the Toughbook.
+S4.9: >-
+  A part in this unit has no verified bench record. "no configure record": the
+  part was never benched (or its record never reached bench-central — check the
+  bench station's outbox). "not verified": the last bench run did not pass —
+  re-run that part on the bench before shipping.
+S4.10: >-
+  The speaker firmware differs from the pin — a warning. Update it from the
+  speaker bench tool when convenient.
+S4.11: >-
+  The detector differs from the variant's default. "default model" wrong: the
+  hub release ships another default (check S4.1). A workload on another
+  version: that service mounted a different model image than Triton serves —
+  Fleet's images report shows what was staged; raise it with the hub team.
+S7.1: >-
+  A device clock is off from the server. Radar / APU: their NTP target must be
+  192.168.88.10 (re-run them on the bench). Camera, speaker, switch: set NTP to
+  192.168.88.10 on their bench tool and let it sync. "not checked" with a small
+  margin means the read could not decide — re-run S7.
+S7.2: >-
+  A device is not asking the server for time. "never asked": its NTP server is
+  not 192.168.88.10 (the RUTM08 ships with pool.ntp.org — the bench sets it).
+  "stopped syncing": it used to — check its cable (S1.1) and NTP setting.
+S7.3: >-
+  The hub answers slowly. Check S2.3 (memory) and S3.2 (pods restarting) first;
+  a slow TTFB with a fast gRPC p95 points at the ingress (traefik) or the
+  operator's link.
+S7.4: >-
+  The LAN degrades under video load. Compare with S1.1: a device that is fine
+  idle and lossy here sits on a saturated link — check its switch port (S1.3)
+  and cabling.
+S8.1: >-
+  kela-verify lists what the operator station build is missing. Re-run
+  rugged_operator/setup.sh on the Toughbook (or the single step named in the
+  FAIL line), then run S8 again.
+S8.2: >-
+  The kiosk cannot show the hub. Kiosk not running: log in on the Toughbook and
+  use the "Kela Kiosk" launcher. Certificate not trusted / pin differs: run
+  sudo kela-install-cert on the station and restart the kiosk (kela-cert-ensure
+  does this every 5 min on its own).
+S8.3: >-
+  The station does not take its time from the server. If it shows the
+  ntp.ubuntu.com fallback, it cannot reach 192.168.88.10 on NTP — check S7.2 and
+  the station's LAN cable.
+S8.4: >-
+  The station is not isolated or not remotely supportable. Internet reachable:
+  the kela-egress firewall is off — sudo systemctl enable --now kela-egress.
+  AnyDesk: re-run setup step 4 (AnyDesk) so the unattended password is set.
+S9.1: >-
+  The unit did not come back on its own. No SSH: check the modem attached and
+  the router is up (its LEDs), then the NRU — 'power on after AC loss' may not be
+  set in its firmware (S9.0). "did NOT reboot": the power was not cut at the
+  Edge box, or a UPS carried it.
+S9.2: >-
+  A device did not cycle or did not come back. "did NOT reboot": it is fed from
+  another supply than the PwF. "did not come back": check its PoE port and cable
+  (S1.4), then power-cycle that device alone.
+S9.3: >-
+  Something that worked before the power cut did not recover within 15 minutes.
+  The listed rows say what; the usual causes are a pod that needs a manual
+  restart (S3.2) or a device that came back on the wrong address (S1.1).
+S9.4: >-
+  The outage left pods stuck or restarting. Note the pod names from the row,
+  then check their logs (kubectl -n kela logs <pod> --previous).
+S5.1: >-
+  The hub has no single Gotcha integration with a single device. Create the
+  integration / device in the hub admin UI (or the site seed did not run).
+S5.2: >-
+  The hub's radar array does not match the plan: each radar must point at the
+  APU that controls it (radar_0/1 → .60, radar_2/3 → .61). Fix it in the
+  device's setup info.
+S5.3: >-
+  An APU controls the wrong radars, or none. Re-run the bench APU tool on it
+  (it writes the radar assignment), or fix it on the APU dashboard.
+S5.3b: >-
+  Range Gates / Detector Threshold are set on a radar the APU controls; the
+  bench leaves them disabled. Somebody changed them on the APU dashboard —
+  clear them there, or re-run the bench APU tool.
+S5.4: >-
+  The device's radar credentials are empty; the driver cannot log in to the
+  radars. Set them in the device's setup info.
+S5.5: >-
+  Two radars share a 90° sector, or one points exactly at 0/90/180/270. C2
+  cannot assign sweep panels then — correct the declared pans in the device's
+  setup info.
+S5.7: >-
+  The device points at the wrong camera or speaker address, or the camera's
+  NTP is set to something other than the server. Fix it in the device's setup
+  info.
+S5.8: >-
+  The site has no map center (hub.map initial_position) or a DEM radius of 0.
+  Set the site position in the C2 site settings so the map and the terrain
+  download have a center.
+S5.9: >-
+  An integration setting differs from the fleet value in release.yaml. Change it
+  in the integration's config in the hub admin UI, or update release.yaml if the
+  fleet value changed.
+S6.1: >-
+  The hub reports a radar not healthy. Check that radar's PoE cable and the APU
+  that controls it (S6.3c tells you whether it still sweeps).
+S6.2: >-
+  The driver session is stale or the camera component is unhealthy. kubectl -n
+  kela logs <int-gotcha pod> -c svc-0; for the camera, check its cable and S6.7a.
+S6.3b: >-
+  A radar's own stream did not answer, or the radar is not in raw mode. Raw mode
+  is what an APU-controlled radar must be in: check its cable, then the APU
+  assignment (S5.3).
+S6.3c: >-
+  The APU does not deliver sweeps for this radar. Check the radar is assigned
+  to that APU (S5.3) and in raw mode (S6.3b), then the radar's PoE cable.
+S6.3d: >-
+  A radar answers but is not operational. Work through S6.3b → S6.3c for it;
+  if it is only 'quiet', do the walk test.
+S6.4: >-
+  The driver could not reach a radar in the last hour. Check the radar's cable
+  and the switch port, then whether it reboots on its own (uptime).
+S6.6: >-
+  The hub registered no native video stream for main or thermal. Check the
+  camera integration in the hub and the camera's RTSP settings.
+S6.7a: >-
+  MediaMTX is not receiving a stream. Check the camera answers (S1.1) and the
+  int-gotcha pod log for RTSP errors.
+S6.7b: >-
+  The video did not decode, or its resolution differs from release.yaml. A
+  wrong resolution is either a camera profile that was not applied on the
+  bench or a release.yaml pin that does not match this camera.
+S6.8: >-
+  The camera's pan/tilt readings stopped flowing. Check the camera's ONVIF
+  connection in the int-gotcha log.
+S6.9: >-
+  The speaker did not answer or has no audio file. Check its cable and power,
+  then re-run the bench speaker tool to load the audio file.
+S6.13: >-
+  The speaker's output volume is below the fleet minimum. Raise it from the C2
+  speaker control or the speaker's web page.
+S6.10: >-
+  A radar reports a problem itself (alert, link speed, address, time sync,
+  temperature). The failing item names it; time sync must be to the server .10.
+S6.11: >-
+  An APU reports a problem itself (alert, link speed, address, time sync,
+  temperature). The failing item names it.
+S6.12: >-
+  A radar or APU dropped its ethernet link during the run. Re-seat its cable;
+  repeated drops mean a bad cable or a failing port.
+S2.8: >-
+  The kernel logged link drops or I/O errors since boot. Link down: re-seat the
+  server's LAN cable. xhci reset / I/O error: check the data SSD and USB devices.

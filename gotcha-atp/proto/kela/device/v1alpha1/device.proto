@@ -1,0 +1,343 @@
+syntax = "proto3";
+
+package kela.device.v1alpha1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "kela/types/v1alpha1/types.proto";
+
+service DeviceService {
+  rpc CreateDevice(CreateDeviceRequest) returns (CreateDeviceResponse);
+
+  rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
+
+  rpc UpdateDevice(UpdateDeviceRequest) returns (UpdateDeviceResponse);
+
+  rpc DeleteDevice(DeleteDeviceRequest) returns (DeleteDeviceResponse);
+
+  rpc CreateDummyDevice(CreateDummyDeviceRequest) returns (CreateDummyDeviceResponse);
+
+  // Clears any asset-to-world calibration data for a device, reverting to the
+  // pose expressed in setup_info. No-op if the device has no calibration.
+  rpc ClearAssetToWorldCalibration(ClearAssetToWorldCalibrationRequest) returns (ClearAssetToWorldCalibrationResponse);
+
+  // Sets a device's asset-to-world calibration directly, bypassing the
+  // correspondence solver. Stores the given rotation/position as the device's
+  // calibration and re-delivers it to a connected driver. Use when the mounting
+  // is known up front (e.g. survey/CAD) rather than computed from imagery.
+  rpc SetAssetToWorldCalibration(SetAssetToWorldCalibrationRequest) returns (SetAssetToWorldCalibrationResponse);
+
+  // Sets one sensor's sensor-to-asset calibration directly, bypassing the
+  // solver. Stored with source MANUAL. Refused for the device's reference
+  // sensor unless the calibration is identity — the reference sensor's frame
+  // IS the asset body frame.
+  rpc SetSensorToAssetCalibration(SetSensorToAssetCalibrationRequest) returns (SetSensorToAssetCalibrationResponse);
+
+  // Clears one sensor's sensor-to-asset calibration. The sensor then composes
+  // as aligned with, and co-located at, the asset body frame: identity
+  // rotation, zero offset. No-op if none is stored.
+  rpc ClearSensorToAssetCalibration(ClearSensorToAssetCalibrationRequest) returns (ClearSensorToAssetCalibrationResponse);
+
+  // Deletes a sensor's stored calibration. On the next publish, the Hub stops
+  // attaching `SensorCamera.calibration`, and reference FOV falls back to
+  // `max_fov_h` / `max_fov_v`. Does nothing and does not bump the revision if
+  // no calibration is stored. Does not restart the driver.
+  rpc ClearIntrinsicCalibration(ClearIntrinsicCalibrationRequest) returns (ClearIntrinsicCalibrationResponse);
+
+  // Stores a sensor's intrinsic calibration with source MANUAL; the calibration
+  // service stores SOLVED results in the same place. Bumps `calibration_revision`
+  // and recomposes the live asset without restarting the driver.
+  //
+  // Rejects an empty `sensor_id`; zero dimensions; non-finite or non-positive
+  // focal lengths; non-finite or zero principal points; and PLACEHOLDER or
+  // LIVE_ZOOM provenance. Converts UNSPECIFIED provenance to MEASURED.
+  rpc SetIntrinsicCalibration(SetIntrinsicCalibrationRequest) returns (SetIntrinsicCalibrationResponse);
+
+  // Forward an uploaded file to a running driver for delivery to the device.
+  // The C2 first uploads bytes to MinIO via BlobService.CreateUploadUrl,
+  // then calls this RPC with the resulting blob_key. The Hub publishes an
+  // UploadDeviceFile control message on the integration's stream; the driver
+  // downloads the blob and forwards it to the physical device.
+  rpc UploadDeviceFile(UploadDeviceFileRequest) returns (UploadDeviceFileResponse);
+
+  // Merge a subset of setup_info keys into the device without touching
+  // anything else on the row. Use this instead of UpdateDevice (which
+  // wholesale-overwrites setup_info) when the caller only owns part of the
+  // setup_info — e.g. the admin UI editing user-facing config.
+  //
+  // Merge semantics follow RFC 7396 (JSON Merge Patch): top-level keys in
+  // the patch overwrite the current value (nested objects are deep-merged);
+  // a key with value `null` in the patch is *deleted* from setup_info; keys
+  // absent from the patch are preserved as-is. See HUB-1520.
+  rpc UpdateDeviceSetupInfo(UpdateDeviceSetupInfoRequest) returns (UpdateDeviceSetupInfoResponse);
+
+  // Returns the most recent setup_info snapshots for a device, newest first.
+  // At most MAX_SETUP_INFO_VERSIONS versions are retained per device; older versions are pruned
+  // when a new one is written.
+  rpc GetDeviceSetupInfoHistory(GetDeviceSetupInfoHistoryRequest) returns (GetDeviceSetupInfoHistoryResponse);
+
+  // Restores a prior setup_info snapshot as the device's current setup_info.
+  // A copy of the snapshot is appended as a new (highest) version rather than
+  // reordering history; the history stays append-only.
+  rpc RestoreDeviceSetupInfo(RestoreDeviceSetupInfoRequest) returns (RestoreDeviceSetupInfoResponse);
+}
+
+message CreateDummyDeviceRequest {
+  string name = 1;
+  string device_type = 2;
+}
+
+message CreateDummyDeviceResponse {
+  string device_id = 1;
+  string integration_id = 2;
+}
+
+message CreateDeviceRequest {
+  // ID of the integration that owns the device
+  string integration_id = 1;
+
+  string name = 2;
+
+  // Setup info dictionary for the device (Should follow the integration's device setup info JSON schema)
+  google.protobuf.Struct setup_info = 3;
+}
+
+message Device {
+  string id = 1;
+
+  string name = 2;
+
+  string integration_id = 3;
+
+  google.protobuf.Struct setup_info = 4;
+
+  // Asset-to-world calibration result if present. The Hub injects this into
+  // device setup at the driver boundary, overriding any pose declared in
+  // setup_info. Use ClearAssetToWorldCalibration to revert to the
+  // setup_info-declared pose.
+  optional kela.types.v1alpha1.AssetToWorldCalibration asset_to_world_calibration = 7;
+
+  // Per-sensor sensor-to-asset calibrations, keyed by sensor id. The reference
+  // sensor is identity by definition and never has an entry.
+  map<string, kela.types.v1alpha1.SensorToAssetCalibration> sensor_to_asset_calibrations = 8;
+
+  // Monotonic, bumped in the same transaction as every asset-to-world or
+  // sensor-to-asset calibration write. 0 = the device has never held a
+  // calibration (bootstrap pose only).
+  int64 calibration_revision = 9;
+
+  // The revision the device last reported fully applied (min over its
+  // pose-consuming sensors). Absent = unknown: no report since the driver
+  // (or the Hub) restarted — never coalesced to 0. Lag against
+  // `calibration_revision` means a sensor is still running an older pose.
+  optional int64 applied_calibration_revision = 10;
+
+  // Sensors behind `calibration_revision`, with the named reason the driver
+  // reported.
+  repeated SensorCalibrationLag calibration_lags = 11;
+
+  // Stored intrinsic calibrations for this device, keyed by sensor id. Written
+  // by SetIntrinsicCalibration and the calibration service, and cleared by
+  // ClearIntrinsicCalibration. The live asset receives the same values as
+  // `SensorCamera.calibration`.
+  map<string, kela.types.v1alpha1.IntrinsicCalibration> intrinsic_calibrations = 12;
+}
+
+message SensorCalibrationLag {
+  string sensor_id = 1;
+  // Absent = no ack since the driver started.
+  optional int64 applied_revision = 2;
+  kela.types.v1alpha1.SensorCalibrationLagReason reason = 3;
+  // Free text from the driver about this lag, e.g. the device error behind
+  // SENSOR_CALIBRATION_LAG_REASON_PROVISIONING_STUCK. Empty when the reason
+  // says everything there is to say.
+  string detail = 4;
+}
+
+message CreateDeviceResponse {
+  string device_id = 1;
+
+  // Non-blocking advisories raised while resolving x-kela-altitude inputs
+  // (e.g. the converted altitude ends up underground). The write already
+  // succeeded; these are informational only.
+  repeated string warnings = 2;
+}
+
+message ListDevicesRequest {
+  string integration_id = 1;
+}
+
+message ListDevicesResponse {
+  repeated Device devices = 1;
+}
+
+message UpdateDeviceRequest {
+  // ID of the integration that owns the device
+  string integration_id = 1;
+
+  string device_id = 2;
+
+  // Only provided fields will be updated, others will remain unchanged.
+
+  optional string name = 3;
+
+  // Setup info dictionary for the device. Should be validated with the integration's device setup info schema.
+  optional google.protobuf.Struct setup_info = 4;
+}
+
+message UpdateDeviceResponse {
+  // See CreateDeviceResponse.warnings.
+  repeated string warnings = 1;
+}
+
+message DeleteDeviceRequest {
+  // ID of the integration that owns the device
+  string integration_id = 1;
+
+  string device_id = 2;
+}
+
+message DeleteDeviceResponse {
+  // Empty response - success is indicated by no error status
+}
+
+message ClearAssetToWorldCalibrationRequest {
+  string integration_id = 1;
+  string device_id = 2;
+}
+
+message ClearAssetToWorldCalibrationResponse {}
+
+message SetAssetToWorldCalibrationRequest {
+  string integration_id = 1;
+  string device_id = 2;
+  // Asset body -> true-NED active rotation, same convention as the stored
+  // asset-to-world rotation.
+  kela.types.v1alpha1.Quaternion rotation = 3;
+  // Calibrated asset position (WGS-84, height HAE).
+  kela.types.v1alpha1.Position position = 4;
+
+  // The sensor whose sensor body frame defines the asset body frame. Unset
+  // keeps the device's stored reference sensor, else the default rule: the
+  // VISUAL camera sensor, or the only sensor when the asset has one.
+  optional string reference_sensor_id = 5;
+
+  // RMS angular error of the fit that produced this pose. Absent means "not
+  // measured" and is stored as NULL — a hand-entered pose must not record 0.0,
+  // which reads as a perfect fit.
+  optional double rms_error_degrees = 6;
+}
+
+message SetAssetToWorldCalibrationResponse {}
+
+message SetSensorToAssetCalibrationRequest {
+  string integration_id = 1;
+  string device_id = 2;
+  string sensor_id = 3;
+  // Sensor body -> asset body active rotation.
+  kela.types.v1alpha1.Quaternion rotation_sensor_to_asset = 4;
+  // Sensor origin in the asset body frame, metres. Unset stores a zero
+  // offset — the sensor is co-located with the asset origin.
+  kela.types.v1alpha1.BodyOffset translation_sensor_to_asset_m = 5;
+}
+
+message SetSensorToAssetCalibrationResponse {}
+
+message ClearSensorToAssetCalibrationRequest {
+  string integration_id = 1;
+  string device_id = 2;
+  string sensor_id = 3;
+}
+
+message ClearSensorToAssetCalibrationResponse {}
+
+message ClearIntrinsicCalibrationRequest {
+  string integration_id = 1;
+  string device_id = 2;
+  // Sensor whose stored calibration to delete; must be non-empty.
+  string sensor_id = 3;
+}
+
+message ClearIntrinsicCalibrationResponse {}
+
+message SetIntrinsicCalibrationRequest {
+  string integration_id = 1;
+  string device_id = 2;
+  // Sensor the lens belongs to. Required.
+  string sensor_id = 3;
+  // Required. The RPC lists rejected values.
+  kela.types.v1alpha1.IntrinsicCalibration calibration = 4;
+}
+
+message SetIntrinsicCalibrationResponse {}
+
+message UploadDeviceFileRequest {
+  // ID of the integration that owns the device
+  string integration_id = 1;
+
+  string device_id = 2;
+
+  // Stable blob key returned by BlobService.CreateUploadUrl. The bytes
+  // themselves are stored in MinIO; the driver resolves this to a presigned
+  // download URL via BatchGetBlobs.
+  string blob_key = 3;
+
+  // Original filename for display / persistence by the driver.
+  string file_name = 4;
+}
+
+message UploadDeviceFileResponse {
+  // Empty response - success only confirms that the control message was
+  // queued for the driver. Actual delivery to the physical device is
+  // asynchronous; observe the asset's published payload (e.g.
+  // SpeakerPayload.loaded_files) to confirm the upload took effect.
+}
+
+message UpdateDeviceSetupInfoRequest {
+  // ID of the integration that owns the device
+  string integration_id = 1;
+
+  string device_id = 2;
+
+  // RFC 7396 JSON Merge Patch applied on top of the current setup_info:
+  // top-level keys overwrite (with nested objects deep-merged), `null`
+  // values delete the key, absent keys are preserved.
+  google.protobuf.Struct setup_info_patch = 3;
+}
+
+message UpdateDeviceSetupInfoResponse {
+  // See CreateDeviceResponse.warnings.
+  repeated string warnings = 1;
+}
+
+message DeviceSetupInfoVersion {
+  int32 version = 1;
+
+  google.protobuf.Struct setup_info = 2;
+
+  google.protobuf.Timestamp created_at = 3;
+}
+
+message GetDeviceSetupInfoHistoryRequest {
+  string integration_id = 1;
+
+  string device_id = 2;
+}
+
+message GetDeviceSetupInfoHistoryResponse {
+  // Ordered newest-first, at most MAX_SETUP_INFO_VERSIONS entries. The first
+  // entry is the device's current setup_info.
+  repeated DeviceSetupInfoVersion versions = 1;
+}
+
+message RestoreDeviceSetupInfoRequest {
+  string integration_id = 1;
+
+  string device_id = 2;
+
+  // Version to restore. Must be one of the versions returned by
+  // GetDeviceSetupInfoHistory.
+  int32 version = 3;
+}
+
+message RestoreDeviceSetupInfoResponse {}

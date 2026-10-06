@@ -1,0 +1,402 @@
+syntax = "proto3";
+
+package kela.asset.v1alpha1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "kela/asset/v1alpha1/behavior.proto";
+import "kela/ext/pathfinder/v1alpha1/pathfinder.proto";
+
+// This message is a server-only message
+message TaskPrincipal {
+  string id = 1;
+  TaskPrincipalPriority priority = 2;
+  // Machine-readable explanation for why this principal owns or blocks a lease.
+  // This is client-facing metadata and does not affect lease priority.
+  TaskPrincipalReason reason = 4;
+  // UUID of the concrete workflow instance acting behind the auth identity
+  // (e.g. a mission run, the auto-controller of a camera). Distinguishes
+  // otherwise-identical principals for lease ownership; carries no authority —
+  // identity always comes from the authentication layer.
+  optional string actor = 5;
+}
+
+enum TaskPrincipalPriority {
+  TASK_PRINCIPAL_PRIORITY_UNSPECIFIED = 0;
+  TASK_PRINCIPAL_PRIORITY_API = 1;
+  TASK_PRINCIPAL_PRIORITY_PLANNED_MISSIONS = 2;
+  TASK_PRINCIPAL_PRIORITY_AUTO_CONTROL = 3;
+  TASK_PRINCIPAL_PRIORITY_ADMIN = 4;
+  TASK_PRINCIPAL_PRIORITY_SYSTEM = 5;
+  // Urgent system automation that may interrupt regular API/UI control, while
+  // still allowing explicit admin control to take over.
+  TASK_PRINCIPAL_PRIORITY_EMERGENCY_AUTO_CONTROL = 6;
+}
+
+enum TaskPrincipalReason {
+  TASK_PRINCIPAL_REASON_UNSPECIFIED = 0;
+  // Internal auto-control took over a sensor because a Priority 1 alarm zone was entered.
+  TASK_PRINCIPAL_REASON_PRIORITY_ONE_ALARM_AUTO_CONTROL = 1;
+}
+
+// A task message that can be sent to an entity
+message Task {
+  oneof task {
+    AssetTask asset = 2;
+    SensorTask sensor = 3;
+  }
+}
+
+// GoToPosition task wraps GoToCoordinates for the task layer.
+message GoToPosition {
+  GoToCoordinates coordinates = 1;
+}
+
+// Camera guided gimbal move - user input while Camera Guided Flight is active.
+// The hub combines this with camera guided flight correction before sending to the device.
+// This is an asset-level task because it's a flight mode behavior, not a direct sensor command.
+message ContinuousCameraGuidedGimbalMove {
+  // The sensor ID to control (typically the main camera)
+  string sensor_id = 1;
+  // Normalized yaw speed (-1.0 to 1.0, where 1.0 is max gimbal speed)
+  double yaw_speed = 2;
+  // Normalized pitch speed (-1.0 to 1.0, where 1.0 is max gimbal speed)
+  double pitch_speed = 3;
+}
+
+// Flight task
+message AssetTask {
+  oneof task {
+    Takeoff takeoff = 1;
+    google.protobuf.Empty land = 2;
+    google.protobuf.Empty dock = 3;
+    GoToPosition go_to_position = 4;
+    MoveRelative move_relative = 5;
+    google.protobuf.Empty stop_movement = 6;
+    SetAltitude set_altitude = 7;
+    google.protobuf.Empty open_dock = 8;
+    google.protobuf.Empty close_dock = 9;
+    // User gimbal input during Camera Guided Flight mode
+    ContinuousCameraGuidedGimbalMove camera_guided_gimbal_move = 10;
+    // Restart/reboot the device
+    google.protobuf.Empty restart = 11;
+    google.protobuf.Empty power_on = 12;
+    google.protobuf.Empty power_off = 13;
+    google.protobuf.Empty activate = 14;
+    google.protobuf.Empty deactivate = 15;
+    InterceptDrone intercept_drone = 16;
+    CancelDroneInterception cancel_drone_interception = 17;
+    NotifyHostileTarget notify_hostile_target = 18;
+    // Integration-specific task with arbitrary JSON parameters.
+    // The structure must conform to the asset's custom_command_params_schema.
+    google.protobuf.Struct custom_command = 19;
+    SetDroneHomePosition set_drone_home_position = 20;
+    DroneReturnToLaunch drone_return_to_launch = 21;
+    VtolSetLoiterRadius vtol_set_loiter_radius = 22;
+    VtolConfigureFlightSettings vtol_configure_flight_settings = 23;
+    VtolSetExitWaypoint vtol_set_exit_waypoint = 24;
+    SetSpeed set_speed = 25;
+    VtolCalibrateAirspeed vtol_calibrate_airspeed = 26;
+    PlayAudio play_audio = 27;
+    DeleteAudio delete_audio = 28;
+    AbortSequence abort_sequence = 29;
+    ConfirmSequenceStep confirm_sequence_step = 30;
+    ConfigureEcm configure_ecm = 31;
+    kela.ext.pathfinder.v1alpha1.VtolLandingReposition vtol_landing_reposition = 32;
+    kela.ext.pathfinder.v1alpha1.SetVtolEkfSource set_vtol_ekf_source = 33;
+    kela.ext.pathfinder.v1alpha1.SetVtolGps set_vtol_gps = 34;
+    kela.ext.pathfinder.v1alpha1.VtolFlyByCamera vtol_fly_by_camera = 35;
+    kela.ext.pathfinder.v1alpha1.VtolSetFcuMode vtol_set_fcu_mode = 36;
+    kela.ext.pathfinder.v1alpha1.VtolDisarm vtol_disarm = 37;
+    SetEmergencyLandingPosition set_emergency_landing_position = 38;
+    kela.ext.pathfinder.v1alpha1.VtolSetLockMechanism vtol_set_lock_mechanism = 39;
+  }
+}
+
+// Sensor task
+message SensorTask {
+  string sensor_id = 1;
+  oneof task {
+    AbsoluteGimbalMove absolute_move = 2;
+    ContinuousGimbalMove continuous_move = 3;
+    // Hub routes to LookAtCoordinate command (if sensor supports native geo-pointing)
+    // or AbsoluteGimbalMove command (computes azimuth/elevation from asset position).
+    FixedLookAt fixed_look_at = 4;
+    SetZoomFactor set_zoom_factor = 5;
+    google.protobuf.Empty calibrate = 6;
+    google.protobuf.Empty take_snapshot = 7;
+    SetZoomRate set_zoom_rate = 8;
+    google.protobuf.Empty stop_gimbal = 9;
+    google.protobuf.Empty stop_zoom = 10;
+    ChangeCameraMode change_camera_mode = 11;
+    SetWiperState set_wiper_state = 12;
+    SetAntennaMode set_antenna_mode = 13;
+    SetFrequencyRange set_frequency_range = 14;
+    SetSensorTrackPixel set_sensor_track_pixel = 15;
+    SetSensorVisualTrack set_sensor_visual_track = 16;
+    SetSensorTrackRegion set_sensor_track_region = 17;
+    SetCameraOperatingMode set_camera_operating_mode = 18;
+    LookAtCoordinate look_at_coordinate = 19;
+    // Like absolute_move, but azimuth/elevation are in the camera's device
+    // frame (raw gimbal axes) and are sent to the driver without applying
+    // the mounting orientation. Used by intrinsic calibration so asset-to-world
+    // results don't tilt the calibration sweep.
+    AbsoluteGimbalMove absolute_device_axis_gimbal_move = 20;
+    SetSensorObjectDetection set_sensor_object_detection = 21;
+    SetFocusMode set_focus_mode = 22;
+    SetFocusRate set_focus_rate = 23;
+    SetFocusPosition set_focus_position = 24;
+  }
+}
+
+// Asset task types (app-facing)
+enum AssetTaskType {
+  ASSET_TASK_TYPE_UNSPECIFIED = 0;
+
+  // Asset supports taking off.
+  ASSET_TASK_TYPE_TAKEOFF = 1;
+
+  // Asset supports landing.
+  ASSET_TASK_TYPE_LAND = 2;
+
+  // Asset supports docking
+  ASSET_TASK_TYPE_DOCK = 3;
+
+  // Asset supports going to a specific position.
+  ASSET_TASK_TYPE_GO_TO_POSITION = 4;
+
+  // Asset supports moving at a relative rate from current location.
+  ASSET_TASK_TYPE_MOVE_RELATIVE = 5;
+
+  // Asset supports stopping movement (derived from MOVE_RELATIVE support).
+  ASSET_TASK_TYPE_STOP_MOVEMENT = 6;
+
+  // Asset supports setting altitude.
+  ASSET_TASK_TYPE_SET_ALTITUDE = 7;
+
+  // Asset supports opening dock
+  ASSET_TASK_TYPE_OPEN_DOCK = 8;
+
+  // Asset supports closing dock
+  ASSET_TASK_TYPE_CLOSE_DOCK = 9;
+
+  // Asset supports user gimbal input during Camera Guided Flight mode
+  ASSET_TASK_TYPE_CAMERA_GUIDED_GIMBAL_MOVE = 10;
+
+  // Asset supports restarting/rebooting the device.
+  ASSET_TASK_TYPE_RESTART = 11;
+
+  // Asset supports powering on the device.
+  ASSET_TASK_TYPE_POWER_ON = 12;
+
+  // Asset supports powering off the device.
+  ASSET_TASK_TYPE_POWER_OFF = 13;
+
+  // Asset supports activation
+  ASSET_TASK_TYPE_ACTIVATE = 14;
+
+  // Asset supports deactivation
+  ASSET_TASK_TYPE_DEACTIVATE = 15;
+
+  // Asset supports intercepting a drone.
+  ASSET_TASK_TYPE_INTERCEPT_DRONE = 16;
+
+  // Asset supports canceling a drone interception.
+  ASSET_TASK_TYPE_CANCEL_DRONE_INTERCEPTION = 17;
+
+  // Asset supports alerting a hostile target.
+  ASSET_TASK_TYPE_NOTIFY_HOSTILE_TARGET = 18;
+
+  // Asset supports integration-specific custom commands.
+  ASSET_TASK_TYPE_CUSTOM_COMMAND = 19;
+
+  // Asset supports returning to the launch position.
+  ASSET_TASK_TYPE_VTOL_RETURN_TO_LAUNCH = 20;
+
+  // Asset supports setting home position
+  ASSET_TASK_TYPE_VTOL_DRONE_SET_HOME_POSITION = 21;
+
+  // Asset supports setting loiter radius
+  ASSET_TASK_TYPE_VTOL_SET_LOITER_RADIUS = 22;
+
+  // Asset supports configuring flight settings.
+  ASSET_TASK_TYPE_VTOL_CONFIGURE_FLIGHT_SETTINGS = 23;
+
+  // Asset supports setting an exit waypoint.
+  ASSET_TASK_TYPE_VTOL_SET_EXIT_WAYPOINT = 24;
+
+  // Asset supports setting speed.
+  ASSET_TASK_TYPE_SET_SPEED = 25;
+
+  // Asset supports calibrating VTOL airspeed.
+  ASSET_TASK_TYPE_VTOL_CALIBRATE_AIRSPEED = 26;
+
+  // Asset supports playing an audio clip (speakers, sirens).
+  ASSET_TASK_TYPE_PLAY_AUDIO = 27;
+
+  // Asset supports deleting a loaded audio clip from its storage.
+  ASSET_TASK_TYPE_DELETE_AUDIO = 28;
+
+  // Asset supports aborting an active multi-step sequence.
+  ASSET_TASK_TYPE_ABORT_SEQUENCE = 29;
+
+  // Asset supports confirming the step an active sequence is paused on.
+  ASSET_TASK_TYPE_CONFIRM_SEQUENCE_STEP = 30;
+
+  // Asset supports configuring its ECM effector.
+  ASSET_TASK_TYPE_CONFIGURE_ECM = 31;
+
+  // Asset supports VTOL landing reposition (start / nudge / stop / abort).
+  ASSET_TASK_TYPE_VTOL_LANDING_REPOSITION = 32;
+
+  // Asset supports switching its EKF navigation source (GPS / optical).
+  ASSET_TASK_TYPE_SET_VTOL_EKF_SOURCE = 33;
+
+  // Asset supports declaring whether raw GPS should be enabled after Set Home.
+  ASSET_TASK_TYPE_SET_VTOL_GPS = 34;
+
+  // Asset supports fly-by-camera: flying continuously to the point where the
+  // camera's line of sight crosses the ground (start / stop).
+  ASSET_TASK_TYPE_VTOL_FLY_BY_CAMERA = 35;
+
+  // Asset supports swapping the FCU flight mode on the ground before arming.
+  ASSET_TASK_TYPE_VTOL_SET_FCU_MODE = 36;
+
+  // Asset supports disarming its motors on the ground.
+  ASSET_TASK_TYPE_VTOL_DISARM = 37;
+
+  // Asset supports staging the point its Land task should come down at.
+  ASSET_TASK_TYPE_SET_EMERGENCY_LANDING_POSITION = 38;
+
+  // Asset supports driving its wing and tail locking servos.
+  ASSET_TASK_TYPE_VTOL_SET_LOCK_MECHANISM = 39;
+}
+
+// Sensor task types (app-facing, 1:1 mapping with SensorCommandType)
+enum SensorTaskType {
+  SENSOR_TASK_TYPE_UNSPECIFIED = 0;
+
+  // Sensor supports moving the gimbal axes at continuous rates for a specified duration.
+  SENSOR_TASK_TYPE_CONTINUOUS_GIMBAL_MOVE = 1;
+
+  // Sensor supports moving to look at a point specified in absolute
+  // azimuth and elevation coordinates.
+  SENSOR_TASK_TYPE_ABSOLUTE_GIMBAL_MOVE = 2;
+
+  // Sensor supports continuously looking at a point specified in absolute
+  // coordinates and altitude. (e.g. a drone with tracking capabilities)
+  SENSOR_TASK_TYPE_FIXED_LOOK_AT = 3;
+
+  // Sensor supports setting zoom to a specific factor.
+  SENSOR_TASK_TYPE_SET_ZOOM_FACTOR = 4;
+
+  // Sensor supports taking a snapshot.
+  SENSOR_TASK_TYPE_TAKE_SNAPSHOT = 5;
+
+  // Sensor supports performing a calibration.
+  SENSOR_TASK_TYPE_CALIBRATE = 6;
+
+  // Sensor supports zooming at a rate over a duration.
+  SENSOR_TASK_TYPE_SET_ZOOM_RATE = 7;
+
+  // Sensor supports stopping gimbal movement (derived from CONTINUOUS_GIMBAL_MOVE support).
+  SENSOR_TASK_TYPE_STOP_GIMBAL = 8;
+
+  // Sensor supports stopping zoom (derived from SET_ZOOM_RATE support).
+  SENSOR_TASK_TYPE_STOP_ZOOM = 9;
+
+  // Sensor supports changing camera mode (e.g., visual/thermal).
+  SENSOR_TASK_TYPE_CHANGE_CAMERA_MODE = 10;
+
+  // Sensor supports setting wiper state
+  SENSOR_TASK_TYPE_SET_WIPER_STATE = 11;
+
+  // Sensor supports setting antenna mode (e.g., OMNI/DIRECTIONAL).
+  SENSOR_TASK_TYPE_SET_ANTENNA_MODE = 12;
+
+  // Sensor supports setting frequency range.
+  SENSOR_TASK_TYPE_SET_FREQUENCY_RANGE = 13;
+
+  /// Some sensors have internal tracking capabilities.
+  /// These are not to be confused with Kela detection tracking.
+
+  // Track a pixel in the video frame.
+  SENSOR_TASK_TYPE_SET_SENSOR_TRACK_PIXEL = 14;
+
+  // Enable/disable visual tracking.
+  SENSOR_TASK_TYPE_SET_SENSOR_VISUAL_TRACK = 15;
+
+  // Track a region in the video frame.
+  SENSOR_TASK_TYPE_SET_SENSOR_TRACK_REGION = 16;
+
+  // Sensor supports setting the camera operating mode.
+  SENSOR_TASK_TYPE_SET_CAMERA_OPERATING_MODE = 17;
+
+  // Look at a geo coordinate with optional lock.
+  SENSOR_TASK_TYPE_LOOK_AT_COORDINATE = 18;
+
+  // Sensor supports moving the gimbal to a point specified in raw
+  // device-axis coordinates, bypassing the mounting orientation.
+  SENSOR_TASK_TYPE_ABSOLUTE_DEVICE_AXIS_GIMBAL_MOVE = 19;
+
+  // Sensor supports toggling its onboard ATR object detector on/off.
+  SENSOR_TASK_TYPE_SET_SENSOR_OBJECT_DETECTION = 20;
+
+  // Sensor supports setting focus mode (auto/manual).
+  SENSOR_TASK_TYPE_SET_FOCUS_MODE = 21;
+
+  // Sensor supports moving focus at a rate over a duration.
+  SENSOR_TASK_TYPE_SET_FOCUS_RATE = 22;
+
+  // Sensor supports setting focus to an absolute device-units position.
+  SENSOR_TASK_TYPE_SET_FOCUS_POSITION = 23;
+}
+
+// Principals hold capability leases for assets and sensors
+// These leases allow the principal to control the asset/sensor in specific ways
+// There's a mapping M from task -> capability.
+// In order to perform a task t, the principal must hold the lease for M(t).
+enum AssetLeaseCapability {
+  ASSET_LEASE_CAPABILITY_UNSPECIFIED = 0;
+  ASSET_LEASE_CAPABILITY_MOVE = 1;
+}
+
+// See AssetLeaseCapability.
+enum SensorLeaseCapability {
+  SENSOR_LEASE_CAPABILITY_UNSPECIFIED = 0;
+
+  // Actuating the sensor: gimbal movement, zoom, and focus. One lease covers
+  // them all because they are one unit of conflict — a camera archetype is
+  // addressed as a whole, so a task that takes the archetype over from another
+  // task must have needed the same lease as the task it displaces.
+  SENSOR_LEASE_CAPABILITY_CONTROL = 3;
+
+  // Former split into a pan lease and a zoom lease. Kept reserved so a stale
+  // value from a non-lockstep federated peer fails to decode instead of being
+  // silently read as the wider CONTROL lease.
+  reserved 1, 2;
+  reserved "SENSOR_LEASE_CAPABILITY_PAN", "SENSOR_LEASE_CAPABILITY_ZOOM";
+}
+
+message SensorCapability {
+  string sensor_id = 1;
+  SensorLeaseCapability capability = 2;
+}
+
+message Capability {
+  // The asset entity ID. Always required.
+  string entity_id = 1;
+
+  oneof capability {
+    AssetLeaseCapability asset_capability = 2;
+    SensorCapability sensor_capability = 3;
+  }
+}
+
+// Information about a lease held on a capability
+message CapabilityLeaseInfo {
+  Capability capability = 1;
+  TaskPrincipal lease_holder = 2;
+  google.protobuf.Timestamp lease_expires_at = 3;
+}

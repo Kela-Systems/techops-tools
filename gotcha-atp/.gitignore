@@ -1,0 +1,9 @@
+# Run outputs: records, PDFs and the bench-central outbox stay on the laptop
+runs/
+
+# Generated from proto/ on first use (src/gotcha_atp/access/grpc.py)
+src/gotcha_atp/_pb/
+
+# Never commit a real credentials file. The tool reads
+# ~/.config/gotcha-atp/config.toml; a copy dropped here by mistake stays out.
+config.toml

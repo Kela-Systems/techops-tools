@@ -1,0 +1,585 @@
+syntax = "proto3";
+
+package kela.types.v1alpha1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+// Operator-facing text carried as an i18next key plus interpolation parameters.
+// The fallback template is English and uses the same interpolation parameters.
+// It keeps text readable when a producer is newer than the client's catalog.
+message TranslatableText {
+  string key = 1;
+  map<string, string> translation_params = 2;
+  string fallback_template = 3;
+}
+
+// A geographic position with latitude, longitude, and altitude
+message Position {
+  // WGS84 geodetic latitude in decimal degrees.
+  double latitude_degrees = 1 [
+    (buf.validate.field).double.gte = -90.0,
+    (buf.validate.field).double.lte = 90.0
+  ];
+  // WGS84 longitude in decimal degrees.
+  double longitude_degrees = 2 [
+    (buf.validate.field).double.gte = -180.0,
+    (buf.validate.field).double.lte = 180.0
+  ];
+
+  // Altitude as height above ellipsoid (WGS84) in meters.
+  optional double altitude_hae_meters = 3;
+
+  // Altitude as height above the terrain
+  // This is typically measured with a radar altimeter or by using a terrain
+  // tile set lookup.
+  optional double altitude_agl_meters = 4;
+}
+
+// East-North-Up coordinate frame
+message EastNorthUp {
+  double east = 1;
+  double north = 2;
+  double up = 3;
+}
+
+// Hamiltonian Quaternion representation for orientation
+// q = w + xi + yj + zk
+// We generally use NED angles, so if you have a device providing e.g ENU angles,
+// you need to convert to NED before converting to a quaternion.
+message Quaternion {
+  // x, y, z are vector portion, w is scalar
+  double x = 1;
+  double y = 2;
+  double z = 3;
+  double w = 4;
+}
+
+// Position uncertainty covariance matrix (3x3 in ENU frame)
+message PositionCovarianceENU {
+  // Covariance matrix values in row-major order: [P00, P01, P02, P10, P11, P12, P20, P21, P22]
+  // ENU frame centered on the position. Units: meters squared
+  repeated double values = 1;
+}
+
+// Location with position, velocity, and attitude
+message Location {
+  Position position = 1;
+  // Velocity in an ENU reference frame centered on the corresponding position
+  // (m/s)
+  EastNorthUp velocity = 2;
+
+  // Quaternion to translate from entity body frame to its NED frame
+  Quaternion attitude = 4;
+
+  // Position uncertainty covariance (3x3 matrix in NED frame)
+  optional PositionCovarianceENU position_covariance_enu = 5;
+
+  // Current speed in m/s plus the asset's speed envelope.
+  optional ValueRange speed_mps = 6;
+
+  // Who put this position here: the device itself, or whoever set it up. The
+  // Hub drops an asset's or a sensor's own location that leaves this unset.
+  LocationSource location_source = 7;
+}
+
+// Where a published position came from, and so who owns it.
+enum LocationSource {
+  LOCATION_SOURCE_UNSPECIFIED = 0;
+  // The device measured this position itself — GNSS, an INS, or a survey the
+  // device carries. A stored calibration does not supersede it.
+  LOCATION_SOURCE_MEASURED = 1;
+  // The position was configured for the device rather than measured by it, so
+  // the Hub owns it and a stored calibration supersedes it.
+  LOCATION_SOURCE_CONFIGURED = 2;
+}
+
+// A value range with current and requested values plus bounds
+message ValueRange {
+  double value = 1;
+  optional double min = 2;
+  optional double max = 3;
+  repeated double value_hints = 4;
+  repeated Threshold thresholds = 5;
+  // Requested value, when a target is known.
+  optional double target_value = 6;
+}
+
+// threshold allow to define boundaries for a value range
+// e.g. Battery 0 - 20 can be Critical, 20 - 50 can be HEALTHY ETC
+message Threshold {
+  ThresholdSeverity severity = 1;
+  optional double min = 2;
+  optional double max = 3;
+}
+
+message Waypoint {
+  Position position = 1;
+  optional double loiter_radius_m = 2;
+}
+
+enum ThresholdSeverity {
+  THRESHOLD_SEVERITY_UNSPECIFIED = 0;
+  THRESHOLD_SEVERITY_WARNING = 1;
+  THRESHOLD_SEVERITY_CRITICAL = 2;
+  THRESHOLD_SEVERITY_HEALTHY = 3;
+}
+
+// Categorical severity shared across alerts and track enrichments.
+// SEVERITY_UNSPECIFIED is the canonical "not assessed / not set" value;
+// producers should not explicitly emit it for fields whose default already
+// carries that meaning, but consumers must accept it.
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_LOW = 1;
+  SEVERITY_MEDIUM = 2;
+  SEVERITY_HIGH = 3;
+  SEVERITY_CRITICAL = 4;
+}
+
+// A polygon defined by linear rings
+message GeoPolygon {
+  // An array of LinearRings where the first item is the exterior ring and
+  // subsequent items are interior rings.
+  repeated LinearRing rings = 1;
+}
+
+// A linear ring of positions
+message LinearRing {
+  repeated Position positions = 1;
+}
+
+message LineString {
+  repeated Position positions = 1;
+}
+
+// 2D point in pixel/image coordinates
+message Point2D {
+  float x = 1;
+  float y = 2;
+}
+
+// Bearing in the local geographic frame at the observer.
+message AzEl {
+  // Azimuth from true north, clockwise positive, in degrees; range [0, 360).
+  double azimuth_degrees = 1;
+  // Elevation from horizontal, positive up, in degrees; range [-90, 90].
+  double elevation_degrees = 2;
+}
+
+// Lens distortion coefficients (OpenCV model)
+message DistortionCoeffs {
+  double k1 = 1; // radial distortion
+  double k2 = 2; // radial distortion
+  double p1 = 3; // tangential distortion
+  double p2 = 4; // tangential distortion
+  double k3 = 5; // radial distortion
+}
+
+// Per-zoom camera-model calibration curves.
+// All arrays are parallel: index i refers to the same zoom grid point
+// `zoom[i]`. `zoom` uses actual optical magnification (1.0 = no zoom,
+// 56.0 = 56x). `scale` is always populated; the remaining curves are
+// optional (empty => consumers fall back to the static intrinsic k1 and a
+// zero pointing offset, preserving legacy behaviour).
+message ZoomScaleCurve {
+  // One sample on the per-zoom camera-model grid. Consumers sort points by
+  // `zoom` and linearly interpolate between them, clamping past the ends.
+  message Point {
+    // Zoom factor — actual magnification.
+    double zoom = 1;
+    // Focal-length scale factor f(zoom)/f0 at this zoom.
+    double scale = 2;
+    // Radial distortion k1 at this zoom. Optional, but presence is curve-wide:
+    // either every point carries k1 or none do. Absent => use the static
+    // intrinsic distortion at all zooms (legacy).
+    optional double k1 = 3;
+    // Pan pointing offset (degrees) to ADD to the reported pan — the optical
+    // axis drifts from telemetry with zoom. Curve-wide presence like k1; absent
+    // => 0. Applied exactly once, inside the world-orientation composition.
+    optional double dpan_deg = 4;
+    // Tilt pointing offset (degrees), analogous to dpan_deg. Absent => 0.
+    optional double dtilt_deg = 5;
+  }
+
+  // Grid points defining the curve. Empty => no curve.
+  repeated Point points = 6;
+}
+
+// Where an `IntrinsicCalibration`'s numbers came from. Consumers that read
+// `fx` / `fy` as the lens's zoom-1 focal lengths — anything deriving a field of
+// view or an angular resolution — may only do so for a MEASURED calibration, or
+// for an UNSPECIFIED one whose values they have judged themselves.
+//
+// The Hub stores only MEASURED calibrations, converting UNSPECIFIED to
+// MEASURED. PLACEHOLDER and LIVE_ZOOM remain for legacy data and unstored
+// consumer models.
+enum IntrinsicCalibrationProvenance {
+  // Not recorded. Every calibration stored before this field existed reads as
+  // unspecified, so a consumer that needs the distinction judges the values
+  // themselves rather than distrusting them wholesale.
+  INTRINSIC_CALIBRATION_PROVENANCE_UNSPECIFIED = 0;
+  // Fitted to the lens actually in front of this sensor. `fx` / `fy` are the
+  // reference focals at zoom 1; other zooms are reached via `zoom_scale_curve`.
+  // Set by the calibration service, and by any device that ships a factory
+  // calibration of the unit.
+  INTRINSIC_CALIBRATION_PROVENANCE_MEASURED = 1;
+  // Synthesised because consumers that project pixels need some K. Not fitted to
+  // this lens, so it must not be read as a measured zoom-1 reference: a consumer
+  // deriving a field of view prefers the camera's declared one. Some producers
+  // build it from that declared field of view, which tells such a consumer
+  // nothing it did not already have, and some from a fixed focal length that is
+  // not even that.
+  INTRINSIC_CALIBRATION_PROVENANCE_PLACEHOLDER = 2;
+  // Real optics, but `fx` / `fy` are inverted from the field of view the camera
+  // reports at its *current* zoom and are republished as it changes. They are
+  // therefore not reference focals, and no `zoom_scale_curve` relates them to
+  // zoom 1 — a consumer that multiplies them by a zoom scale applies the zoom
+  // twice. Read them as they stand or not at all.
+  //
+  // Any publisher that inverts live field-of-view or focal-length telemetry into
+  // a K per tick belongs here, whatever it reads that telemetry from.
+  INTRINSIC_CALIBRATION_PROVENANCE_LIVE_ZOOM = 3;
+}
+
+// Camera intrinsic calibration profile
+message IntrinsicCalibration {
+  // Calibration reference resolution
+  uint32 width = 1;
+  uint32 height = 2;
+
+  // Focal lengths in pixels
+  double fx = 3;
+  double fy = 4;
+
+  // Principal point in pixels
+  double cx = 5;
+  double cy = 6;
+
+  // PTZ rotation axes (optional, for PTZ cameras). Each axis is a 3-element
+  // vector [x, y, z] in the NED-aligned body frame (X=North, Y=East, Z=Down
+  // at zero mounting). The calibration service transports its solver output
+  // to this frame before emitting; consumers compose
+  // `q_ptz = R(yaw_axis, pan) · R(pitch_axis, tilt)` directly — identical to
+  // `scipy.from_euler("ZYX", [pan, tilt, 0])` when the axes are the defaults.
+  // Defaults: yaw_axis = [0, 0, 1] (pan around body-Down — positive pan rotates
+  // North→East), pitch_axis = [0, 1, 0] (tilt around body-East — positive tilt
+  // is upward).
+  repeated double yaw_axis = 7;
+  repeated double pitch_axis = 8;
+
+  // Lens distortion coefficients (optional)
+  optional DistortionCoeffs distortion = 9;
+
+  // Zoom to scale calibration curve (optional)
+  optional ZoomScaleCurve zoom_scale_curve = 10;
+
+  // Diagnostic metrics from the calibration run that produced these values.
+  // Absent for calibrations stored before this field was introduced.
+  optional IntrinsicCalibrationQuality quality = 11;
+
+  // 12 held a per-sensor boresight rotation, now carried by the device's
+  // SensorToAssetCalibration. Intrinsics are stored and replayed as bytes, so
+  // reusing 12 would give an old payload's quaternion a different meaning.
+  reserved 12;
+  reserved "boresight_to_visual";
+
+  // Where these values came from. Publishers set it; consumers that read
+  // `fx` / `fy` as zoom-1 focals gate on it.
+  IntrinsicCalibrationProvenance provenance = 13;
+}
+
+// Diagnostic metrics produced by an intrinsic-calibration run. Carries error
+// data for both the first (PTZ-frame intrinsic optimization) and second
+// (zoom-scale fit) phases. Every field is optional so partial-stage
+// checkpoints can populate only the relevant phase.
+message IntrinsicCalibrationQuality {
+  // ----- First (intrinsic) phase -----
+
+  // Mean reprojection RMSE in pixels across all pairs used in the final fit.
+  optional double intrinsic_rmse_pixels = 1;
+  // Worst-pair reprojection RMSE in pixels.
+  optional double intrinsic_rmse_max_pixels = 2;
+  // Frames that came out of the scan stage.
+  optional uint32 num_frames_captured = 3;
+  // Frames that contributed to the final fit (reached `final_pairs`).
+  optional uint32 num_frames_used = 4;
+  // Total matched feature points across all pairs used in the final fit.
+  optional uint32 num_point_matches = 5;
+  // Adjacent-frame pairs used in the final optimization.
+  optional uint32 num_pairs_used = 6;
+  // Pairs removed by the high-RMSE prune step before the final optimization.
+  optional uint32 num_pairs_pruned = 7;
+  // Wall-clock duration of the intrinsic-processing stage.
+  optional double intrinsic_duration_seconds = 8;
+
+  // ----- Second (zoom) phase -----
+
+  // Mean per-step RMSE in pixels for the zoom-vs-scale fit.
+  optional double zoom_rmse_pixels = 9;
+  // Worst per-step RMSE in pixels.
+  optional double zoom_rmse_max_pixels = 10;
+  // Per-step reprojection RMSE in pixels (one entry per zoom transition).
+  repeated double per_zoom_step_rmse_pixels = 11;
+  // Per-step inlier counts (one entry per zoom transition).
+  repeated uint32 per_zoom_step_inliers = 12;
+  // Number of distinct zoom levels sampled.
+  optional uint32 num_zoom_levels = 13;
+  // Wall-clock duration of the zoom-processing stage.
+  optional double zoom_duration_seconds = 14;
+  // Zoom transitions attempted but dropped (insufficient matches or RANSAC
+  // inliers). `per_zoom_step_rmse_pixels` only carries successful steps, so
+  // this disambiguates "all steps fine" from "some transitions unusable".
+  optional uint32 num_zoom_steps_failed = 17;
+
+  // ----- Cross-spectral rig phase -----
+
+  // RMSE in pixels (reference-sensor anchor scale) of the cross-spectral
+  // matches under the final rig model. Present only when the calibration went
+  // through the rig-bundle refinement that also produced the sensor's
+  // boresight estimate.
+  optional double cross_spectral_rmse_pixels = 18;
+  // Cross-spectral image pairs that survived filtering and contributed to the
+  // boresight estimate.
+  optional uint32 num_cross_spectral_pairs = 19;
+
+  // ----- Provenance -----
+
+  // When the run that produced these metrics finished.
+  optional google.protobuf.Timestamp computed_at = 15;
+  // Calibration-service algorithm version (git SHA or package version).
+  optional string algorithm_version = 16;
+}
+
+// Where an asset sits in the world ("World Calibration" in the UI): solved
+// from pixel-to-world correspondences, or entered by an operator.
+message AssetToWorldCalibration {
+  // Asset body -> true-NED active rotation, as a Hamilton quaternion:
+  // `rotation_asset_to_world * body_X` is the asset's forward direction in NED
+  // at pan=tilt=0. This is the canonical wire format consumed by drivers and projection.
+  Quaternion rotation_asset_to_world = 1;
+  // Calibrated camera position in WGS-84 geodetic coordinates.
+  // Derived from the solver's NED translation vector plus the reference
+  // camera origin at calibration time.
+  // Height is HAE.
+  Position position = 2;
+  // When the calibration was last computed. Absent for calibrations stored
+  // before this field was introduced.
+  optional google.protobuf.Timestamp computed_at = 3;
+  // RMS angular reprojection error in degrees from the run that produced this
+  // calibration. Absent for calibrations stored before this field was introduced.
+  optional double rms_error_degrees = 4;
+  // Pre-computed yaw/pitch/roll (ZYX intrinsic, NED convention) for display.
+  // The Hub derives this from `rotation_asset_to_world` using the centralized
+  // `to_ypr_degrees` helper so the FE does not have to know the rotation convention.
+  optional EulerAngles rotation_euler = 5;
+}
+
+// A vector in the asset body frame, metres. X forward, Y right, Z down.
+message BodyOffset {
+  // Along the asset's forward axis (body X).
+  double forward_m = 1;
+  // Along the asset's right axis (body Y).
+  double right_m = 2;
+  // Along the asset's down axis (body Z), so a sensor mounted above the body
+  // origin is negative.
+  double down_m = 3;
+}
+
+// How a stored calibration row was arrived at: fitted, or typed in — so a
+// hand-entered pose never reads as a solved one.
+enum CalibrationSource {
+  // No source recorded: a row stored before this field existed.
+  CALIBRATION_SOURCE_UNSPECIFIED = 0;
+  // Fitted by a calibration run.
+  CALIBRATION_SOURCE_SOLVED = 1;
+  // Entered by an operator.
+  CALIBRATION_SOURCE_MANUAL = 2;
+}
+
+// Why a sensor is still running a pose older than its device's stored
+// calibration revision. One value per cause an operator can act on
+// differently; the driver's own wording travels alongside as free text.
+enum SensorCalibrationLagReason {
+  SENSOR_CALIBRATION_LAG_REASON_UNSPECIFIED = 0;
+  // The apply is queued or in flight; nothing has failed.
+  SENSOR_CALIBRATION_LAG_REASON_APPLY_PENDING = 1;
+  // The device session cannot take an apply yet — expected while a driver is
+  // still coming up.
+  SENSOR_CALIBRATION_LAG_REASON_SESSION_NOT_READY = 2;
+  // The apply reached the device and failed.
+  SENSOR_CALIBRATION_LAG_REASON_PROVISIONING_STUCK = 3;
+}
+
+// Where a sensor sits on its asset, relative to the asset body frame.
+// Relative, so that re-solving the asset-to-world calibration moves every
+// sensor with it.
+message SensorToAssetCalibration {
+  // Sensor body -> asset body active rotation. Identity for the reference
+  // sensor by definition.
+  Quaternion rotation_sensor_to_asset = 1;
+  // Sensor origin in the asset body frame. Zero when unmeasured, which
+  // reproduces "the sensor is at the asset position".
+  BodyOffset translation_sensor_to_asset_m = 2;
+  // When the run that produced this calibration finished, or when an operator
+  // entered it.
+  google.protobuf.Timestamp computed_at = 3;
+  // Solved by a run or entered by hand. See CalibrationSource.
+  CalibrationSource source = 4;
+  // Sensor whose frame the solve was expressed in before transport to the
+  // asset body frame. Empty when solved against the reference sensor.
+  string solved_against_sensor_id = 5;
+  // Solver diagnostics. A silhouette fit states no angular RMS, so it carries
+  // its own quality measures.
+  optional SensorToAssetFit fit = 6;
+}
+
+// Diagnostics from the run that produced a sensor-to-asset calibration. Every
+// field is set only by the kind of run that measures it, so a silhouette fit
+// and a cross-spectral fit each fill their own subset.
+message SensorToAssetFit {
+  // Intersection over union between the rendered silhouette and the segmented
+  // one at the solved pose. 1.0 is a perfect overlap.
+  optional double silhouette_iou = 1;
+  // Final value of the objective the silhouette solver minimised. Comparable
+  // only between runs of the same solver_version.
+  optional double fit_cost = 2;
+  // RMS reprojection error, in pixels, of the point pairs matched between the
+  // two spectral channels of a rig.
+  optional double cross_spectral_rmse_pixels = 3;
+  // How many cross-spectral point pairs the RMSE was computed over.
+  optional uint32 num_cross_spectral_pairs = 4;
+  // Which revision of the solver produced this fit, so a stored row can be
+  // compared against the algorithm that wrote it.
+  optional uint32 solver_version = 5;
+  // Frame the solve ran on. Blob key only; the bytes live in blob storage,
+  // as they do for the two keys below.
+  optional string raw_frame_blob_key = 6;
+  // Frame with the solved pose drawn over it, for an operator to eyeball.
+  optional string fit_overlay_blob_key = 7;
+  // Segmentation mask the silhouette fit matched against.
+  optional string seg_mask_blob_key = 8;
+  // Human-readable segmentation summary (prompt kind + mask confidence).
+  optional string mask_info = 9;
+  // Which references decided the upright roll branch and, when needed, the
+  // planar-dual pitch branch. A slab silhouette cannot separate either tie.
+  UprightSource upright_source = 10;
+}
+
+// What told a silhouette solve which way is down, including the configured
+// down-boresight assumption when it picked a planar-dual pitch branch.
+enum UprightSource {
+  // No reference recorded: a row stored before this field existed.
+  UPRIGHT_SOURCE_UNSPECIFIED = 0;
+  // The sweep camera's published mounting orientation: a measurement.
+  UPRIGHT_SOURCE_PUBLISHED_MOUNTING = 1;
+  // Assumed a level camera, because it publishes no mounting orientation.
+  UPRIGHT_SOURCE_ASSUMED_LEVEL_NO_MOUNTING = 2;
+  // Assumed a level camera, because its published mounting orientation is not
+  // a rotation. A corrupt stored calibration is something to go and fix, so it
+  // stays distinguishable from an absent one.
+  UPRIGHT_SOURCE_ASSUMED_LEVEL_MOUNTING_NOT_A_ROTATION = 3;
+  // Used the published mounting for the roll branch and the configured
+  // down-boresight assumption for the planar-dual pitch branch.
+  UPRIGHT_SOURCE_PUBLISHED_MOUNTING_WITH_BORESIGHT_DOWN_PRIOR = 4;
+  // Assumed a level camera for the roll branch and a down-pointing boresight for
+  // the pitch branch because no mounting orientation was published.
+  UPRIGHT_SOURCE_ASSUMED_LEVEL_NO_MOUNTING_WITH_BORESIGHT_DOWN_PRIOR = 5;
+  // Assumed a level camera for the roll branch and a down-pointing boresight for
+  // the pitch branch because the published mounting was not a rotation.
+  UPRIGHT_SOURCE_ASSUMED_LEVEL_MOUNTING_NOT_A_ROTATION_WITH_BORESIGHT_DOWN_PRIOR = 6;
+}
+
+// A per-lens fit that predicts where autofocus settles for a range and zoom.
+// Stored by the Hub per (device, sensor) and read by its own focus control;
+// `Sensor.focus_control` says whether a sensor is served with one, and the
+// calibration service's `GetSensorFocusState` returns it.
+message FocusModel {
+  message FocusKnot {
+    // Zoom factor — actual magnification.
+    double zoom = 1;
+    // Focus position at this zoom, in the sensor's device_focus units
+    // (normalized for visible lenses, raw counts for thermal).
+    double focus = 2;
+  }
+
+  // Visible-lens model: focus = F_inf(zoom) + b(zoom) / range.
+  // `infinity_knots` sample F_inf on the zoom grid.
+  message RangeZoomModel {
+    repeated FocusKnot infinity_knots = 1;
+    // Near-field term b(zoom) = b0 + b1 * zoom / b_zoom_norm, in
+    // focus-units * meters.
+    double b0 = 2;
+    double b1 = 3;
+    double b_zoom_norm = 4;
+    // Range span the fit had samples for; outside it the model extrapolates.
+    double min_range_meters = 5;
+    double max_range_meters = 6;
+  }
+
+  // Zoom-keyed model for lenses whose focus does not track range (thermal).
+  message ZoomOnlyModel {
+    repeated FocusKnot knots = 1;
+  }
+
+  enum Quality {
+    QUALITY_UNSPECIFIED = 0;
+    QUALITY_PASS = 1;
+    // Usable but degraded (e.g. many samples culled as foreground-autofocus
+    // captures); a re-run is recommended.
+    QUALITY_FLAGGED = 2;
+  }
+
+  oneof model {
+    RangeZoomModel range_zoom = 1;
+    ZoomOnlyModel zoom_only = 2;
+  }
+  Quality quality = 3;
+  // Human-readable reasons when quality is FLAGGED (e.g. "27% culled").
+  repeated string quality_reasons = 4;
+  // Robust RMS of the fit residuals, in the sensor's focus units.
+  double residual_rms = 5;
+  google.protobuf.Timestamp fitted_at = 6;
+}
+
+// ZYX intrinsic Euler angles in NED convention (yaw/pitch/roll), in degrees.
+message EulerAngles {
+  // Rotation about the Z axis (0° = North, 90° = East).
+  double yaw_degrees = 1;
+  // Rotation about the Y axis (positive = up).
+  double pitch_degrees = 2;
+  // Rotation about the X axis (positive = right wing down).
+  double roll_degrees = 3;
+}
+
+// Home position configuration for sensors with pan/tilt capability
+message HomePositionConfig {
+  // Whether home position is enabled
+  bool enabled = 1;
+
+  // Target latitude in decimal degrees
+  double latitude = 2;
+
+  // Target longitude in decimal degrees
+  double longitude = 3;
+
+  // Delay in seconds before returning to home position after idle
+  double delay_seconds = 4;
+
+  double altitude_agl_meters = 5;
+}
+
+enum CameraOperatingMode {
+  CAMERA_OPERATING_MODE_UNSPECIFIED = 0;
+  CAMERA_OPERATING_MODE_STOW = 1; // Gimbal parked in a safe, stowed position.
+  CAMERA_OPERATING_MODE_PILOT = 2; // Gimbal slaved to the aircraft heading (pilot's forward view).
+  CAMERA_OPERATING_MODE_HOLD_COORDINATE = 3; // Gimbal locked onto a geo-coordinate, compensating for platform movement.
+  CAMERA_OPERATING_MODE_OBSERVATION = 4; // Free-look scanning mode for area surveillance.
+  CAMERA_OPERATING_MODE_TRACKING = 5; // Actively tracking a detected target.
+  CAMERA_OPERATING_MODE_LOCAL_POSITION = 6; // Pointing to a body-frame relative position.
+  CAMERA_OPERATING_MODE_GLOBAL_POSITION = 7; // Pointing to an earth-frame (lat/lon/alt) position.
+  CAMERA_OPERATING_MODE_GRR = 8; // Ground Reference Reticle — geo-stabilized reticle on terrain.
+  CAMERA_OPERATING_MODE_EPR = 9; // Enhanced Position Reference — refined geo-lock using image feedback.
+  CAMERA_OPERATING_MODE_POINT_TO_COORDINATE = 10; // One-shot slew to a specific coordinate without sustained lock.
+  CAMERA_OPERATING_MODE_NADIR = 11; // Look straight down (nadir view).
+}

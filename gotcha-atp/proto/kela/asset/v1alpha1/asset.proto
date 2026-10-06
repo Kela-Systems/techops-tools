@@ -1,0 +1,823 @@
+syntax = "proto3";
+
+package kela.asset.v1alpha1;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "kela/archetype/v1alpha1/archetype.proto";
+import "kela/asset/v1alpha1/behavior.proto";
+import "kela/asset/v1alpha1/command.proto";
+import "kela/asset/v1alpha1/task.proto";
+import "kela/track/v1alpha1/track.proto";
+import "kela/types/v1alpha1/types.proto";
+
+enum AssetType {
+  ASSET_TYPE_UNSPECIFIED = 0;
+  ASSET_TYPE_CAMERA = 1;
+  ASSET_TYPE_DRONE = 2;
+  ASSET_TYPE_RADAR = 3;
+  ASSET_TYPE_TRAIL_CAM = 4;
+  ASSET_TYPE_LIDAR = 5;
+  ASSET_TYPE_DOCK = 6;
+  ASSET_TYPE_WEAPON_SYSTEM = 7;
+  ASSET_TYPE_UGV = 8; // Unmanned ground vehicle
+  ASSET_TYPE_ECM = 9; // Electronic counter measure (e.g. GPS spoofer/jammer)
+  ASSET_TYPE_LAUNCHER = 10;
+  ASSET_TYPE_LOITERING_MUNITION = 11;
+  ASSET_TYPE_VTOL = 12;
+  ASSET_TYPE_SPEAKER = 13;
+  ASSET_TYPE_SMART_SWITCH = 14; // Networked relay / lighting controller (e.g. ControlByWeb WebRelay)
+  ASSET_TYPE_FENCE = 15;
+  ASSET_TYPE_CUAS_SYSTEM = 16; // Composite C-UAS unit (MAGOS radars + camera + speaker) exposed as one asset
+  ASSET_TYPE_OPTICAL_DETECTOR = 17; // Fixed passive optical (camera-based) array that detects and geo-locates airborne targets. No PTZ, no live video stream.
+  ASSET_TYPE_ACOUSTIC_DETECTOR = 18; // Passive acoustic array that hears airborne targets.
+}
+
+enum AssetState {
+  ASSET_STATE_UNSPECIFIED = 0;
+
+  // Asset is docked
+  ASSET_STATE_DOCKED = 1;
+
+  // Asset is on the ground (but not in dock)
+  ASSET_STATE_ON_GROUND = 2;
+
+  // In flight, ready for flight commands
+  ASSET_STATE_IN_FLIGHT = 3;
+
+  // Asset is operationally active
+  ASSET_STATE_ACTIVATED = 4;
+
+  // Asset is operationally inactive
+  ASSET_STATE_DEACTIVATED = 5;
+}
+
+enum DockState {
+  DOCK_STATE_UNSPECIFIED = 0;
+  DOCK_STATE_OPEN = 1;
+  DOCK_STATE_CLOSED = 2;
+}
+
+// Device identification information.
+// These fields are universal across all connected devices
+// and should be populated when available from the device.
+message DeviceInfo {
+  // Device manufacturer (e.g., "Hikvision", "DJI", "Innoviz", "MAGOS")
+  string manufacturer = 1;
+  // Device model (e.g., "DS-2TD4166T-9/P", "Matrice 300 RTK", "InnovizOne")
+  string model = 2;
+  // Firmware/software version running on the device
+  string firmware_version = 3;
+  // Device serial number for identification and support
+  string serial_number = 4;
+}
+
+// One loaded audio clip slot on a Provision-ISR (or compatible) speaker.
+// Empty firmware slots are still emitted with name = "" so the operator
+// can see which slots are occupied vs free.
+message SpeakerAudioFile {
+  // Numeric file ID the device uses to play this clip (e.g. 10-14 for
+  // built-in system tones, 20-30 for user uploads).
+  int32 file_id = 1;
+  // Operator-facing display name of the clip; empty for unloaded slots.
+  string name = 2;
+}
+
+message SpeakerPayload {
+  // Slot listing exactly as the device reports it (preserves slot order).
+  repeated SpeakerAudioFile loaded_files = 1;
+  // Output volume as reported by the device, 0-100.
+  optional uint32 volume_percent = 2;
+}
+
+message Maneuverability {
+  optional double max_altitude_hae_meters = 1;
+  // Maximum yaw rotation speed in degrees per second
+  optional double max_yaw_speed_deg_per_sec = 5;
+}
+
+message PowerSource {
+  // Status of the power source.
+  PowerStatus power_status = 1;
+  // Used to determine the type of power source.
+  PowerType power_type = 2;
+  // Power level of the system. If absent, the power level is assumed to be
+  // unknown.
+  PowerLevel power_level = 3;
+}
+
+enum PowerStatus {
+  POWER_STATUS_UNSPECIFIED = 0;
+  // Power system is not configured/present. This is considered a
+  // normal/expected condition, as opposed to the system is expected to be
+  // present but is missing.
+  POWER_STATUS_NOT_PRESENT = 1;
+  // Power system is present and operating normally.
+  POWER_STATUS_OPERATING = 2;
+  // Power system is present and is in an expected disabled state. For example,
+  // if the generator was shut off for operational reasons.
+  POWER_STATUS_DISABLED = 3;
+  // Power system is non-functional.
+  POWER_STATUS_ERROR = 4;
+}
+
+enum PowerType {
+  POWER_TYPE_UNSPECIFIED = 0;
+  POWER_TYPE_BATTERY = 1;
+}
+
+message PowerLevel {
+  // Total power capacity of the system.
+  float capacity = 1;
+  // Remaining power capacity of the system.
+  float remaining = 2;
+
+  // Estimated minutes until empty. Calculated with consumption at the moment,
+  // as reported by the power source. If the source does not report this value
+  // this field will be null.
+  optional double run_time_to_empty_mins = 6;
+
+  // Battery voltage with thresholds
+  optional kela.types.v1alpha1.ValueRange voltage = 7;
+
+  // Battery current draw in amps with thresholds
+  optional kela.types.v1alpha1.ValueRange current_amps = 8;
+}
+
+message Health {
+  // Top-level health status; typically a roll-up of individual component
+  // healths.
+  HealthStatus health_status = 1;
+  // The update time for the top-level health information.
+  // If this timestamp is unset, the data is assumed to be most recent
+  google.protobuf.Timestamp update_time = 2;
+}
+
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  // Indicates that the component is operating as intended.
+  HEALTH_STATUS_HEALTHY = 1;
+  // Indicates that the component is at risk of transitioning into a
+  // HEALTH_STATUS_FAIL state or that the component is operating in a degraded
+  // state.
+  HEALTH_STATUS_WARN = 2;
+  // Indicates that the component is not functioning as intended.
+  HEALTH_STATUS_FAIL = 3;
+  // Indicates that the component is offline.
+  HEALTH_STATUS_OFFLINE = 4;
+  // Indicates that the component is not yet functioning, but it is
+  // transitioning into a HEALTH_STATUS_HEALTHY state. A component should only
+  // report this state temporarily.
+  HEALTH_STATUS_NOT_READY = 5;
+  // The component exists, responds, and is powered off.
+  HEALTH_STATUS_POWERED_OFF = 6;
+}
+
+// An operator-facing notice emitted by a driver while a condition holds
+// (e.g. "GPS WARNING", "Low signal strength").
+message Notice {
+  NoticeSeverity severity = 1;
+  kela.types.v1alpha1.TranslatableText text = 6;
+  // When the owning Hub first observed this occurrence. The timestamp stays
+  // fixed while the notice remains active and changes if it clears and returns.
+  // Hub-populated; publishers leave it unset.
+  google.protobuf.Timestamp first_observed_at = 7;
+}
+
+enum NoticeSeverity {
+  NOTICE_SEVERITY_UNSPECIFIED = 0;
+  NOTICE_SEVERITY_INFO = 1;
+  NOTICE_SEVERITY_WARN = 2;
+  NOTICE_SEVERITY_ERROR = 3;
+}
+
+// GNSS positioning telemetry reported by an asset's GPS/RTK receiver.
+// The whole message is optional on the parent; its absence means "no GNSS
+// data", so the individual fields don't need explicit presence.
+message GpsState {
+  // Number of GPS satellites currently tracked.
+  uint32 gps_satellites = 1;
+  // Number of RTK satellites currently tracked.
+  uint32 rtk_satellites = 2;
+  // Whether the GPS signal is good enough for reliable positioning.
+  bool gps_ok = 3;
+}
+
+enum SubstreamType {
+  SUBSTREAM_TYPE_UNSPECIFIED = 0;
+  SUBSTREAM_TYPE_NATIVE = 1;
+  SUBSTREAM_TYPE_TRANSCODED = 2;
+  SUBSTREAM_TYPE_DILUTED = 3;
+}
+
+enum SubstreamCodec {
+  SUBSTREAM_CODEC_UNSPECIFIED = 0;
+  SUBSTREAM_CODEC_H264 = 1;
+  SUBSTREAM_CODEC_H265 = 2;
+  SUBSTREAM_CODEC_VP8 = 3;
+  SUBSTREAM_CODEC_VP9 = 4;
+  SUBSTREAM_CODEC_AV1 = 5;
+}
+
+message VideoResolution {
+  uint32 width = 1;
+  uint32 height = 2;
+}
+
+// Whether a move on this sensor may ask for focus. A service that follows a
+// target reads it before sending `focus_range_m` / `focus_on_target`: under
+// FOCUS_CONTROL_NONE such a move is rejected, so send moves without them;
+// under DEFAULT_TABLE (the driver's built-in default, from
+// `SensorCamera.default_focus_model`) or FITTED_MODEL (a stored fit) the focus
+// request is honored. Which of the two is in use is shown in the admin UI.
+// Camera sensors only; every other sensor kind is FOCUS_CONTROL_NONE.
+enum FocusControl {
+  FOCUS_CONTROL_UNSPECIFIED = 0;
+  FOCUS_CONTROL_NONE = 1;
+  FOCUS_CONTROL_DEFAULT_TABLE = 2;
+  FOCUS_CONTROL_FITTED_MODEL = 3;
+}
+
+message Sensor {
+  string sensor_id = 1;
+  // A list of tasks supported by the sensor
+  repeated SensorTaskType supported_tasks = 2;
+  oneof kind {
+    SensorCamera camera = 3;
+    SensorRadar radar = 4;
+    SensorCaptures captures = 5;
+    SensorEcm ecm = 6;
+    SensorFence fence = 9;
+    SensorSwitchedDevice switched_device = 12;
+  }
+  // The command types this sensor supports (set by the driver via PublishAsset).
+  // Preserved across federation so child capabilities survive the round-trip.
+  repeated SensorCommandType supported_commands = 7;
+  // Per-sensor location. When set, the sensor is displayed at this location
+  // on the map instead of the asset's location. Useful for distributed sensor
+  // systems (e.g., fence lines) where each sensor has its own position.
+  optional kela.types.v1alpha1.Location location = 10;
+  // Per-sensor health status. When set, represents the individual health
+  // of this sensor independently from the asset-level health.
+  optional Health health = 11;
+
+  // Archetypes implemented by this sensor (commands v2).
+  repeated kela.archetype.v1alpha1.ArchetypeDescriptor archetypes = 8;
+
+  // Opaque sensor-scoped extension state, at most one entry per canonical type
+  // URL.
+  repeated google.protobuf.Any extensions = 13;
+
+  // The Hub-composed position and orientation for this sensor, for every
+  // sensor kind, plus the calibration they were composed from. The value to
+  // aim, project and render with.
+  //
+  // Absent when the Hub has no value to report; never an identity
+  // placeholder. Any publisher-provided value is overwritten.
+  optional SensorPose pose = 15;
+
+  // The publisher's own orientation declaration, carried through unchanged --
+  // an input to `pose`, not a second answer to the same question. Unset: the
+  // sensor states no orientation.
+  //
+  // Served because two readers need the declaration itself and not the
+  // composed result: the Hub recomposes `pose` from it on restore, since the
+  // composed value is never stored; and the gimbal inverse needs to know
+  // whether the publisher's angles are already world-referenced (`world`) or
+  // have to be inverted through the composed mounting (`mounting`).
+  SensorOrientation declared_orientation = 16;
+
+  // Whether moves on this sensor may ask for focus; see FocusControl.
+  // Hub-composed: a publisher's value is ignored.
+  FocusControl focus_control = 17;
+}
+
+// How a sensor is oriented, as its publisher declares it. The set arm names
+// the frame the value is in, and so who owns the sensor's world orientation.
+message SensorOrientation {
+  oneof orientation {
+    // The publisher composes its own world orientation — e.g. a vendor gimbal
+    // that folds the airframe attitude into its readings; the Hub touches
+    // nothing.
+    kela.types.v1alpha1.Quaternion world = 1;
+    // The asset's body-to-world mounting at zero articulation, un-composed:
+    // the Hub folds the sensor-to-asset calibration and the articulation (a
+    // camera's pan/tilt) on top and owns the result.
+    kela.types.v1alpha1.Quaternion mounting = 2;
+  }
+}
+
+// One sensor's Hub-composed position and orientation, uniform across sensor
+// kinds.
+//
+// Each field is set only when the Hub has a value for it. A sensor whose
+// publisher set SensorOrientation.world gets world_orientation and no
+// mounting_orientation. Every other pose composes over the asset anchor: the
+// stored asset-to-world row when the device has one, otherwise the asset's own
+// published location. A sensor with neither a sensor-to-asset row nor a
+// declared mounting of its own gets no orientation or position: its pose then
+// carries only `motion`, or is absent when the Hub has no motion state for it
+// either.
+message SensorPose {
+  // Sensor body -> world at zero articulation: the anchor composed with the
+  // sensor's `rotation_sensor_to_asset`. The base rotation is the stored
+  // `rotation_asset_to_world` when the device has one, otherwise the attitude
+  // the asset publishes, or a rowless sensor's own declared mounting.
+  kela.types.v1alpha1.Quaternion mounting_orientation = 1;
+  // Device frame -> world: `mounting_orientation * q_ptz` for a camera, the
+  // mounting itself for a kind with no articulation.
+  kela.types.v1alpha1.Quaternion world_orientation = 2;
+  // Base position plus the body offset rotated into NED. The base is the stored
+  // anchor position, replaced whole by a measured asset fix when the asset has
+  // one, and a sensor that measured its own position keeps that instead.
+  // WGS-84 HAE, with the AGL datum carried through when the base has one.
+  kela.types.v1alpha1.Position position = 3;
+  // Which stored calibration produced the values here. This names the
+  // asset-to-world row when one anchored the pose, otherwise the
+  // sensor-to-asset row when it was folded onto a declared sensor base. Absent
+  // when no stored row contributed.
+  optional PoseCalibration calibration = 7;
+  // Whether the sensor's pan/tilt axes are moving, as the Hub believes. Present
+  // on this Hub's own camera sensors once a pan/tilt reading or a Hub command
+  // has been seen for the sensor; absent before that and on every other sensor.
+  optional SensorMotion motion = 8;
+}
+
+// The Hub's belief about whether a sensor's pan/tilt axes are moving. Written
+// by the Hub only.
+message SensorMotion {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    // A command is in flight but no pan/tilt reading has arrived yet.
+    STATE_UNKNOWN = 1;
+    // The axes may be in motion: a command is in flight, or the published
+    // pan/tilt recently changed.
+    STATE_MOVING = 2;
+    // The newest published pan/tilt is where the axes are.
+    STATE_STATIONARY = 3;
+  }
+  State state = 1;
+  // When the state last changed.
+  google.protobuf.Timestamp since = 2;
+}
+
+// The effective stored calibration that the Hub attaches to a camera. Only the
+// Hub writes it. The Hub copies it from the per-sensor store on every publish,
+// so changes reach consumers without a driver republish or reconnect.
+message SensorCalibration {
+  // Measured lens values: reference focals at zoom 1, principal point,
+  // distortion, PTZ axes, and zoom curve. Provenance is always MEASURED. The
+  // Hub rejects other values.
+  kela.types.v1alpha1.IntrinsicCalibration intrinsic = 1;
+  // Whether a calibration run solved the values or an operator entered them.
+  kela.types.v1alpha1.CalibrationSource source = 2;
+  // The device's `calibration_revision` when the values were attached. This is
+  // the same counter as `PoseCalibration.calibration_revision`. Every intrinsic,
+  // sensor-to-asset, and asset-to-world write increments it.
+  int64 calibration_revision = 3;
+}
+
+message PublishSensor {
+  string sensor_id = 1;
+  // A list of commands supported by the sensor
+  repeated SensorCommandType supported_commands = 2;
+  oneof kind {
+    SensorCamera camera = 3;
+    SensorRadar radar = 4;
+    SensorCaptures captures = 5;
+    SensorEcm ecm = 6;
+    // Field numbers 7 and 8 are used by location and health outside the oneof.
+    SensorFence fence = 9;
+    SensorSwitchedDevice switched_device = 12;
+  }
+  // Per-sensor location. When set, overrides the asset-level location for
+  // this specific sensor on the map.
+  optional kela.types.v1alpha1.Location location = 7;
+  // Per-sensor health status. When set, represents the individual health
+  // of this sensor. The driver is responsible for computing aggregated
+  // asset-level health from individual sensor healths.
+  optional Health health = 8;
+
+  // Archetypes implemented by this sensor (commands v2).
+  repeated kela.archetype.v1alpha1.ArchetypeDescriptor archetypes = 10;
+
+  // Opaque sensor-scoped extension state, at most one entry per canonical type
+  // URL.
+  repeated google.protobuf.Any extensions = 13;
+
+  // How this sensor is oriented, and so who owns its world orientation. Unset:
+  // the sensor states no orientation, and nothing composes from the publisher's
+  // side.
+  SensorOrientation declared_orientation = 15;
+}
+
+message SensorCamera {
+  // Maximum horizontal field of view in degrees (when zoom factor is 1)
+  float max_fov_h = 1;
+  // Maximum vertical field of view in degrees (when zoom factor is 1).
+  float max_fov_v = 2;
+
+  // Zoom factor (multiplier). Unset if camera has a fixed zoom.
+  // The lower_bound must be exactly 1.0 (no zoom).
+  kela.types.v1alpha1.ValueRange zoom = 3;
+
+  // A list of states in which to hide this sensor's video streams from the UI.
+  // This is for sensors that shouldn't be displayed in all states, such as a dock camera being hidden when the asset is in flight.
+  // TODO: This is temporary and should be replaced by splitting drone and dock assets (HUB-520)
+  repeated AssetState hidden_states = 7;
+
+  // Home position configuration - sensor returns to this position after idle timeout
+  optional kela.types.v1alpha1.HomePositionConfig home_position = 10;
+
+  // Numbers 11 and 14 carried the camera's mounting and world orientation
+  // before `Sensor.pose` became their only home. They shipped, so they stay
+  // burnt: reusing them would give stored and replayed bytes a new meaning.
+  // The move was an atomic changeover with no accept-both window — CHANGELOG.md
+  // names the peers that have to cross with it and the order they upgrade in.
+  reserved 8, 11, 14;
+  reserved "intrinsic_calibration", "mounting_orientation", "world_orientation";
+
+  // Device-frame pan in degrees (raw PTZ reading, ignoring mounting orientation).
+  // Includes min/max range from the device's capabilities.
+  //
+  // You probably want `Sensor.pose.world_orientation` instead of this if you don't know what you're doing.
+  kela.types.v1alpha1.ValueRange device_pan = 12;
+  // Device-frame tilt in degrees (raw PTZ reading, ignoring mounting orientation).
+  // Positive values indicate upward tilt.
+  // Includes min/max range from the device's capabilities.
+  //
+  // You probably want `Sensor.pose.world_orientation` instead of this if you don't know what you're doing.
+  kela.types.v1alpha1.ValueRange device_tilt = 13;
+
+  CameraMode current_mode = 22;
+
+  repeated CameraMode supported_modes = 23;
+
+  // Hub-computed ground footprint of the camera's current view.
+  optional SensorFovFootprint fov_footprint = 27;
+
+  // Desired horizontal ground width (meters) the picture should span when the
+  // hub auto-zooms for a look-at that carries no explicit zoom factor.
+  // Unset: the hub-wide default applies. Only consumed when the hub converts
+  // FixedLookAt to a gimbal move; sensors with native look-at handling manage
+  // zoom themselves.
+  optional double look_at_fov_width_meters = 28;
+
+  // Geographic point the camera is currently aimed at, for roving cameras that
+  // lock to a coordinate. Unset when the camera isn't tracking a coordinate.
+  optional kela.types.v1alpha1.Position look_at_target = 29;
+
+  // Focus mode as reported by the camera. Unset when the camera does not
+  // report focus mode.
+  optional FocusMode focus_mode = 30;
+
+  // Absolute focus position in raw device units, with the device-reported
+  // min/max range. Unset when the camera does not report focus position.
+  // The unit scale and direction are device-specific; callers wanting a
+  // relative position ("80% toward far") must compute it from min/max.
+  optional kela.types.v1alpha1.ValueRange device_focus = 31;
+
+  // The driver's built-in focus model for this lens, in `device_focus` units.
+  // The Hub drives focus with it until a fitted model is stored for the
+  // sensor. Only the model shape is read; quality and fit metadata are ignored.
+  optional kela.types.v1alpha1.FocusModel default_focus_model = 34;
+
+  // Hub-computed field of view at zoom 1: the intrinsic calibration's focals
+  // where they may be read as this lens's zoom-1 focals, else the declared
+  // max_fov_h / max_fov_v. Drivers must not set this — the hub overwrites it on
+  // every publish.
+  optional SensorCameraFov reference_fov = 32;
+
+  // Hub-computed field of view at the zoom the camera is sitting at right now:
+  // reference_fov scaled by the calibrated zoom curve, or by the reported zoom
+  // factor when the camera carries no curve. Equal to reference_fov for a camera
+  // with no zoom. Drivers must not set this — the hub overwrites it on every
+  // publish.
+  optional SensorCameraFov current_fov = 33;
+
+  // Device-reported horizontal and vertical FOV at the current zoom, in degrees.
+  // Do not derive this from `max_fov_h` and zoom. It overrides the Hub's computed
+  // FOV and is unset when unavailable. The Hub drops non-finite values and values
+  // outside (0, 180] on either axis.
+  optional SensorCameraFov reported_fov = 35;
+
+  // The effective stored calibration for this lens. The Hub writes it from its
+  // per-sensor store on every publish and strips publisher values at ingest.
+  // Unset when the Hub has no calibration for the sensor. Stored with the asset
+  // so history shows which lens calibration was active.
+  optional SensorCalibration calibration = 36;
+}
+
+// A camera's field of view on both axes. Degrees, matching max_fov_h /
+// max_fov_v; 0 means no field of view is known on that axis.
+message SensorCameraFov {
+  float horizontal_degrees = 1;
+  float vertical_degrees = 2;
+}
+
+message SensorFovFootprint {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    // 7-pixel projection onto the DEM.
+    KIND_PROJECTED_TRAPEZOID = 1;
+    // azimuth + horizontal-FOV fallback (no DEM or no intrinsics).
+    KIND_ESTIMATED_TRIANGLE = 2;
+  }
+  Kind kind = 1;
+  // Ground polygon corners, clockwise. Trapezoid: [farLeft, farRight, nearRight,
+  // nearLeft]. Triangle: [apex, leftFar, rightFar].
+  repeated kela.types.v1alpha1.Position corners = 2;
+  // Ground-projected look-at center (apex->center is the dashed look-at line).
+  kela.types.v1alpha1.Position center = 3;
+}
+
+// Hub-resolved video substreams for a single sensor. Carried on Asset
+// (hub-populated, never driver-written) so consumers reach mediamtx paths
+// without querying VideoService.
+message SensorStream {
+  string sensor_id = 1;
+  repeated Substream substreams = 2;
+}
+
+// Runtime ingest state for a Publish-eligible native. Distinct from operator Publish
+// (dynamic ingest may Suspend / Probe within the Publish ceiling).
+enum StreamIngestState {
+  STREAM_INGEST_STATE_UNSPECIFIED = 0;
+  // Device pull on; visible to C2 live view / analytics.
+  STREAM_INGEST_STATE_ACTIVE = 1;
+  // Device pull off; Publish intent unchanged; not live-selectable.
+  STREAM_INGEST_STATE_SUSPENDED = 2;
+  // Device pull on temporarily for health measurement; not live-selectable in C2.
+  STREAM_INGEST_STATE_PROBE = 3;
+}
+
+message StreamConfig {
+  string stream_id = 1;
+
+  bool published = 3;
+  bool recorded = 4;
+  bool cached = 5;
+
+  // When multiple natives are published, exactly one should carry the hub-managed
+  // `-enhance` (rtsp-transcoder) source. When false, no enhance path is created for
+  // this stream (operators opt in via admin Enhance).
+  bool transcoded = 8;
+
+  repeated Substream substreams = 6;
+
+  // Runtime ingest state within the Publish ceiling. Present only when
+  // published=true; an unpublished native has no runtime state and leaves it
+  // absent. Substreams are only populated for ACTIVE natives (not Suspended /
+  // Probe).
+  optional StreamIngestState ingest_state = 9;
+}
+
+message StreamDescriptor {
+  // UUID assigned by the SDK, stable across hub restarts.
+  string stream_id = 1;
+  optional VideoResolution resolution = 4;
+  optional uint32 fps = 5;
+  // Expected bitrate in kbps.
+  optional uint32 bitrate_kbps = 6;
+  optional SubstreamCodec codec = 7;
+}
+
+// Describes a substream that can either be a native stream from the device or a derived stream (e.g. transcoded, diluted).
+message Substream {
+  string path = 2;
+  optional VideoResolution expected_resolution = 3;
+  optional uint32 expected_fps = 4;
+  // Expected bitrate in kbps.
+  optional uint32 expected_bitrate = 5;
+  optional SubstreamCodec expected_codec = 6;
+  SubstreamType type = 7;
+
+  // Whether this substream is effectively being recorded to disk. Runtime ingest
+  // policy may fail recording over from the operator-preferred native to another
+  // Active native. Playback consumers should only offer recorded substreams.
+  bool is_recorded = 10;
+
+  // When true, the C2 line-of-sight ranker places this substream above same-bitrate
+  // alternatives (e.g. hub-managed enhance output that should be preferred for live view).
+  bool is_priority_substream = 11;
+
+  // When false, the substream is excluded from live-view LOS selection and step-down
+  // (e.g. ~1 fps dilution for investigation playback).
+  bool is_live_view_substream = 12;
+}
+
+message SensorRadar {
+  // Azimuth range (horizontal angle) the radar can scan
+  kela.types.v1alpha1.ValueRange azimuth = 1;
+}
+
+// Captures sensor for capturing images (e.g., trail cameras).
+// Unlike SensorCamera which streams video, this sensor captures still images.
+message SensorCaptures {}
+
+// Fence sensor for perimeter intrusion detection segments.
+message SensorFence {}
+
+// A powered fixture (light, siren, ...) toggled by a switching asset such as
+// a relay channel. Per-sensor health mirrors the controlling channel:
+// HEALTHY = energized, POWERED_OFF = de-energized, OFFLINE = controller
+// unreachable. Fixtures with positional state of their own (e.g. gates) do
+// not fit these semantics and need their own kind.
+//
+// A kind marker: the Hub consumes the discriminant, drivers publish the
+// fixture's label and type as extensions.
+message SensorSwitchedDevice {}
+
+// Operator-configured or driver-derived operational coverage area for map display.
+message EffectiveOperationalRange {
+  double range_meters = 1;
+  // When set, draw a sector (not a full circle). Centered on center_bearing_deg
+  // or asset heading when unset.
+  optional double horizontal_fov_deg = 2;
+  optional double center_bearing_deg = 3;
+}
+
+// Electronic countermeasures (ECM) sensor (e.g., jammer). A kind marker: the
+// Hub consumes the discriminant, drivers publish their state as extensions.
+message SensorEcm {}
+
+// A physical device (drone, camera, weapon system, etc.) that carries sensors and can be commanded.
+//
+// The symbol is currently not explicitly set and can be deduced from the
+// sensors and capabilities
+message Asset {
+  string id = 8;
+  string name = 9;
+  kela.types.v1alpha1.Location location = 10;
+  repeated Sensor sensors = 1;
+  Health health = 3;
+  Maneuverability maneuverability = 4;
+  AssetState state = 5;
+
+  // A list of all the tasks the asset supports
+  repeated AssetTaskType supported_tasks = 6;
+
+  AssetType asset_type = 7;
+  // Device identification information (manufacturer, model, firmware, serial number, etc.)
+  optional DeviceInfo device_info = 14;
+  string device_id = 16;
+  string integration_id = 17;
+
+  // JSON Schema defining the expected structure of custom_command parameters.
+  // See PublishAssetRequest.custom_command_params_schema for details.
+  optional google.protobuf.Struct custom_command_params_schema = 18;
+  // The command types this asset supports (set by the driver via PublishAsset).
+  // Preserved across federation so child capabilities survive the round-trip.
+  repeated AssetCommandType supported_commands = 21;
+
+  // Whether this asset primarily detects airborne or ground targets
+  kela.track.v1alpha1.DetectionDomain detection_domain = 22;
+
+  // Current operator-facing notices (e.g. "GPS WARNING")
+  repeated Notice notices = 23;
+
+  optional string asset_specifier = 24;
+  // Hub-populated per-sensor substreams (see SensorStream); never driver-written.
+  repeated SensorStream sensor_streams = 26;
+
+  // Effective operational coverage radius/sector for map display.
+  optional EffectiveOperationalRange effective_operational_range = 27;
+
+  // Home position (dock/landing pad) of the asset.
+  optional kela.types.v1alpha1.Position home_position = 28;
+  // Archetypes implemented by this asset (commands v2).
+  repeated kela.archetype.v1alpha1.ArchetypeDescriptor archetypes = 33;
+
+  // Opaque asset-scoped extension state, at most one entry per canonical type
+  // URL. Sensor-owned state belongs on Sensor.extensions instead.
+  repeated google.protobuf.Any extensions = 34;
+
+  // Which stored calibration placed this asset. Absent when nothing did: the
+  // `Location` here is the driver's own. Hub-written, never driver-written.
+  optional PoseCalibration calibration = 35;
+}
+
+// Which stored calibration row produced a Hub-composed value, for the one
+// carrying it. Absent on its carrier means no row did.
+message PoseCalibration {
+  // Whether the row was fitted by a calibration run or entered by an operator.
+  kela.types.v1alpha1.CalibrationSource source = 1;
+  // The device's calibration revision the value was composed at.
+  int64 calibration_revision = 2;
+}
+
+message PublishAssetRequest {
+  string device_id = 1;
+
+  string integration_id = 2;
+
+  // An optional specifier for the asset, to allow for integrations to create multiple assets under the same integration
+  // Note: If a device published assets with a specifier, ALL assets for that device must use a specifier.
+  optional string asset_specifier = 3;
+
+  // A human-readable name for the asset
+  string name = 4;
+
+  kela.types.v1alpha1.Location location = 5;
+
+  repeated PublishSensor sensors = 6;
+  Health health = 8;
+  Maneuverability maneuverability = 9;
+  AssetState state = 10;
+  // A list of all the commands the asset can execute
+  repeated AssetCommandType supported_commands = 11;
+  AssetType asset_type = 12;
+  // Device identification information (manufacturer, model, firmware, serial number, etc.)
+  optional DeviceInfo device_info = 15;
+  // JSON Schema (draft-07 or compatible) defining the expected structure of
+  // custom_command parameters. Must define an object schema (type: "object").
+  // When present, the UI will render a dynamic form based on this schema.
+  // Custom command params sent to this asset must conform to this schema.
+  optional google.protobuf.Struct custom_command_params_schema = 17;
+
+  // Whether this asset primarily detects airborne or ground targets
+  kela.track.v1alpha1.DetectionDomain detection_domain = 20;
+
+  // Current operator-facing notices (e.g. "GPS WARNING")
+  repeated Notice notices = 21;
+
+  // Effective operational coverage radius/sector for map display.
+  optional EffectiveOperationalRange effective_operational_range = 23;
+
+  // Home position (dock/landing pad) of the asset.
+  optional kela.types.v1alpha1.Position home_position = 24;
+  // Archetypes implemented by this asset (commands v2).
+  repeated kela.archetype.v1alpha1.ArchetypeDescriptor archetypes = 29;
+
+  // Opaque asset-scoped extension state, at most one entry per canonical type
+  // URL. Sensor-owned state belongs on PublishSensor.extensions instead.
+  repeated google.protobuf.Any extensions = 30;
+}
+
+message PublishAssetResponse {
+  string asset_id = 1;
+}
+
+message ListAssetsRequest {}
+
+message ListAssetsResponse {
+  repeated Asset assets = 1;
+}
+
+message WatchAssetsRequest {
+  // Opts into byte-bounded initial snapshot chunks. Legacy clients leave this
+  // false and continue receiving the snapshot as one response.
+  bool supports_chunked_snapshots = 1;
+
+  // Override the server's default per-asset coalescing window, in milliseconds.
+  // Unset => server default. 0 => no coalescing: every update is delivered
+  // immediately as its own response (minimum latency and no dedup). A per-event
+  // consumer that reads slower than the publish rate falls behind and its
+  // stream ends.
+  optional uint32 override_batching_interval_ms = 2;
+}
+
+message WatchAssetsResponse {
+  repeated Asset updated_assets = 1;
+  repeated string removed_asset_ids = 2;
+  // Present only for clients that opt into chunked snapshots. False means more
+  // initial snapshot chunks follow; true marks the final snapshot chunk.
+  optional bool initial_snapshot_complete = 3;
+}
+
+message GetHistoricalAssetEventsRequest {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message GetHistoricalAssetEventsResponse {
+  google.protobuf.Timestamp time = 1;
+  Asset asset = 2;
+  bool deleted = 3;
+}
+
+message GetAssetHealthEventsInTimespanRequest {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message AssetHealthEvent {
+  string asset_id = 1;
+  string asset_name = 2;
+  google.protobuf.Timestamp time = 3;
+  HealthStatus health_status = 4;
+}
+
+message GetAssetHealthEventsInTimespanResponse {
+  repeated AssetHealthEvent events = 1;
+}
+
+message GetAssetSnapshotAtRequest {
+  google.protobuf.Timestamp time = 1;
+}
+
+message GetAssetSnapshotAtResponse {
+  // Latest non-deleted state per asset where `time <= request.time`.
+  repeated Asset assets = 1;
+}

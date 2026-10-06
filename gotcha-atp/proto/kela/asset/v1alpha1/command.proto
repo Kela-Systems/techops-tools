@@ -1,0 +1,296 @@
+// A command is a fundamental operation that can be performed by an asset
+// Commands are not triggered directly by the applications; they are translated from tasks
+syntax = "proto3";
+
+package kela.asset.v1alpha1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+import "kela/archetype/v1alpha1/archetype.proto";
+import "kela/asset/v1alpha1/behavior.proto";
+import "kela/ext/pathfinder/v1alpha1/pathfinder.proto";
+
+// A control message that can be sent to an entity
+message ControlMessage {
+  oneof command {
+    AssetCommand asset = 2;
+    SensorCommand sensor = 3;
+    // Commands v2: a transition targeting one of the entity's archetypes.
+    kela.archetype.v1alpha1.ArchetypeCommand archetype = 4;
+  }
+}
+
+// Flight command
+message AssetCommand {
+  oneof command {
+    Takeoff takeoff = 1;
+    google.protobuf.Empty land = 2;
+    google.protobuf.Empty dock = 3;
+    GoToCoordinates go_to_coordinates = 4;
+    MoveRelative move_relative = 5;
+    SetAltitude set_altitude = 6;
+    google.protobuf.Empty open_dock = 7;
+    google.protobuf.Empty close_dock = 8;
+    google.protobuf.Empty stop_movement = 9;
+    google.protobuf.Empty restart = 10;
+    google.protobuf.Empty power_on = 11;
+    google.protobuf.Empty power_off = 12;
+    google.protobuf.Empty activate = 13;
+    google.protobuf.Empty deactivate = 14;
+    InterceptDrone intercept_drone = 15;
+    CancelDroneInterception cancel_drone_interception = 16;
+    NotifyHostileTarget notify_hostile_target = 17;
+
+    // Integration-specific command with arbitrary JSON parameters.
+    // The structure must conform to the asset's custom_command_params_schema.
+    google.protobuf.Struct custom_command = 18;
+    SetDroneHomePosition set_drone_home_position = 19;
+    DroneReturnToLaunch drone_return_to_launch = 20;
+    VtolSetLoiterRadius vtol_set_loiter_radius = 21;
+    VtolConfigureFlightSettings vtol_configure_flight_settings = 22;
+    VtolSetExitWaypoint vtol_set_exit_waypoint = 23;
+    SetSpeed set_speed = 24;
+    VtolCalibrateAirspeed vtol_calibrate_airspeed = 25;
+    PlayAudio play_audio = 26;
+    DeleteAudio delete_audio = 27;
+    AbortSequence abort_sequence = 28;
+    ConfirmSequenceStep confirm_sequence_step = 29;
+    ConfigureEcm configure_ecm = 30;
+    kela.ext.pathfinder.v1alpha1.VtolLandingReposition vtol_landing_reposition = 31;
+    kela.ext.pathfinder.v1alpha1.SetVtolEkfSource set_vtol_ekf_source = 32;
+    kela.ext.pathfinder.v1alpha1.SetVtolGps set_vtol_gps = 33;
+    kela.ext.pathfinder.v1alpha1.VtolFlyByCamera vtol_fly_by_camera = 34;
+    kela.ext.pathfinder.v1alpha1.VtolSetFcuMode vtol_set_fcu_mode = 35;
+    kela.ext.pathfinder.v1alpha1.VtolDisarm vtol_disarm = 36;
+    SetEmergencyLandingPosition set_emergency_landing_position = 37;
+    kela.ext.pathfinder.v1alpha1.VtolSetLockMechanism vtol_set_lock_mechanism = 38;
+  }
+}
+
+// Sent to the integration when the selected streams change (e.g. via SetSelectedStreams from the UI).
+message UpdateSelectedStreams {
+  message Stream {
+    string stream_id = 1;
+    // Full MediaMTX destination URL (e.g. "rtsp://mediamtx:8554/hub/asset-.../sensor-.../stream/<uuid>").
+    string destination_url = 2;
+  }
+  repeated Stream streams = 1;
+}
+
+// Sensor command
+message SensorCommand {
+  string sensor_id = 1;
+  oneof command {
+    AbsoluteGimbalMove absolute_move = 2;
+    ContinuousGimbalMove continuous_move = 3;
+    FixedLookAt fixed_look_at = 4;
+    SetZoomFactor set_zoom_factor = 5;
+    google.protobuf.Empty calibrate = 6;
+    google.protobuf.Empty take_snapshot = 7;
+    SetZoomRate set_zoom_rate = 8;
+    ChangeCameraMode change_camera_mode = 9;
+    SetWiperState set_wiper_state = 10;
+    SetAntennaMode set_antenna_mode = 11;
+    SetFrequencyRange set_frequency_range = 12;
+    SetSensorTrackPixel set_sensor_track_pixel = 13;
+    SetSensorVisualTrack set_sensor_visual_track = 14;
+    SetSensorTrackRegion set_sensor_track_region = 15;
+    SetCameraOperatingMode set_camera_operating_mode = 16;
+    LookAtCoordinate look_at_coordinate = 17;
+    UpdateSelectedStreams update_selected_streams = 18;
+    SetSensorObjectDetection set_sensor_object_detection = 19;
+    SetFocusMode set_focus_mode = 20;
+    SetFocusRate set_focus_rate = 21;
+    SetFocusPosition set_focus_position = 22;
+  }
+}
+
+// Asset command types
+enum AssetCommandType {
+  ASSET_COMMAND_TYPE_UNSPECIFIED = 0;
+
+  // Asset supports taking off.
+  ASSET_COMMAND_TYPE_TAKEOFF = 1;
+
+  // Asset supports landing.
+  ASSET_COMMAND_TYPE_LAND = 2;
+
+  // Asset supports docking
+  ASSET_COMMAND_TYPE_DOCK = 3;
+
+  // Asset supports going to a specific position.
+  ASSET_COMMAND_TYPE_GO_TO_COORDINATES = 4;
+
+  // Asset supports moving at a relative rate from current location.
+  ASSET_COMMAND_TYPE_MOVE_RELATIVE = 5;
+
+  // Asset supports setting altitude.
+  ASSET_COMMAND_TYPE_SET_ALTITUDE = 6;
+
+  // Asset supports opening dock
+  ASSET_COMMAND_TYPE_OPEN_DOCK = 7;
+
+  // Asset supports closing dock
+  ASSET_COMMAND_TYPE_CLOSE_DOCK = 8;
+
+  // Asset supports stopping all movement.
+  ASSET_COMMAND_TYPE_STOP_MOVEMENT = 9;
+
+  // Asset supports restarting/rebooting the device.
+  ASSET_COMMAND_TYPE_RESTART = 10;
+
+  // Asset supports powering on the device.
+  ASSET_COMMAND_TYPE_POWER_ON = 11;
+
+  // Asset supports powering off the device.
+  ASSET_COMMAND_TYPE_POWER_OFF = 12;
+
+  // Asset supports activation (e.g., ECM systems).
+  ASSET_COMMAND_TYPE_ACTIVATE = 13;
+
+  // Asset supports deactivation (e.g., ECM systems).
+  ASSET_COMMAND_TYPE_DEACTIVATE = 14;
+
+  // Asset supports intercepting a drone.
+  ASSET_COMMAND_TYPE_INTERCEPT_DRONE = 15;
+
+  // Asset supports canceling a drone interception.
+  ASSET_COMMAND_TYPE_CANCEL_DRONE_INTERCEPTION = 16;
+
+  // Asset supports alerting a hostile target.
+  ASSET_COMMAND_TYPE_NOTIFY_HOSTILE_TARGET = 17;
+
+  // Asset supports integration-specific custom commands.
+  ASSET_COMMAND_TYPE_CUSTOM_COMMAND = 18;
+
+  // Asset supports returning to launch position.
+  ASSET_COMMAND_TYPE_DRONE_RETURN_TO_LAUNCH = 19;
+
+  // Asset supports setting the home position.
+  ASSET_COMMAND_TYPE_DRONE_SET_HOME_POSITION = 20;
+
+  // Asset supports setting the loiter radius.
+  ASSET_COMMAND_TYPE_VTOL_SET_LOITER_RADIUS = 21;
+
+  // Asset supports configuring flight settings.
+  ASSET_COMMAND_TYPE_VTOL_CONFIGURE_FLIGHT_SETTINGS = 22;
+
+  // Asset supports setting an exit waypoint.
+  ASSET_COMMAND_TYPE_VTOL_SET_EXIT_WAYPOINT = 23;
+
+  // Asset supports setting speed.
+  ASSET_COMMAND_TYPE_SET_SPEED = 24;
+
+  // Asset supports calibrating VTOL airspeed.
+  ASSET_COMMAND_TYPE_VTOL_CALIBRATE_AIRSPEED = 25;
+
+  // Asset supports playing an audio clip (speakers, sirens).
+  ASSET_COMMAND_TYPE_PLAY_AUDIO = 26;
+
+  // Asset supports deleting an audio clip from its loaded slots.
+  ASSET_COMMAND_TYPE_DELETE_AUDIO = 27;
+
+  // Asset supports aborting an active multi-step sequence.
+  ASSET_COMMAND_TYPE_ABORT_SEQUENCE = 28;
+
+  // Asset supports confirming the step an active sequence is paused on.
+  ASSET_COMMAND_TYPE_CONFIRM_SEQUENCE_STEP = 29;
+
+  // Asset supports configuring its ECM effector.
+  ASSET_COMMAND_TYPE_CONFIGURE_ECM = 30;
+
+  // Asset supports VTOL landing reposition (start / nudge / stop / abort).
+  ASSET_COMMAND_TYPE_VTOL_LANDING_REPOSITION = 31;
+
+  // Asset supports switching its EKF navigation source (GPS / optical).
+  ASSET_COMMAND_TYPE_SET_VTOL_EKF_SOURCE = 32;
+
+  // Asset supports declaring whether raw GPS should be enabled after Set Home.
+  ASSET_COMMAND_TYPE_SET_VTOL_GPS = 33;
+
+  // Asset supports fly-by-camera: flying continuously to the point where the
+  // camera's line of sight crosses the ground (start / stop).
+  ASSET_COMMAND_TYPE_VTOL_FLY_BY_CAMERA = 34;
+
+  // Asset supports swapping the FCU flight mode on the ground before arming.
+  ASSET_COMMAND_TYPE_VTOL_SET_FCU_MODE = 35;
+
+  // Asset supports disarming its motors on the ground.
+  ASSET_COMMAND_TYPE_VTOL_DISARM = 36;
+
+  // Asset supports staging the point its Land command should come down at.
+  ASSET_COMMAND_TYPE_SET_EMERGENCY_LANDING_POSITION = 37;
+
+  // Asset supports driving its wing and tail locking servos.
+  ASSET_COMMAND_TYPE_VTOL_SET_LOCK_MECHANISM = 38;
+}
+
+// Sensor command types
+enum SensorCommandType {
+  SENSOR_COMMAND_TYPE_UNSPECIFIED = 0;
+
+  // Sensor supports moving the gimbal axes at continuous rates for a specified duration.
+  SENSOR_COMMAND_TYPE_CONTINUOUS_GIMBAL_MOVE = 1;
+
+  // Sensor supports moving to look at a point specified in absolute
+  // azimuth and elevation coordinates.
+  SENSOR_COMMAND_TYPE_ABSOLUTE_GIMBAL_MOVE = 2;
+
+  // Sensor supports continuously looking at a point specified in absolute
+  // coordinates and altitude (e.g. a drone with native geo-pointing).
+  SENSOR_COMMAND_TYPE_FIXED_LOOK_AT = 3;
+
+  // Sensor supports setting zoom to a specific factor.
+  SENSOR_COMMAND_TYPE_SET_ZOOM_FACTOR = 4;
+
+  // Sensor supports taking a snapshot.
+  SENSOR_COMMAND_TYPE_TAKE_SNAPSHOT = 5;
+
+  // Sensor supports performing a calibration.
+  SENSOR_COMMAND_TYPE_CALIBRATE = 6;
+
+  // Sensor supports zooming at a rate over a duration.
+  SENSOR_COMMAND_TYPE_SET_ZOOM_RATE = 7;
+
+  // Sensor supports changing camera mode (e.g., visual/thermal).
+  SENSOR_COMMAND_TYPE_CHANGE_CAMERA_MODE = 8;
+
+  // Sensor supports setting wiper state
+  SENSOR_COMMAND_TYPE_SET_WIPER_STATE = 9;
+
+  // Sensor supports setting antenna mode (e.g., OMNI/DIRECTIONAL).
+  SENSOR_COMMAND_TYPE_SET_ANTENNA_MODE = 10;
+
+  // Sensor supports setting frequency range.
+  SENSOR_COMMAND_TYPE_SET_FREQUENCY_RANGE = 11;
+
+  // Sensor supports tracking a pixel in the video frame.
+  SENSOR_COMMAND_TYPE_SET_SENSOR_TRACK_PIXEL = 12;
+
+  // Sensor supports enabling/disabling visual tracking.
+  SENSOR_COMMAND_TYPE_SET_SENSOR_VISUAL_TRACK = 13;
+
+  // Sensor supports tracking a region in the video frame.
+  SENSOR_COMMAND_TYPE_SET_SENSOR_TRACK_REGION = 14;
+
+  // Sensor supports setting the camera operating mode.
+  SENSOR_COMMAND_TYPE_SET_CAMERA_OPERATING_MODE = 15;
+
+  // Sensor supports geo-pointing at a coordinate with optional lock.
+  SENSOR_COMMAND_TYPE_LOOK_AT_COORDINATE = 16;
+
+  // Hub notifies integration of which streams are currently selected for restreaming.
+  SENSOR_COMMAND_TYPE_UPDATE_SELECTED_STREAMS = 17;
+
+  // Sensor supports toggling its onboard ATR object detector on/off.
+  SENSOR_COMMAND_TYPE_SET_SENSOR_OBJECT_DETECTION = 18;
+
+  // Sensor supports setting focus mode (auto/manual).
+  SENSOR_COMMAND_TYPE_SET_FOCUS_MODE = 19;
+
+  // Sensor supports moving focus at a rate over a duration.
+  SENSOR_COMMAND_TYPE_SET_FOCUS_RATE = 20;
+
+  // Sensor supports setting focus to an absolute device-units position.
+  SENSOR_COMMAND_TYPE_SET_FOCUS_POSITION = 21;
+}

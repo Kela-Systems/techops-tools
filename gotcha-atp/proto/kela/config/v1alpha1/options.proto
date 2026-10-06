@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package kela.config.v1alpha1;
+
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.MessageOptions {
+  // ConfigService owner key for a config payload message, shared by every
+  // consumer via reflection so no language hardcodes its own copy. Read it
+  // with `hub_models::config::config_owner` (Rust), the c2-frontend
+  // `configOwnerOf` helper (TS), or `hub_client.config_owner` (Python).
+  string config_owner = 50101;
+}
+
+extend google.protobuf.FieldOptions {
+  // Canonical default for a scalar config field, shared by every consumer via
+  // reflection (Rust prost-reflect, TS protobuf-es, Python google.protobuf) so
+  // frontend and backend never hardcode diverging copies. Read it with
+  // `hub_models::config::annotated_defaults` (Rust) or the c2-frontend
+  // `resolveAnnotatedConfig` helper (TS).
+  FieldDefault field_default = 50100;
+}
+
+// Default value for one field. The oneof case must match the annotated field's
+// scalar kind: double/float -> double, signed ints -> int, unsigned ints ->
+// uint, bool -> bool, string -> string.
+message FieldDefault {
+  oneof value {
+    double double = 1;
+    int64 int = 2;
+    uint64 uint = 3;
+    bool bool = 4;
+    string string = 5;
+  }
+}
