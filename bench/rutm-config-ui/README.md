@@ -31,6 +31,78 @@ applies. The detection loop watches both addresses, so an already-moved router
 can be plugged back in and re-run — leave the password field empty (it's
 already on the shared password).
 
+## Roles: Server and Edge
+
+The same RUTM08 is used two ways, picked with the **Server / Edge** switch in
+the UI (or `--role` on the CLI). One app, one port (8004), one launcher tile.
+
+- **server** — the main router of a Gotcha server box. Everything above:
+  `rut-<site>`, LAN `192.168.88.1`, WAN on DHCP from the bench uplink. With the
+  role on server the tool writes, checks, records and labels exactly what it
+  did before roles existed.
+- **edge** — the router inside a Gotcha edge box, putting the camera, radars,
+  APUs and speaker behind one address. `rut-edge-<site>` (so RMS and the
+  tailnet never hold two `rut-<site>` devices for one site), WAN static
+  `192.168.88.20/24` via `192.168.88.1` (the WAN cable goes into the
+  server-box switch), LAN `192.168.89.1` with DHCP `.200-.249` served, and TCP
+  forwards from the WAN to the devices' statics below `.100`.
+
+The edge order, and why:
+
+1. login, password, hostname, timezone, NTP (`192.168.88.10`, interval **60**
+   — an edge router has no RTC and often boots before the server answers;
+   at 3600 it could sit an hour unable to reach RMS and Tailscale)
+2. firmware, then the clock fix, then RMS (enable, register, pack), then
+   Tailscale — all unchanged from server, and all needing the uplink
+3. `port-forwards`, `wan-access`, `dhcp-pool` — pure UCI, before the WAN pin
+4. `wan-static` — `192.168.88.20`
+5. verify
+6. move the LAN to `192.168.89.1`, last. The pool follows the move, so the
+   laptop's lease follows the router and a later Verify needs no adapter setup.
+
+The edge run refuses to start — before it logs in — if the LAN would be
+`192.168.88.1` (a second gateway on the server-box subnet), if the LAN sits
+inside the WAN subnet, if the WAN pin is off, or if a forward uses WAN port
+22/80/443 while WAN access opens that port for the router itself.
+
+What the edge-only steps write:
+
+- **Port forwards** are `redirect`s named `kela-fwd-<name>`, reconciled on
+  every run: updated in place, missing ones added, owned ones no longer in the
+  config deleted. Redirects without the prefix (`kela-ntp`, anything added by
+  hand) are never touched.
+- **WAN access** switches on RutOS's own `Enable_HTTP_WAN`, `Enable_HTTPS_WAN`
+  and `Enable_SSH_WAN` rules (found by name *and* values — src `wan`, target
+  `ACCEPT`, proto `tcp`, port — never by section number, which is a build
+  detail). Nothing is added; a unit where they are missing or different stops
+  the step before anything is written.
+- **The DHCP pool** sets `start`/`limit` and deletes `ignore` if present. The
+  rest of `dhcp.lan` (lease time, DHCPv6/RA) is left as shipped.
+
+Every edge setting has a read-back row. None claims a forward reaches a device:
+the devices are not on the bench ([`../docs/verification-rows.md`](../docs/verification-rows.md)).
+
+**Bench uplink for edge.** The WAN is pinned to `192.168.88.20` after
+Tailscale, so plug the edge unit's WAN into a **LAN port of a provisioned
+server-role RUTM08**. That router is `192.168.88.1` — the edge's gateway — so
+the unit keeps internet after the pin. The normal bench uplink would not be.
+
+**Where the role lives.** The selection is station state in `role-state.json`
+beside the tool (gitignored, like `ip-state.json`), not in `rutm.config.json` —
+flipping it never changes `config_hash`. What each role *means* is config: the
+`roles` block in the example is merged over the top-level settings (dicts
+merge, lists and scalars replace, `_` keys ignored). The edge values there are
+also built-in defaults, so a config without the block still provisions edge
+units.
+
+**Verify checks a unit as what it is.** The role comes from the unit's own
+configure record (`device.role`; older records read as server), so an edge
+router re-checked while the switch says Server is still checked as edge. With
+no record, it is checked as the role whose LAN it answered on. Detection
+probes the factory address and both final LANs; a unit on the other role's
+LAN cannot be configured until the switch matches, and the switch never flips
+itself.
+
 ## The fleet-constant WAN address (TEC-857, opt-in)
 
 The site's OTD500 sits **upstream** of this router and cannot address the time
@@ -89,6 +161,8 @@ There is also a single-device CLI:
 
 ```
 python3 rutm_configure.py --site haifa-port --label-password 'Xy7Kp2Lm9Qa'
+python3 rutm_configure.py --role edge --site kela-fob-14 --label-password '...'
+python3 rutm_configure.py --verify --role edge --site kela-fob-14
 ```
 
 ## Shared code

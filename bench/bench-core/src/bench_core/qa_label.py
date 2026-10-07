@@ -496,6 +496,17 @@ def _content_rutm(entry: dict) -> LabelContent:
     dev = _device(entry)
     host = _ascii(dev.get("hostname"))
     serial = _ascii(entry.get("serial"))
+    if dev.get("role") == "edge":
+        # An edge router's LAN is inside its own box. What an installer types
+        # is the WAN address, from the server box that sits in front of it.
+        return LabelContent(
+            face="hostname-gateway",
+            family="RUTM08", mode="EDGE",
+            hero_key="HOSTNAME", hero=host,
+            hero_sub=_ascii(dev.get("wan_ip")) or "192.168.88.20",
+            fields=[("MAC", _mac(entry.get("mac")))],
+            serial=serial,
+        )
     # Every RUTM lands on the same LAN address, so it is not an identity — but
     # it is still the thing an installer types after the box is in the rack,
     # which is why it gets the inverted band instead of a field slot.

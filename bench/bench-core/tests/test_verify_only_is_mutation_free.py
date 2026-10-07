@@ -180,6 +180,12 @@ BLOCKED_WRITES = [
     "date -u -s '2026-09-01 09:17:00' >/dev/null 2>&1",
     "date -u -s 202609010917.00 >/dev/null 2>&1",
     "date -s '@1756712220'",
+    # The edge router's reconcile and served-pool deletes, verbatim.
+    "uci delete firewall.20",
+    "uci delete dhcp.lan.ignore",
+    "uci set 'firewall.16.enabled=1' && uci commit firewall",
+    "/etc/init.d/firewall reload",
+    "/etc/init.d/dnsmasq reload",
 ]
 
 
@@ -238,6 +244,14 @@ def test_read_only_is_off_by_default():
     lambda c: c.move_lan("192.168.88.1"),
     lambda c: c.move_lan_dhcp(mac="20:97:27:2b:00:f7", subnets=["192.168.88.0/24"]),
     lambda c: c.set_admin_password("something-else"),
+    # The edge-router writes. Each reads the firewall/dhcp package before it
+    # writes, and on a verify run even that read must not happen.
+    lambda c: c._uci_delete("firewall", "20"),
+    lambda c: c.set_port_forwards([{"name": "cam-web", "ext_port": 8080,
+                                    "dest_ip": "192.168.89.30", "dest_port": 80}]),
+    lambda c: c.set_wan_access(webui=True, ssh=True),
+    lambda c: c.set_dhcp_pool(200, 50, serve=True),
+    lambda c: c.set_wan_static("192.168.88.20", gateway="192.168.88.1"),
 ])
 def test_every_writing_method_refuses(call):
     c = client(read_only=True)
@@ -369,6 +383,21 @@ def test_a_leftover_static_address_under_dhcp_is_a_finding():
 def test_the_dhcp_row_asks_the_device_nothing_it_could_change():
     c = client(read_only=True)
     c.lan_dhcp_check()
+    assert [cmd for cmd in c.device.commands if _MUTATING_COMMANDS.search(cmd)] == []
+
+
+@pytest.mark.parametrize("check", [
+    lambda c: c.port_forwards_check([{"name": "cam-web", "ext_port": 8080,
+                                      "dest_ip": "192.168.89.30", "dest_port": 80}]),
+    lambda c: c.wan_access_check(webui=True, ssh=True),
+    lambda c: c.dhcp_pool_check(200, 50, reserved=["192.168.89.30"],
+                                require_served=True),
+])
+def test_the_edge_rows_ask_the_device_nothing_it_could_change(check):
+    # The strong form again: run on a client that is free to write, and assert
+    # it never asked to.
+    c = client()
+    check(c)
     assert [cmd for cmd in c.device.commands if _MUTATING_COMMANDS.search(cmd)] == []
 
 

@@ -89,6 +89,8 @@ bench/raythink-config-ui/firmware/
 # name the camera tool used before the modes were shared.
 bench/*/ip-state.json
 bench/raythink-config-ui/ip_state.json
+# The RUTM08's Server/Edge role toggle — the same kind of station state.
+bench/*/role-state.json
 
 # Provision-ISR speaker tool — real config (copy from the example) + the media
 # file dropped into config/media/ (site-specific audio; keep out of git)

@@ -214,6 +214,20 @@ NTP_CLIENT_INTERVAL_MIN = 60
 # (TEC-857). Named, so a re-run updates the rule instead of stacking duplicates.
 NTP_FORWARD_NAME = "kela-ntp"
 NTP_PORT = 123
+# The redirects a RUTM08 in a Gotcha edge box carries to its devices. Everything
+# with this prefix is the tool's to update or delete; anything else (kela-ntp,
+# a rule an engineer added by hand) is never touched.
+PORT_FORWARD_PREFIX = "kela-fwd-"
+# RutOS ships remote access as pre-existing `rule` sections, disabled until
+# WebUI -> System -> Administration -> Access control switches them on. Read off
+# a RUTM08 on RUTM_R_00.07.24.3 (`uci show firewall`, sections 15-17 there —
+# the numbering is a build detail, so they are matched by these values, never
+# by section id). Each entry is (name, dest_port); all are src=wan,
+# target=ACCEPT, proto=tcp.
+WAN_ACCESS_RULES = {
+    "webui": (("Enable_HTTP_WAN", "80"), ("Enable_HTTPS_WAN", "443")),
+    "ssh": (("Enable_SSH_WAN", "22"),),
+}
 # RMS lives in the `rms_mqtt` package; the connect daemon's enable flag is
 # `1` by default, so "connect to RMS" is really: ensure enabled + force connect.
 UCI_RMS_ENABLED = "rms_mqtt.rms_connect_mqtt.enable"
@@ -1545,6 +1559,16 @@ class TeltonikaClient:
             raise SystemExit(f"'uci add {package} {section_type}' returned no section id.")
         return section
 
+    def _uci_delete(self, package: str, path: str) -> None:
+        """`uci delete <package>.<path>` — a whole section or one option. Staged
+        like `_uci_add`, so the caller's `uci commit` persists it.
+
+        `path` is the section id exactly as `_uci_package` returned it. On
+        RutOS 07.24 those are numeric names (`firewall.15`), so a delete does
+        not renumber its neighbours the way removing `@redirect[0]` would."""
+        self._refuse_mutation(f"delete '{package}.{path}'")
+        self.ssh_exec(f"uci delete {shlex.quote(f'{package}.{path}')}")
+
     def _ssh_report(self, command: str, what: str) -> None:
         """Run `command`, raising SystemExit("<what>: <the device's own error>").
 
@@ -2599,23 +2623,35 @@ class TeltonikaClient:
             "ok": not wrong,
         }
 
-    def set_dhcp_pool(self, start: int, limit: int, *, section: str = "lan") -> None:
+    def set_dhcp_pool(self, start: int, limit: int, *, section: str = "lan",
+                      serve: bool = False) -> None:
         """Narrow the LAN DHCP pool so the low addresses are never leased out.
 
         The RUTM08 downstream holds its WAN address statically and will not
         defend it, so anything this server might hand to another client has to
         stay clear of it (TEC-857).
+
+        `serve` also makes sure the pool is handed out at all. Stock RutOS has
+        no `ignore` option on `dhcp.lan` and serves by default, so the option
+        is deleted when present rather than written as `0` — the section is
+        left looking like the stock one, plus the two numbers.
         """
         self._refuse_mutation(f"narrow the {section} DHCP pool")
         log.info("Setting the %s DHCP pool to start=%s limit=%s ...", section, start, limit)
+        if serve:
+            _, options = self._uci_package("dhcp")
+            if (section, "ignore") in options:
+                log.info("dhcp.%s has ignore=%s — deleting it so the pool is served.",
+                         section, options[(section, "ignore")])
+                self._uci_delete("dhcp", f"{section}.ignore")
         self._uci(self._uci_arg(f"dhcp.{section}.start", start),
                   self._uci_arg(f"dhcp.{section}.limit", limit),
                   package="dhcp")
         self.ssh_exec("/etc/init.d/dnsmasq reload", check=False)
         log.info("DHCP pool set.")
 
-    def dhcp_pool_check(self, start: int, limit: int, *, reserved: str = "",
-                        section: str = "lan") -> dict:
+    def dhcp_pool_check(self, start: int, limit: int, *, reserved="",
+                        section: str = "lan", require_served: bool = False) -> dict:
         """One row for the DHCP pool, asked as "is the reserved address safe?".
 
         Checking the two numbers read back would be a tautology dressed up as a
@@ -2623,7 +2659,18 @@ class TeltonikaClient:
         out the address the downstream router is holding statically, so that is
         what the row computes — a pool starting at .1 fails even though both
         options committed exactly as written.
+
+        `reserved` is one address or a list of them — an edge router has a
+        whole set of device statics below its pool. `require_served` also fails
+        a pool that is configured but switched off (`ignore=1`); an absent
+        `ignore` is served, which is how stock RutOS ships.
         """
+        reserved_ips = [reserved] if isinstance(reserved, str) else list(reserved or [])
+        reserved_ips = [ip for ip in reserved_ips if ip]
+        reserved_text = ", ".join(reserved_ips)
+        expected = (f"start {start}, {limit} addresses"
+                    + (f", {reserved_text} excluded" if reserved_ips else "")
+                    + (", served" if require_served else ""))
         _, options = self._uci_package("dhcp")
         got_start = options.get((section, "start"), "")
         got_limit = options.get((section, "limit"), "")
@@ -2632,21 +2679,28 @@ class TeltonikaClient:
             high = low + int(got_limit) - 1
         except (TypeError, ValueError):
             return {"item": "DHCP pool",
-                    "expected": f"start {start}, {limit} addresses",
+                    "expected": expected,
                     "actual": f"unreadable (start={got_start or '(unset)'}, "
                               f"limit={got_limit or '(unset)'})",
                     "ok": False}
         actual = f"leases .{low}-.{high}"
         ok = low >= start and high <= start + limit - 1
-        if reserved:
-            host = int(reserved.rsplit(".", 1)[-1])
-            clear = host < low or host > high
-            actual += f", {reserved} {'excluded' if clear else 'INSIDE the pool'}"
-            ok = ok and clear
-        return {"item": "DHCP pool",
-                "expected": (f"start {start}, {limit} addresses"
-                             + (f", {reserved} excluded" if reserved else "")),
-                "actual": actual, "ok": ok}
+        if reserved_ips:
+            inside = [ip for ip in reserved_ips
+                      if low <= int(ip.rsplit(".", 1)[-1]) <= high]
+            if len(reserved_ips) == 1:
+                actual += f", {reserved_text} {'INSIDE the pool' if inside else 'excluded'}"
+            elif inside:
+                actual += f", {', '.join(inside)} INSIDE the pool"
+            else:
+                actual += f", all {len(reserved_ips)} reserved addresses excluded"
+            ok = ok and not inside
+        if require_served:
+            ignore = options.get((section, "ignore"), "")
+            if ignore not in ("", "0"):
+                actual += f", NOT served (ignore={ignore})"
+                ok = False
+        return {"item": "DHCP pool", "expected": expected, "actual": actual, "ok": ok}
 
     def firewall_zone_networks(self, zone: str) -> list[str]:
         """The interfaces a named firewall zone covers.
@@ -2750,6 +2804,204 @@ class TeltonikaClient:
                              + (f" from {src_ip}" if src_ip else "")),
                 "actual": f"{detail}; {zone_note}",
                 "ok": not wrong and not off and zone_ok is not False}
+
+    def _zone_note(self, zone: str, wan_section: str) -> tuple[Optional[bool], str]:
+        """Whether the wired WAN is in the zone a rule matches on, as
+        (ok-or-None-when-unreadable, sentence). The `ntp_forward_check` finding,
+        shared by every rule set that depends on it."""
+        members = self.firewall_zone_networks(zone)
+        if not members:
+            return None, f"'{zone}' zone membership unreadable"
+        if wan_section in members:
+            return True, f"'{zone}' zone covers {wan_section}"
+        return False, (f"'{zone}' zone does NOT cover {wan_section} "
+                       f"(covers {', '.join(members)}) — nothing arriving there "
+                       "matches these rules")
+
+    @staticmethod
+    def _port_forward_options(rule: dict, zone: str, dest_zone: str) -> dict:
+        """The UCI options one configured forward is written as, all strings so
+        a read-back compares like with like."""
+        return {"name": f"{PORT_FORWARD_PREFIX}{rule['name']}", "target": "DNAT",
+                "src": zone, "dest": dest_zone,
+                "proto": str(rule.get("proto") or "tcp"),
+                "src_dport": str(rule["ext_port"]), "dest_ip": str(rule["dest_ip"]),
+                "dest_port": str(rule["dest_port"]), "enabled": "1"}
+
+    def _owned_forwards(self, types: dict, options: dict) -> dict:
+        """{rule name: [sections]} for every redirect this tool owns, in the
+        order `uci show` listed them. A list, because a name appearing twice is
+        exactly the duplicate a reconcile has to remove."""
+        owned: dict[str, list[str]] = {}
+        for section in self._uci_sections(types, "redirect"):
+            name = options.get((section, "name"), "")
+            if name.startswith(PORT_FORWARD_PREFIX):
+                owned.setdefault(name, []).append(section)
+        return owned
+
+    def set_port_forwards(self, rules: list, *, zone: str = "wan",
+                          dest_zone: str = "lan") -> None:
+        """Reconcile the tool's port forwards with `rules`.
+
+        Every rule is a `redirect` named `kela-fwd-<name>`: updated in place
+        when it exists, added when it does not, and deleted when the config no
+        longer lists it — so a re-run leaves exactly one copy of each, and a
+        forward dropped from the config does not live on in the field. A
+        redirect without the prefix is never touched; that covers `kela-ntp`
+        and anything an engineer added by hand.
+
+        Sections are addressed by the id `uci show` returned. On RutOS 07.24
+        those are numeric names that survive a neighbour's delete, so there is
+        no index arithmetic to get wrong.
+        """
+        self._refuse_mutation(f"write {len(rules)} port forwards on {zone}")
+        wanted = {}
+        for rule in rules:
+            options = self._port_forward_options(rule, zone, dest_zone)
+            wanted[options["name"]] = options
+        types, current = self._uci_package("firewall")
+        owned = self._owned_forwards(types, current)
+        keep = {name: sections[0] for name, sections in owned.items() if name in wanted}
+        stale = [s for name, sections in owned.items()
+                 for s in (sections[1:] if name in wanted else sections)]
+        log.info("Port forwards: %d to write (%d in place, %d new), %d stale to delete ...",
+                 len(wanted), len(keep), len(wanted) - len(keep), len(stale))
+        sets = []
+        for name, options in wanted.items():
+            section = keep.get(name) or self._uci_add("firewall", "redirect")
+            sets += [self._uci_arg(f"firewall.{section}.{option}", value)
+                     for option, value in options.items()]
+        for section in stale:
+            self._uci_delete("firewall", section)
+        self._uci(*sets, package="firewall")
+        self.ssh_exec("/etc/init.d/firewall reload", check=False)
+        members = self.firewall_zone_networks(zone)
+        log.info("Port forwards set. The '%s' zone covers: %s",
+                 zone, ", ".join(members) or "(nothing readable)")
+
+    def port_forwards_check(self, rules: list, *, zone: str = "wan",
+                            dest_zone: str = "lan", wan_section: str = "wan") -> dict:
+        """One row for the whole forward set: what is missing, wrong or extra.
+
+        A read-back. The devices behind the router are not on the bench, so
+        nothing here claims a forward reaches one (docs/verification-rows.md).
+        What it can say is the thing `ntp_forward_check` learned the hard way:
+        whether the wired WAN is in the zone these rules match on at all.
+        """
+        wanted = {}
+        for rule in rules:
+            options = self._port_forward_options(rule, zone, dest_zone)
+            wanted[options["name"]] = options
+        types, current = self._uci_package("firewall")
+        owned = self._owned_forwards(types, current)
+
+        def short(name: str) -> str:
+            return name[len(PORT_FORWARD_PREFIX):]
+
+        missing = [short(n) for n in wanted if n not in owned]
+        wrong = []
+        for name, options in wanted.items():
+            if name not in owned:
+                continue
+            section = owned[name][0]
+            diffs = [k for k, v in options.items()
+                     if k != "enabled" and current.get((section, k), "") != v]
+            # RutOS omits `enabled` on a rule that is on; only an explicit 0 is off.
+            if current.get((section, "enabled"), "1") == "0":
+                diffs.append("disabled")
+            if diffs:
+                wrong.append(f"{short(name)} ({', '.join(diffs)})")
+        extra = [short(n) for n in owned if n not in wanted]
+        extra += [f"{short(n)} x{len(s)}" for n, s in owned.items()
+                  if n in wanted and len(s) > 1]
+
+        zone_ok, zone_note = self._zone_note(zone, wan_section)
+        problems = []
+        if missing:
+            problems.append(f"missing {', '.join(missing)}")
+        if wrong:
+            problems.append(f"wrong {', '.join(wrong)}")
+        if extra:
+            problems.append(f"extra {', '.join(extra)}")
+        found = sum(1 for n in wanted if n in owned)
+        actual = "; ".join(problems) if problems else f"all {found} present"
+        return {"item": "Port forwards",
+                "expected": f"{len(wanted)} forwards {zone} -> {dest_zone}, no others owned",
+                "actual": f"{actual}; {zone_note}",
+                "ok": not problems and zone_ok is not False}
+
+    def _wan_access_rules(self, *, webui: bool, ssh: bool
+                          ) -> tuple[list[tuple[str, str]], list[str], dict]:
+        """The remote-access rules asked for, as ([(name, section)], problems,
+        options).
+
+        A rule counts only if its name AND every value match: a rule called
+        `Enable_SSH_WAN` that accepts something else is not the rule the
+        constants describe, and enabling it would open whatever it does open.
+        """
+        types, options = self._uci_package("firewall")
+        wanted = [pair for key, on in (("webui", webui), ("ssh", ssh)) if on
+                  for pair in WAN_ACCESS_RULES[key]]
+        found, problems = [], []
+        for name, port in wanted:
+            named = [s for s in self._uci_sections(types, "rule")
+                     if options.get((s, "name"), "") == name]
+            want = {"src": "wan", "target": "ACCEPT", "proto": "tcp", "dest_port": port}
+            exact = [s for s in named
+                     if all(options.get((s, k), "") == v for k, v in want.items())]
+            if exact:
+                found += [(name, s) for s in exact]
+            elif named:
+                got = ", ".join(f"{k}={options.get((named[0], k), '') or '(unset)'}"
+                                for k in want)
+                problems.append(f"'{name}' is {got}, not "
+                                + ", ".join(f"{k}={v}" for k, v in want.items()))
+            else:
+                problems.append(f"no '{name}' rule")
+        return found, problems, options
+
+    def set_wan_access(self, *, webui: bool, ssh: bool) -> None:
+        """Open the WebUI and/or SSH from the WAN by enabling RutOS's own rules.
+
+        Nothing is ever added: the rules ship disabled on every build this tool
+        knows, so a unit without them — or with one that differs — is a build
+        it does not know, and the run stops before writing anything rather than
+        guessing. `enabled='1'` is written explicitly rather than deleting the
+        option (what the WebUI does), so the read-back says it in so many words.
+        """
+        self._refuse_mutation("open remote access from the WAN")
+        if not (webui or ssh):
+            return
+        found, problems, _ = self._wan_access_rules(webui=webui, ssh=ssh)
+        if problems:
+            raise SystemExit("WAN access: " + "; ".join(problems)
+                             + " — not a RutOS build this tool knows, nothing changed.")
+        log.info("Enabling %s from the WAN ...", ", ".join(name for name, _ in found))
+        self._uci(*[self._uci_arg(f"firewall.{section}.enabled", 1)
+                    for _, section in found],
+                  package="firewall")
+        self.ssh_exec("/etc/init.d/firewall reload", check=False)
+        log.info("WAN access set.")
+
+    def wan_access_check(self, *, webui: bool, ssh: bool) -> dict:
+        """One row for remote access from the WAN. On means `enabled` absent or
+        `1`, which is how RutOS itself reads it. A missing or mismatched rule is
+        reported in the row rather than raised: a verify pass should say what
+        it found, not stop."""
+        parts = (["WebUI (80, 443)"] if webui else []) + (["SSH (22)"] if ssh else [])
+        expected = " and ".join(parts) + " open from wan"
+        found, problems, options = self._wan_access_rules(webui=webui, ssh=ssh)
+        off = [name for name, section in found
+               if options.get((section, "enabled"), "1") != "1"]
+        on = [name for name, _ in found if name not in off]
+        bits = list(problems)
+        if off:
+            bits.append(f"{', '.join(off)} disabled")
+        if on:
+            bits.append(f"{', '.join(on)} on")
+        return {"item": "WAN access", "expected": expected,
+                "actual": "; ".join(bits) or "no rules asked for",
+                "ok": not problems and not off}
 
     def mgmt_section(self, addresses: Optional[dict] = None) -> str:
         """The `network` section that carries the address we are talking to.

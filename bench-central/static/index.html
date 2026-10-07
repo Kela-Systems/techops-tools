@@ -406,8 +406,8 @@ async function openDetail(runId) {
   const label = await factoryPassword(r.serial);
   const core = {
     Serial: r.serial, MAC: r.mac, Model: r.model, Firmware: r.firmware,
-    Hostname: d.hostname, Site: d.site_name, Channel: d.channel, IP: d.ip,
-    "Radar IP": d.radar_ip, Station: r.station_id, Operator: r.operator,
+    Hostname: d.hostname, Site: d.site_name, Role: d.role, Channel: d.channel, IP: d.ip,
+    "WAN IP": d.wan_ip, "Radar IP": d.radar_ip, Station: r.station_id, Operator: r.operator,
     "Bench version": r.bench_version, Took: took(r.duration_s),
   };
   const grid = Object.entries(core).filter(([, v]) => v != null && v !== "")

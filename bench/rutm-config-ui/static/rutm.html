@@ -29,6 +29,19 @@
   <!-- DEVICE FORM (visible while a router is detected and idle) -->
   <div class="card form-card" id="formCard" style="display:none;">
     <h3 id="formTitle">New device</h3>
+    <!-- Role: a batch-level choice that persists on the station (role-state.json),
+         not a per-unit field, so it sits above the per-unit ones. -->
+    <div class="form-row">
+      <div class="field">
+        <label>Role</label>
+        <div class="seg" id="roleSeg">
+          <button type="button" data-role="server" onclick="chooseRole('server')">Server</button>
+          <button type="button" data-role="edge" onclick="chooseRole('edge')">Edge</button>
+        </div>
+        <span class="hint">Server = main router of a server box. Edge = the router inside a Gotcha edge box.</span>
+      </div>
+    </div>
+    <div class="warn hidden" id="edgeNotice">The WAN is pinned to 192.168.88.20 after Tailscale. On the bench, plug WAN into a LAN port of a provisioned server-role RUTM08 so the unit keeps internet.</div>
     <div class="form-row">
       <div class="field">
         <label for="siteName">Site name</label>
@@ -89,14 +102,14 @@
       <span class="pill">verify failed <b id="cVerifyFailed">0</b></span>
     </div>
     <table>
-      <thead><tr><th>Status</th><th>Run</th><th>Device name</th><th>MAC</th><th>Serial</th><th>FW</th><th>Took</th><th>Time</th></tr></thead>
-      <tbody id="histBody"><tr><td colspan="8" class="muted">No devices configured yet.</td></tr></tbody>
+      <thead><tr><th>Status</th><th>Run</th><th>Role</th><th>Device name</th><th>MAC</th><th>Serial</th><th>FW</th><th>Took</th><th>Time</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="9" class="muted">No devices configured yet.</td></tr></tbody>
     </table>
   </div>
 
   <!-- SETTINGS SUMMARY -->
   <div class="card">
-    <h3>Shared settings (rutm.config.json)</h3>
+    <h3 id="settingsTitle">Shared settings (rutm.config.json)</h3>
     <div id="settingsSummary" class="settings-summary"><span class="muted">No config loaded.</span></div>
     <p class="muted" style="margin-top:10px;">Per-device logs are saved under <span class="mono">rutm-config-ui/logs/</span> (one JSON per device + a rolling <span class="mono">rutm-config.log</span>).</p>
   </div>
@@ -114,6 +127,28 @@ const verifyBtn = mountVerifyButton('verifyBtn',
 async function reloadAll(){ await postJSON('/api/reload'); }
 async function dismiss(){ await postJSON('/api/dismiss'); }
 
+const ROLE_LABELS = { server: 'Server', edge: 'Edge' };
+let pendingRole = null;   // highlight a click now; the socket only pushes at 1 Hz
+const roleLabel = (r) => ROLE_LABELS[r] || ROLE_LABELS.server;
+
+async function chooseRole(role){
+  if (curState.busy || role === (pendingRole || curState.role)) return;
+  pendingRole = role;
+  renderRole(curState);
+  const answer = await postJSON('/api/role', {role});
+  pendingRole = null;
+  render(answer && !answer.error ? answer : curState);
+}
+
+function renderRole(s){
+  const role = pendingRole || s.role || 'server';
+  document.querySelectorAll('#roleSeg button').forEach(b => {
+    b.classList.toggle('active', b.dataset.role === role);
+    b.disabled = !!s.busy;
+  });
+  $('edgeNotice').classList.toggle('hidden', role !== 'edge');
+}
+
 async function submitConfigure(){
   const site = $('siteName').value.trim();
   if (!site){ $('siteName').focus(); return; }
@@ -127,8 +162,9 @@ function updatePreview(){
   const prefix = s.name_prefix || 'rut-';
   const sl = slug($('siteName').value);
   // On an already-provisioned router the site name means something different:
-  // not "name it this" but "check it against this".
-  const finished = !!s.at_final_lan;
+  // not "name it this" but "check it against this". A unit on the other role's
+  // LAN cannot be configured as this one, so the same applies to it.
+  const finished = !!s.at_final_lan || !!(s.detected_role && s.detected_role !== s.role);
   $('namePreview').innerHTML = sl
     ? (finished ? `<b>Verify</b> will check this router against <b>${prefix}${sl}</b>.`
                 : `Will be named <b>${prefix}${sl}</b> (hostname, RMS, Tailscale).`)
@@ -150,7 +186,8 @@ function render(s){
   let phaseLabel = labels[s.phase] || s.phase;
   if (isRunning(s) && s.run_seconds != null)
     phaseLabel = `${labels[s.phase]} ${fmtDur(s.run_seconds)}`;
-  $('phaseText').textContent = phaseLabel;
+  $('phaseText').textContent = `${phaseLabel} · ${roleLabel(s.role)}`;
+  renderRole(s);
   $('msgText').textContent = s.message || '';
 
   const icon = $('statusIcon');
@@ -177,10 +214,16 @@ function render(s){
   // A router already on the final LAN was almost certainly provisioned before,
   // so Verify is the action the operator wants. Swap the emphasis rather than
   // disabling anything — re-running a router is legitimate.
+  // A router answering on the OTHER role's LAN was provisioned as that role;
+  // configuring it as this one is refused server-side, so say so here too.
   const finished = !!s.at_final_lan;
-  $('formTitle').textContent = finished ? 'Router already provisioned' : 'New device';
-  $('goBtn').className = finished ? 'btn-outline' : 'btn-primary';
-  $('verifyBtn').className = finished ? 'btn-primary' : 'btn-outline';
+  const otherRole = s.detected_role && s.detected_role !== s.role;
+  $('formTitle').textContent = `${otherRole ? `Looks like a ${roleLabel(s.detected_role)} router`
+    : finished ? 'Router already provisioned' : 'New device'} · ${roleLabel(s.role)}`;
+  $('goBtn').textContent = `Configure as ${roleLabel(s.role)}`;
+  if (otherRole) $('goBtn').disabled = true;
+  $('goBtn').className = (finished || otherRole) ? 'btn-outline' : 'btn-primary';
+  $('verifyBtn').className = (finished || otherRole) ? 'btn-primary' : 'btn-outline';
 
   renderLiveLog(s);
 
@@ -197,7 +240,7 @@ function render(s){
   const body = $('histBody');
   const rows = s.history || [];
   if (!rows.length){
-    body.innerHTML = '<tr><td colspan="8" class="muted">No devices configured yet.</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="muted">No devices configured yet.</td></tr>';
   } else {
     // A verify row that said DONE would read as "this router was provisioned",
     // which is the one thing it does not mean.
@@ -209,6 +252,7 @@ function render(s){
     body.innerHTML = rows.map(r=>`<tr>
       <td>${badge(r)}</td>
       <td class="muted">${r.kind === 'verify' ? 'verify' : 'configure'}</td>
+      <td>${esc(roleLabel((r.device||{}).role))}</td>
       <td>${esc((r.device||{}).hostname||'')}</td>
       <td class="mono">${esc(r.mac||'')}</td>
       <td class="mono">${esc(r.serial||'—')}</td><td>${esc(r.firmware||'—')}</td>
@@ -239,9 +283,16 @@ function render(s){
   const cfg = s.config || {};
   if (Object.keys(cfg).length){
     const fw = cfg.firmware || {}; const rms = cfg.rms || {}; const ts = cfg.tailscale || {};
+    // The role's effective values, not the raw top-level ones — on Edge those
+    // are the server's and would describe a router this run will not make.
+    $('settingsTitle').textContent = `Settings for ${roleLabel(s.role)} (rutm.config.json)`;
     $('settingsSummary').innerHTML = `
+      <span>role <b>${esc(roleLabel(s.role))}</b></span>
       <span>factory IP <b>${esc(cfg.host||'192.168.1.1')}</b></span>
-      <span>final LAN <b>${esc(cfg.lan_ip||'192.168.88.1')}</b></span>
+      <span>final LAN <b>${esc(s.final_lan_ip||'192.168.88.1')}</b></span>
+      <span>WAN <b>${esc(s.wan_summary||'—')}</b></span>
+      <span>DHCP pool <b>${esc(s.dhcp_pool||'stock')}</b></span>
+      <span>port forwards <b>${s.port_forward_count||0}</b></span>
       <span>timezone <b>${esc(cfg.timezone||'—')}</b></span>
       <span>password <b>${esc(cfg.new_password||'(unset)')}</b></span>
       <span>firmware <b>${esc(fw.mode||'none')}</b></span>

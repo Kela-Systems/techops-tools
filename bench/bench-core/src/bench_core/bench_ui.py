@@ -1015,6 +1015,13 @@ class BenchConfigurator:
         """Run one device's verify pass. The `_do_configure` seam's twin."""
         return self._do_run(inputs, KIND_VERIFY)
 
+    def run_config(self) -> dict:
+        """The settings one run is handed: a deep copy of the config, so a
+        pipeline that rewrites a block (firmware path, minted Tailscale key)
+        cannot leak it into the next run. Override to derive them from the
+        config instead — the RUTM08 merges the operator-selected role over it."""
+        return json.loads(json.dumps(self.cfg))
+
     def _do_run(self, inputs: dict, mode: str = KIND_CONFIGURE) -> dict:
         """Run one device's pipeline in a worker thread, collecting its log.
 
@@ -1032,7 +1039,7 @@ class BenchConfigurator:
         set_log_serial(None)
 
         hostname = self.hostname_for(inputs)
-        run_cfg = json.loads(json.dumps(self.cfg))
+        run_cfg = self.run_config()
         fw = run_cfg.get("firmware", {}) or {}
         if fw.get("bin_path"):
             # Resolve relative to the app folder, not the process CWD.

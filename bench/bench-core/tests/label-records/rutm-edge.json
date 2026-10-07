@@ -1,0 +1,35 @@
+{
+  "schema": "bench-run-record/1",
+  "run_id": "3c59dc04-8c4f-4f1e-a2a4-6a0d0b8e2f14",
+  "tool": "rutm",
+  "kind": "configure",
+  "timestamp": "2026-10-06T10:12:31.118000+00:00",
+  "time": "10:12:31",
+  "status": "ok",
+  "error": null,
+  "serial": "6010214471",
+  "mac": "20:97:27:33:0a:5c",
+  "model": "RUTM08",
+  "firmware": "RUTM_R_00.07.24.3",
+  "duration_s": 241,
+  "verified": true,
+  "verify_detail": null,
+  "verification": [
+    {"item": "hostname", "expected": "rut-edge-kela-fob-14", "actual": "rut-edge-kela-fob-14", "ok": true}
+  ],
+  "warnings": [],
+  "steps": [],
+  "log": "",
+  "device": {
+    "hostname": "rut-edge-kela-fob-14",
+    "site_name": "kela-fob-14",
+    "password_source": "scan",
+    "role": "edge",
+    "ip": "192.168.89.1",
+    "wan_ip": "192.168.88.20"
+  },
+  "operator": "Avi",
+  "station_id": "bench-01",
+  "bench_version": "bfd75f8",
+  "config_hash": "31108800ab71"
+}
