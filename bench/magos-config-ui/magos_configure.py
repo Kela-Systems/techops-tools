@@ -21,6 +21,9 @@ Firmware >= 3.x adds an RF "Channel" (so neighbouring radars can use different
 frequencies). It lives under a SEPARATE API base and is NOT set over REST:
   GET  /radar/v1/listVariants -> {"variantList":[{"id":"chan0","description":"Channel 0"},...]}
   ws(s)://<host>/radar/v1/detections  (the dashboard pushes the channel here)
+     on connect the radar pushes, among alerts/op_state/heartbeat frames:
+     recv {"op":"radar_settings","payload":{"tx_enabled":true,...,"variant":"chanN"}}
+       -- the only read of the current channel there is (MagosClient.current_variant)
      send {"op":"set_params","payload":{"variant":"chanN"},"id":<n>}
      recv {"op":"ack","inResponseTo":<n>}   (or {"op":"error",...} on failure)
 See MagosClient.set_channel for the exact handshake.
@@ -543,12 +546,22 @@ class MagosClient(MagosHttpClient):
         """The RF channel the radar is on NOW, or None when this firmware does
         not report it.
 
-        `set_channel` pushes the variant over the detections WebSocket and the
-        firmware documents no read for it, so this searches the payloads that do
-        describe the radar for a variant field — and only trusts a value the
-        unit itself lists as one of its variants. An unrecognised value reads as
-        "cannot confirm" rather than as a mismatch, because a field named
-        `variant` on some future firmware need not mean the RF channel.
+        There is no REST read for it. The radar states its channel on the same
+        WebSocket `set_channel` writes it over: on connect, `/radar/v1/detections`
+        pushes a `radar_settings` frame whose payload carries `variant` (seen on
+        3.1.0: `{"op":"radar_settings","payload":{"tx_enabled":true,...,
+        "variant":"chan1"}}`). That is the read. The REST payloads that describe
+        the radar are searched first, cheaply, in case a firmware ever exposes
+        the field there — on 3.1.0 none does, and `/radar/v1/sensors` is 403
+        while the radar is in Raw mode.
+
+        Either way a value is trusted only when the unit itself lists it as one
+        of its variants. An unrecognised value reads as "cannot confirm" rather
+        than as a mismatch, because a field named `variant` on some future
+        firmware need not mean the RF channel.
+
+        A pure read: nothing is sent on the socket, so it is legal on a
+        verify-only run.
         """
         variants = self.list_variants()
         if not variants:
@@ -567,7 +580,64 @@ class MagosClient(MagosHttpClient):
                 except ValueError:
                     pass
         found = _find_field(raw, VARIANT_KEYS)
+        if found is None:
+            found = self._variant_from_settings_frame()
         return found if found in variants else None
+
+    def _variant_from_settings_frame(self) -> Optional[str]:
+        """`payload.variant` out of the first `radar_settings` frame the
+        detections WebSocket pushes after connect, or None if none arrives
+        within the client timeout (or the socket cannot be opened at all).
+
+        The socket also streams alerts, op_state, heartbeats and detections;
+        only the settings frame is read, and nothing is sent.
+        """
+        try:
+            with self._open_ws() as ws:
+                deadline = time.monotonic() + self.timeout
+                while time.monotonic() < deadline:
+                    try:
+                        raw = ws.recv(timeout=2)
+                    except TimeoutError:
+                        continue
+                    try:
+                        msg = json.loads(raw)
+                    except (ValueError, TypeError):
+                        continue
+                    if not isinstance(msg, dict) or msg.get("op") != "radar_settings":
+                        continue
+                    payload = msg.get("payload")
+                    variant = payload.get("variant") if isinstance(payload, dict) else None
+                    return str(variant) if variant not in (None, "") else None
+        except Exception as e:
+            log.info("Could not read the RF channel over the radar WebSocket: %s", e)
+        return None
+
+    def _open_ws(self):
+        """A connected `/radar/v1/detections` WebSocket carrying this session's
+        cookie — the one channel the radar reports and accepts its RF variant
+        on. A context manager; the caller reads/sends and lets it close."""
+        try:
+            from websockets.sync.client import connect as ws_connect
+        except ImportError:
+            raise MagosError("Talking to the radar WebSocket needs the 'websockets' "
+                             "package (pip install websockets).")
+
+        ws_scheme = "wss" if self.scheme == "https" else "ws"
+        url = f"{ws_scheme}://{self.host}/radar/v1/detections"
+        cookie = "; ".join(f"{c.name}={c.value}" for c in self.s.cookies)
+        kwargs: dict = {
+            "additional_headers": {"Cookie": cookie} if cookie else {},
+            "open_timeout": self.timeout,
+            "max_size": None,
+        }
+        if ws_scheme == "wss" and not self.verify:
+            import ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            kwargs["ssl"] = ctx
+        return ws_connect(url, **kwargs)
 
     def set_channel(self, channel: str) -> None:
         """Set the radar's RF Channel (firmware >= 3.x only).
@@ -602,31 +672,10 @@ class MagosClient(MagosHttpClient):
             available = ", ".join(f"{vid} ({desc})" for vid, desc in sorted(variants.items()))
             raise MagosError(f"Radar has no channel '{channel}'. Available: {available}")
 
-        try:
-            from websockets.sync.client import connect as ws_connect
-        except ImportError:
-            raise MagosError("Setting the RF channel needs the 'websockets' package "
-                             "(pip install websockets).")
-
-        ws_scheme = "wss" if self.scheme == "https" else "ws"
-        url = f"{ws_scheme}://{self.host}/radar/v1/detections"
-        cookie = "; ".join(f"{c.name}={c.value}" for c in self.s.cookies)
-        kwargs: dict = {
-            "additional_headers": {"Cookie": cookie} if cookie else {},
-            "open_timeout": self.timeout,
-            "max_size": None,
-        }
-        if ws_scheme == "wss" and not self.verify:
-            import ssl
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            kwargs["ssl"] = ctx
-
         log.info("Setting RF channel to %s (%s) ...", variant, variants[variant])
         req_id = 1
         try:
-            with ws_connect(url, **kwargs) as ws:
+            with self._open_ws() as ws:
                 ws.send(json.dumps(
                     {"op": "set_params", "payload": {"variant": variant}, "id": req_id}))
                 deadline = time.monotonic() + self.timeout

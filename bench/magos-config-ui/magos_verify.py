@@ -184,10 +184,12 @@ def network_rows(client, *, expected_ip: str, netmask: str, gateway: str,
 def rf_channel_row(client: MagosClient, expected_channel: str) -> dict:
     """Which RF channel the radar is transmitting on.
 
-    A known gap, and honestly amber rather than quietly green. `set_channel`
-    pushes the variant over the detections WebSocket and the firmware documents
-    no read for it, so `current_variant` goes looking and reports nothing it
-    cannot corroborate against the unit's own variant list.
+    Read-back: `current_variant` takes the variant out of the `radar_settings`
+    frame the detections WebSocket pushes on connect — the same socket
+    `set_channel` wrote it over — and trusts it only when the unit lists it as
+    one of its own variants. Amber, rather than quietly green, on firmware that
+    lists variants but pushes no such frame, or when the socket cannot be
+    opened at all.
     """
     channel = str(expected_channel or "").strip().lower()
     if not channel or channel == "other":
@@ -199,8 +201,9 @@ def rf_channel_row(client: MagosClient, expected_channel: str) -> dict:
     current = client.current_variant()
     if current is None:
         return {"item": "RF channel", "expected": variant,
-                "actual": "this radar does not report the channel it is on, so "
-                          "the assignment cannot be re-read",
+                "actual": "this radar does not report the channel it is on (no "
+                          "radar_settings frame on its WebSocket), so the "
+                          "assignment cannot be re-read",
                 "ok": None}
     return {"item": "RF channel", "expected": variant, "actual": current,
             "ok": current == variant}

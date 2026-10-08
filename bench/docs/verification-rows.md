@@ -181,7 +181,7 @@ error naming the credentials instead, which is louder than a red row.
 | `reached at` | The address the session got an answer on. On a configure run `verify_device_at` waits for the radar to come back at its new address; on a verify pass it is where the sweep found it. With no recorded address the row **fails** rather than comparing the radar to itself. | effect-based |
 | `NTP server` | `/dshb/v1/system`: `ntpServer`, **and** `ntpAutomatic` being off, so a unit that went back to picking its own server is not passed on a field it no longer reads. | read-back |
 | `timezone` | `/dshb/v1/system`'s `timezone`. | read-back |
-| `RF channel` | `current_variant`: the variant field out of the payloads that describe the radar, trusted only when the radar also lists it as one of its own variants. Amber on firmware that reports none. | known gap |
+| `RF channel` | `current_variant`: the `variant` in the `radar_settings` frame the `/radar/v1/detections` WebSocket pushes on connect — the same socket `set_channel` wrote it over — trusted only when the radar also lists it in `listVariants`. Nothing is sent on the socket. Amber on firmware that lists variants but pushes no such frame, or when the socket cannot be opened. | read-back |
 | `static IP` | `/dshb/v1/networking`: the address **and** `ip4Method == "manual"`, so a lease that happens to match today isn't mistaken for the assignment. Corroborated by `reached at`. Handles both networking schemas (flat CIDR, per-interface). | read-back |
 | `netmask`, `gateway`, `DNS` | The same networking object. DNS is a list on the device and the tool writes one server, so the row checks the primary and shows them all. | read-back |
 | `prior run` (verify only) | As the Teltonika table: whether this radar has a recorded configure run at all. | n/a |
@@ -250,17 +250,18 @@ names the profile from the configure record and stays amber. Closing it means
 diffing the camera's live tables against the exported profile — feasible, and
 its own piece of work.
 
-**`RF channel` (Magos radar).** The worst-shaped gap on the bench, because the
-fault it would catch — two neighbouring radars transmitting on one frequency —
-is invisible everywhere else and only shows up as degraded detection on site.
-`set_channel` pushes the variant over the `/radar/v1/detections` WebSocket and
-the firmware documents no read for it, so `current_variant` goes looking through
-the payloads that *do* describe the radar and reports nothing it cannot
-corroborate against the unit's own `listVariants`. Two ways to close it: a
-documented read for the current variant (ask Magos), or a `get_params` frame
-over the same WebSocket, if one exists. Until then the row is amber on firmware
-that reports nothing, and it must stay amber — a guessed pass here would be
-worse than no row, because somebody would ship on it.
+**`RF channel` (Magos radar) — closed 2026-10-08.** This was the worst-shaped
+gap on the bench, because the fault it catches — two neighbouring radars
+transmitting on one frequency — is invisible everywhere else and only shows up
+as degraded detection on site. The read was on the socket all along: on
+connect, `/radar/v1/detections` pushes a `radar_settings` frame whose payload
+carries `variant` (confirmed on an AR-300 running 3.1.0, where no REST payload
+has it — `/systemStatus` lacks the field, `/radar/v1/sensors` is 403 in Raw
+mode, `/radar/v1/remoteProductInfo` is 404). `current_variant` now listens for
+that frame, sends nothing, and still trusts only a value the unit lists in
+`listVariants`. The row stays amber, not green, on firmware that lists variants
+but pushes no settings frame — a guessed pass here would be worse than no row,
+because somebody would ship on it.
 
 **`NTP client` (OTD500, RUTM08), and why the bench cannot tell you a pair
 synced.** TEC-857 asks for a verify mode that reports *synced* rather than

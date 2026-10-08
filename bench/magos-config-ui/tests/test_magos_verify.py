@@ -64,13 +64,55 @@ class FakeResponse:
             raise AssertionError(f"HTTP {self.status_code}")
 
 
+class FakeSocket:
+    """The `/radar/v1/detections` WebSocket as a 3.1.0 radar serves it: on
+    connect it pushes alerts, op_state, radar_settings and a heartbeat, in that
+    order, then streams nothing further (so a reader that waits for more times
+    out, as on the real unit between detections). `radar_settings` carries the
+    RF variant — the only place the radar states it. Every frame sent BY the
+    client is recorded, so a verify pass can be shown to have written nothing
+    on this socket either."""
+
+    def __init__(self, radar):
+        self.radar = radar
+        frames = [
+            {"op": "alerts", "payload": [{"code": 100, "message": "Radar in Raw mode",
+                                          "level": "warning"}], "id": 0},
+            {"op": "op_state", "payload": {"state": "raw"}, "id": 1},
+        ]
+        if radar.variant is not None:
+            frames.append({"op": "radar_settings", "id": 2,
+                           "payload": {"tx_enabled": True,
+                                       "timing": {"cycle": 0.0, "slot": 0.0},
+                                       "detector": None, "variant": radar.variant}})
+        frames.append({"op": "heartbeat", "payload": {}, "id": 3})
+        self.frames = [json.dumps(f) for f in frames]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def recv(self, timeout=None):
+        if self.frames:
+            return self.frames.pop(0)
+        raise TimeoutError
+
+    def send(self, data):
+        self.radar.ws_sent.append(json.loads(data))
+
+
 class FakeRadar:
     """A finished radar's dashboard API, at the transport layer.
 
-    `variant=None` and `variants={}` model the firmware that reports no RF
-    channel at all. `clock` sets the `Date` header the replies carry (None for
-    firmware that sends none) — no row checks it, and one test exists to keep it
-    that way.
+    `variant=None` models firmware that lists variants but never states which
+    one it is on; `variants={}` the older firmware with no RF channel at all;
+    `ws_reachable=False` a radar whose WebSocket cannot be opened. The variant
+    is reported ONLY over the socket, as on the real 3.1.0 unit — none of the
+    REST payloads carry it. `clock` sets the `Date` header the replies carry
+    (None for firmware that sends none) — no row checks it, and one test exists
+    to keep it that way.
     """
 
     def __init__(self, *, ip=ASSIGNED, prefix=24, method="manual",
@@ -78,16 +120,27 @@ class FakeRadar:
                  dns=("192.168.88.1",), ntp=NTP, ntp_automatic=False, tz=TZ,
                  serial="AR300-0091", variant="chan1",
                  variants=("chan0", "chan1", "chan2", "chan3"),
-                 clock="now", flat_schema=False, password=SHARED_PW):
+                 ws_reachable=True, clock="now", flat_schema=False,
+                 password=SHARED_PW):
         self.requests: list[tuple[str, str]] = []
+        self.ws_opened = 0
+        self.ws_sent: list[dict] = []
         self.ip, self.prefix, self.method = ip, prefix, method
         self.netmask, self.gateway, self.dns = netmask, gateway, list(dns)
         self.ntp, self.ntp_automatic, self.tz = ntp, ntp_automatic, tz
         self.serial, self.variant, self.variants = serial, variant, list(variants)
+        self.ws_reachable = ws_reachable
         self.clock, self.flat_schema, self.password = clock, flat_schema, password
         self.cookies = {"session": "abc"}
         self.headers: dict = {}
         self.verify = True
+
+    # -- the WebSocket surface the client uses -----------------------------
+    def open_ws(self):
+        self.ws_opened += 1
+        if not self.ws_reachable:
+            raise OSError("connection refused")
+        return FakeSocket(self)
 
     # -- the requests.Session surface the client uses ----------------------
     def get(self, url, **kw):
@@ -114,11 +167,12 @@ class FakeRadar:
         if path.endswith("/dshb/v1/networking"):
             return FakeResponse(self._networking())
         if path.endswith("/dshb/v1/systemStatus"):
-            payload = {"serialNumber": self.serial, "model": "AR-300",
-                       "macAddress": "aa:bb:cc:dd:ee:01"}
-            if self.variant:
-                payload["variant"] = self.variant
-            return FakeResponse(payload)
+            # As on the real 3.1.0 unit: identity and network, no variant.
+            return FakeResponse({"productSerial": self.serial, "productModel": "AR-300",
+                                 "softwareVersion": "3.1.0",
+                                 "macAddr": "aa:bb:cc:dd:ee:01"})
+        if path.endswith("/radar/v1/sensors"):
+            return FakeResponse({}, status_code=403)   # Raw mode
         if path.endswith("/radar/v1/listVariants"):
             return FakeResponse({"variantList": [
                 {"id": v, "description": f"Channel {v[-1]}"} for v in self.variants]})
@@ -151,6 +205,7 @@ class FakeRadar:
 def client(host=ASSIGNED, **kwargs) -> MagosClient:
     c = MagosClient(host)
     c.s = FakeRadar(**kwargs)
+    c._open_ws = c.s.open_ws
     return c
 
 
@@ -177,6 +232,15 @@ def test_a_verify_pass_sends_no_write():
     c = client()
     mod.verify_radar(c, settings=settings(), resolve=recorded(), reached=ASSIGNED)
     assert c.s.writes == []
+
+
+def test_a_verify_pass_only_listens_on_the_radar_websocket():
+    # The RF channel is read off the socket `set_channel` writes on, so the
+    # HTTP gate cannot see it: assert on the frames themselves.
+    c = client()
+    mod.verify_radar(c, settings=settings(), resolve=recorded(), reached=ASSIGNED)
+    assert c.s.ws_opened == 1
+    assert c.s.ws_sent == []
 
 
 def test_a_verify_pass_logs_in_and_otherwise_only_reads():
@@ -344,7 +408,7 @@ def test_the_device_clock_is_not_checked_whatever_it_reads(clock):
     assert row(result, "NTP server")["ok"] is True
 
 
-# ── the RF channel: a known gap, and honest about it ─────────────────────────
+# ── the RF channel: read off the radar_settings frame, honest when absent ────
 
 def test_the_rf_channel_is_checked_when_the_radar_reports_it():
     c = client(variant="chan1")
@@ -352,6 +416,32 @@ def test_the_rf_channel_is_checked_when_the_radar_reports_it():
                               reached=ASSIGNED)
     assert row(result, "RF channel") == {"item": "RF channel", "expected": "chan1",
                                          "actual": "chan1", "ok": True}
+
+
+def test_the_rf_channel_comes_off_the_websocket_not_rest():
+    # The real 3.1.0 radar carries the variant nowhere in REST: /systemStatus
+    # has no such field, /sensors is 403 in Raw mode, /remoteProductInfo 404.
+    # The fake mirrors that, so a green row here can only have come from the
+    # radar_settings frame.
+    c = client(variant="chan1")
+    assert c.current_variant() == "chan1"
+    assert c.s.ws_opened == 1
+    assert c.s.ws_sent == []
+
+
+def test_a_radar_whose_websocket_cannot_be_opened_is_amber():
+    c = client(variant="chan1", ws_reachable=False)
+    result = mod.verify_radar(c, settings=settings(), resolve=recorded(channel="1"),
+                              reached=ASSIGNED)
+    check = row(result, "RF channel")
+    assert check["ok"] is None
+    assert "does not report" in check["actual"]
+
+
+def test_older_firmware_without_variants_never_opens_the_socket():
+    c = client(variants=())
+    assert c.current_variant() is None
+    assert c.s.ws_opened == 0
 
 
 def test_a_radar_on_the_wrong_rf_channel_fails():
@@ -366,8 +456,8 @@ def test_a_radar_on_the_wrong_rf_channel_fails():
 
 
 def test_a_firmware_that_does_not_report_the_channel_is_amber():
-    # `set_channel` writes over a WebSocket and there is no documented read, so
-    # nothing here may be guessed into a pass.
+    # Variants listed, but no radar_settings frame on the socket: nothing here
+    # may be guessed into a pass.
     c = client(variant=None)
     result = mod.verify_radar(c, settings=settings(), resolve=recorded(channel="1"),
                               reached=ASSIGNED)
@@ -546,4 +636,5 @@ def test_a_recheck_that_cannot_reach_the_unit_is_amber_not_red(monkeypatch):
 def _preloaded(host, fake) -> MagosClient:
     c = MagosClient(host)
     c.s = fake
+    c._open_ws = fake.open_ws
     return c
