@@ -387,7 +387,10 @@ def _device(entry: dict) -> dict:
 
 
 def _ip(entry: dict) -> str:
-    return _ascii(_device(entry).get("ip"))
+    """The unit's address, without a prefix length. The Magos radar's configure
+    run records the CIDR it wrote (`192.168.88.51/24`); an installer reading
+    the label wants the address, and the mask is the subnet's, not the unit's."""
+    return _ascii(_device(entry).get("ip")).split("/")[0]
 
 
 def _digit(value) -> str:

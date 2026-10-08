@@ -47,6 +47,27 @@ def test_a_configure_run_prints_a_channel_the_radar_confirmed():
     assert content.hero == "1"
 
 
+def test_the_label_prints_the_address_without_the_prefix_length():
+    # A configure run records the CIDR it wrote to the radar. The label wants
+    # the address alone, on both faces: under the channel hero, and as the
+    # hero itself when no channel was confirmed.
+    confirmed = radar.build_entry(radar.resolve_target("1", None), "192.168.40.1",
+                                  result(ip="192.168.88.51/24",
+                                         verification=[rf_row("chan1", True)]), 90)
+    assert confirmed["device"]["ip"] == "192.168.88.51/24"   # the record keeps it
+    content = label_content(confirmed)
+    assert content.face == "channel"
+    assert content.hero_sub == "192.168.88.51"
+    assert "/24" not in render_zpl(confirmed)
+
+    unconfirmed = radar.build_entry(radar.resolve_target("1", None), "192.168.40.1",
+                                    result(ip="192.168.88.51/24"), 90)
+    content = label_content(unconfirmed)
+    assert content.face == "shared-ip"
+    assert content.hero == "192.168.88.51"
+    assert "/24" not in render_zpl(unconfirmed)
+
+
 def test_a_radar_without_an_rf_channel_records_the_pick_but_prints_the_address():
     """Only the AR-300 line has a channel. `set_channel` skips the step without
     complaint on a radar that has none, so the run succeeds and the pick is
