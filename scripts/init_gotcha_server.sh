@@ -13,7 +13,7 @@
 # Usage (over SSH on the LAN, as root):
 #   scp init_gotcha_server.sh nvidia@192.168.88.20:/tmp/
 #   ssh -t nvidia@192.168.88.20 'sudo bash /tmp/init_gotcha_server.sh \
-#     --site kela-gotcha-01 --data-disk /dev/nvme0n1 --ts-authkey tskey-auth-... \
+#     --site kela-gotcha-01 --data-disk /dev/sda --ts-authkey tskey-auth-... \
 #     --static-ip 192.168.88.10/24'
 #
 # Or piped, with the config as env vars (no TTY, so --yes is required to wipe):
