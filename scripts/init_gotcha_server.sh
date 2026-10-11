@@ -4,20 +4,20 @@
 # Neousys NRU-230S: NVIDIA Jetson AGX Orin 32GB SOM (arm64) running JetPack /
 # L4T. The OS sits on the 64GB eMMC, which is nowhere near big enough to hold
 # container images, so k3s data is relocated onto the M.2 NVMe (or 2.5" SATA)
-# SSD before k3s is ever installed.
+# SSD before k3s is ever installed. Log in with the nvidia user and password.
 #
 # Steps: hostname -> unique machine-id -> kela user with passwordless sudo ->
 # format + mount the SSD at /mnt/data -> point /var/lib/rancher at the SSD ->
 # Tailscale -> optionally claim the site's fixed address and pin k3s to it.
 #
 # Usage (over SSH on the LAN, as root):
-#   scp init_gotcha_server.sh kela@192.168.88.20:/tmp/
-#   ssh -t kela@192.168.88.20 'sudo bash /tmp/init_gotcha_server.sh \
+#   scp init_gotcha_server.sh nvidia@192.168.88.20:/tmp/
+#   ssh -t nvidia@192.168.88.20 'sudo bash /tmp/init_gotcha_server.sh \
 #     --site kela-gotcha-01 --data-disk /dev/nvme0n1 --ts-authkey tskey-auth-... \
 #     --static-ip 192.168.88.10/24'
 #
 # Or piped, with the config as env vars (no TTY, so --yes is required to wipe):
-#   ssh kela@192.168.88.20 'sudo -E SITE_NAME=kela-gotcha-01 \
+#   ssh nvidia@192.168.88.20 'sudo -E SITE_NAME=kela-gotcha-01 \
 #     DATA_DISK=/dev/nvme0n1 TS_AUTHKEY=tskey-auth-... ASSUME_YES=1 bash -s' \
 #     < init_gotcha_server.sh
 #
