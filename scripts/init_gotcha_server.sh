@@ -28,7 +28,7 @@ set -Eeuo pipefail
 trap 'echo "ERROR: failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # Stamped into /etc/kela/build-info for fleet audits. Bump on every change.
-SETUP_VERSION="2026-08-25.2"
+SETUP_VERSION="2026-10-11.1"
 
 # ---------- config (flags override these env vars) --------------------------
 SITE_NAME="${SITE_NAME:-}"
@@ -59,6 +59,20 @@ log()  { echo "[$(date '+%Y-%m-%dT%H:%M:%S')] $*"; }
 step() { echo; echo "==> [$1/${TOTAL_STEPS}] $2"; }
 warn() { echo "WARN: $*" >&2; }
 die()  { echo "ERROR: $*" >&2; exit 1; }
+
+# `apt-get update` exits 0 even when a source fails, leaving stale lists that
+# point at .debs the mirror has since deleted (404 on install).
+apt_install() {
+  apt-get update -q || warn "apt-get update reported errors (see above)"
+  if apt-get install -y -qq "$@"; then
+    return 0
+  fi
+  warn "apt install failed — wiping package lists and retrying"
+  apt-get clean
+  rm -rf /var/lib/apt/lists/*
+  apt-get update -q
+  apt-get install -y -qq --fix-missing "$@"
+}
 
 usage() {
   cat <<'USAGE'
@@ -446,7 +460,7 @@ install_tailscale() {
 
   if ! command -v curl >/dev/null 2>&1; then
     log "installing curl"
-    apt-get update -qq && apt-get install -y -qq curl
+    apt_install curl
   fi
 
   if ! command -v tailscale >/dev/null 2>&1; then
