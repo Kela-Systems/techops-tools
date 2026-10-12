@@ -417,6 +417,49 @@ class RaythinkCameraClient(BaseRaythinkClient):
                               f"{err.get('code')} {err.get('message', '')}".strip())
         log.info("Camera clock set to %s.", now)
 
+    # --- Profile Management (VideoInMode) -----------------------------------
+    # Night on either channel is the known ONVIF PTZ failure (HUB-1617); the
+    # standard is Day on BOTH channels (TEC-1129). Set by the config profile's
+    # VideoInMode table, so the only thing this client does is read it back.
+    VIDEO_IN_MODES = {0: "Day", 1: "Night"}
+    VIDEO_IN_CHANNELS = ("day", "thermal")
+
+    def read_video_in_modes(self) -> list[Optional[int]]:
+        """`VideoInMode[N].Config[0]` per channel, as the device reports it —
+        the web UI's Setup > Camera > Profile Management, 0 = Day, 1 = Night.
+        Channel 0 is the visible camera, channel 1 the thermal one. None for a
+        channel whose entry carries no readable value."""
+        table = self._rpc("configManager.getConfig", {"name": "VideoInMode"}).get(
+            "params", {}).get("table")
+        if not isinstance(table, list) or not table:
+            raise CameraError("the device returned no per-channel VideoInMode table")
+        modes: list[Optional[int]] = []
+        for channel in table:
+            config = channel.get("Config") if isinstance(channel, dict) else None
+            modes.append(config[0] if isinstance(config, list) and config else None)
+        return modes
+
+    def _profile_management_check(self) -> dict:
+        row = {"item": "profile management", "expected": "Day on both channels"}
+        try:
+            modes = self.read_video_in_modes()
+        except CameraError as e:
+            return {**row, "actual": f"read failed: {e}", "ok": False}
+        labels = [self.VIDEO_IN_CHANNELS[i] if i < len(self.VIDEO_IN_CHANNELS)
+                  else f"channel {i}" for i in range(len(modes))]
+        actual = ", ".join(f"{label}: {self.VIDEO_IN_MODES.get(mode, f'unknown ({mode})')}"
+                           for label, mode in zip(labels, modes))
+        # A channel the device did not report cannot be shown to be on Day.
+        if len(modes) < len(self.VIDEO_IN_CHANNELS):
+            actual += f" — only {len(modes)} channel(s) reported"
+        ok = len(modes) >= len(self.VIDEO_IN_CHANNELS) and all(m == 0 for m in modes)
+        return {**row, "actual": actual, "ok": ok}
+
+    def verify_configuration(self, **kwargs) -> list[dict]:
+        checks = super().verify_configuration(**kwargs)
+        checks.append(self._profile_management_check())
+        return checks
+
     # --- addressing hooks ---------------------------------------------------
     def _network_table(self) -> tuple[dict, dict]:
         """The device's Network config table and the default interface's section

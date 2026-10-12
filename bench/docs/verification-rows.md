@@ -163,6 +163,7 @@ plus the rows `verify_camera` adds.
 | `subnet mask`, `gateway` | The network table. | read-back |
 | `DHCP` (DHCP mode) | The camera holds a lease and has an address. | effect-based |
 | `subnet mask`, `gateway` (DHCP mode) | Reported, never asserted: the DHCP server chose them, so there is nothing of ours to compare against (`ok=None` by design). | n/a |
+| `profile management` | `configManager.getConfig` for `VideoInMode`: `Config[0]` must be `0` (Day) on both the day and the thermal channel (TEC-1129 — Night is the known ONVIF PTZ failure, HUB-1617). A channel on Night, an unknown value, or a missing thermal channel fails. Older (RPC2) cameras only; the newer generation has no equivalent row yet. | read-back |
 
 ## Magos AR-300 radar
 
