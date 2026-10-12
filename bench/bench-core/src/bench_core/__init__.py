@@ -336,6 +336,21 @@ QUOTA_SYNC_KEEP = (SYSUPGRADE_CONF, QUOTA_SYNC_PATH, QUOTA_SYNC_INIT_PATH,
 # absent — keep the three in step.
 QUOTA_UNKNOWN_OPERATOR = {"data_limit_mb": 1330000, "reset_day": 1, "enabled": True}
 
+# The quota clock gate (TEC-935): when a data limit may be switched ON.
+# Measured 2026-10-11 across 72 online units: modem (NITZ) time keeps every
+# clock within seconds once the modem is registered, so "trusted" means "the
+# modem has had its chance", not "an NTP sample was accepted".
+#   FLOOR       a date this script cannot predate (fixed, not render time, so
+#               the rendered script is deterministic) — catches a 1970/factory
+#               seed outright.
+#   MIN_UPTIME  OpenWrt seeds the clock from the newest /etc mtime at boot; the
+#               modem corrects it within the first minutes. The boot run fires
+#               at +90 s, so it is the run that waits.
+#   TOLERANCE   apply-time check against the bench/rollout host's synced clock.
+QUOTA_CLOCK_FLOOR = 1791763200          # 2026-10-12 00:00 UTC
+QUOTA_CLOCK_MIN_UPTIME = 900
+QUOTA_CLOCK_TOLERANCE = 300
+
 # Teltonika RMS cloud API — used to REGISTER the device in your account (separate
 # from enabling the on-device client). https://developers.rms.teltonika-networks.com/
 RMS_API_BASE = "https://api.rms.teltonika-networks.com"
@@ -992,6 +1007,23 @@ fi
 
 changed=0
 detected=''
+deferred=''
+
+# Clock gate (TEC-935). quota_limit counts its month against the device clock,
+# so a limit must not be switched ON while that clock may be wrong. The window
+# where it is: right after boot. OpenWrt seeds the clock from the newest file
+# under /etc, so a unit that was powered off for a SIM swap comes back on a
+# stale date until the modem delivers network time — and that boot is exactly
+# when this script sees the new operator and wants to enable its limit.
+# Trusted when the bench vouches for it (--clock-ok, after comparing against
+# its own synced clock), or once uptime has given modem time its chance and the
+# clock is past a date this build cannot predate. Only the off->on transition
+# waits; a limit that is already on is never touched by the gate.
+now=$(date +%s)
+up=$(cut -d. -f1 /proc/uptime)
+clock_ok=0
+case " $* " in *" --clock-ok "*) clock_ok=1 ;; esac
+[ "$now" -ge "$CLOCK_FLOOR" ] && [ "$up" -ge "$CLOCK_MIN_UPTIME" ] && clock_ok=1
 
 # set_opt <section> <option> <wanted value>
 set_opt() {
@@ -1033,7 +1065,13 @@ for slot in $SLOTS; do
     fi
 
     # event_sent is quota_limit's runtime state — deliberately never written.
-    set_opt "$section" enabled "$on"
+    if [ "$on" = 1 ] && [ "$clock_ok" = 0 ] && \\
+       [ "$(uci -q get "quota_limit.$section.enabled")" != 1 ]; then
+        deferred="$deferred $section"
+        log "$section: enabling deferred - clock not trusted yet (uptime ${up}s, epoch $now)"
+    else
+        set_opt "$section" enabled "$on"
+    fi
     set_opt "$section" data_limit "$limit"
     set_opt "$section" period "$PERIOD"
     set_opt "$section" reset_day "$day"
@@ -1047,6 +1085,8 @@ if [ "$changed" = 1 ]; then
     /etc/init.d/quota_limit restart >/dev/null 2>&1
     log "applied:$detected"
 fi
+# Printed for the caller (the bench reads it); cron discards stdout.
+[ -n "$deferred" ] && echo "deferred:$deferred"
 exit 0
 """
 
@@ -1090,6 +1130,8 @@ def render_quota_sync_script(cfg: dict) -> str:
         + f"SLOTS='{' '.join(str(s) for s in SIM_SLOTS)}'\n"
         + f"PERIOD='{QUOTA_PERIOD_MONTH}'\n"
         + f"ESIM_SECTION='mob1s{ESIM_SLOT}a1'\n"
+        + f"CLOCK_FLOOR='{QUOTA_CLOCK_FLOOR}'\n"
+        + f"CLOCK_MIN_UPTIME='{QUOTA_CLOCK_MIN_UPTIME}'\n"
         + "\n# operator_for <iccid> -> '<name> <data_limit_mb> <reset_day> <enabled>'\n"
         + "# Limits are DEVICE MB, which are binary: 3000000 MB reads as 2.86 TB.\n"
         + 'operator_for() {\n    case "$1" in\n'
@@ -3453,7 +3495,18 @@ class TeltonikaClient:
             f"sed -i '/{QUOTA_SYNC_NAME}/d' {CRONTAB_PATH} && "
             f"echo {shlex.quote(QUOTA_SYNC_CRON)} >> {CRONTAB_PATH} && "
             "{ /etc/init.d/cron enable >/dev/null 2>&1; /etc/init.d/cron restart; }")
-        self.ssh_exec(QUOTA_SYNC_PATH)
+        # Apply-time clock gate (TEC-935): vouch for the device clock only when it
+        # agrees with ours. Otherwise the script writes the limits but leaves new
+        # ones off, and its own uptime gate turns them on from cron later.
+        skew = self.device_clock_skew()
+        trusted = skew is not None and abs(skew) <= QUOTA_CLOCK_TOLERANCE
+        out = self.ssh_exec(QUOTA_SYNC_PATH + (" --clock-ok" if trusted else "")) or ""
+        if not trusted:
+            log.warning("Device clock %s — data limits written but NOT enabled; the "
+                        "device enables them itself once its clock is trusted.",
+                        "unreadable" if skew is None else f"is {skew:+d}s from this machine's")
+        elif "deferred:" in out:
+            log.warning("Quota sync reported %s", out.strip())
         log.info("Quota sync installed: runs at boot and every 10 minutes "
                  "(limits follow the SIM's operator, not the slot).")
 
@@ -3807,6 +3860,7 @@ class TeltonikaClient:
             add("quota sync script", "(skipped)", "-", None)
             add("quota sync cron", "(skipped)", "-", None)
             add("quota sync survives upgrade", "(skipped)", "-", None)
+            add("quota clock gate", "(skipped)", "-", None)
             return rows
 
         state = self._sim_switch_state()
@@ -3852,6 +3906,14 @@ class TeltonikaClient:
         add("quota sync survives upgrade", f"{len(QUOTA_SYNC_KEEP)} paths kept",
             "all listed" if not missing else f"missing {', '.join(missing)}",
             not missing)
+
+        # TEC-935: the clock the limits count their month against. Within the
+        # tolerance the install vouched for it and the limits are on; outside,
+        # they were written but left off until the device trusts its own clock.
+        skew = self.device_clock_skew()
+        add("quota clock gate", f"device clock within {QUOTA_CLOCK_TOLERANCE}s of this machine",
+            "unreadable" if skew is None else f"{skew:+d}s",
+            skew is not None and abs(skew) <= QUOTA_CLOCK_TOLERANCE)
         return rows
 
     def verify_configuration(self, *, hostname: str, zonename: str, new_password: str,

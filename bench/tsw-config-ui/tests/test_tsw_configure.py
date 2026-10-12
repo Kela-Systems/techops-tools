@@ -503,6 +503,34 @@ def test_a_disabled_ntp_client_fails_the_check():
     assert row(verify(client(uci=uci)), "NTP server")["ok"] is False
 
 
+CLIENT_HALF = ("ntpclient.ntpclient=ntpclient\n"
+               "ntpclient.ntpclient.enabled='{enabled}'\n"
+               "ntpclient.1=ntpserver\n"
+               f"ntpclient.1.hostname='{NTP}'\n")
+
+
+def test_a_disabled_ntpclient_half_fails_the_check():
+    # TEC-846 gap left by TEC-881: our server in both packages, the system half
+    # enabled, the client half off. Reading only system.ntp.enabled said PASS.
+    c = client(uci=configured_uci(), ntpclient_show=CLIENT_HALF.format(enabled="0"))
+    check = row(verify(c), "NTP server")
+    assert check["ok"] is False
+    assert "ntpclient enabled=0" in check["actual"]
+
+
+def test_an_enabled_ntpclient_half_passes_the_check():
+    c = client(uci=configured_uci(), ntpclient_show=CLIENT_HALF.format(enabled="1"))
+    check = row(verify(c), "NTP server")
+    assert check["ok"] is True
+    assert "ntpclient enabled=1" in check["actual"]
+
+
+def test_a_build_without_ntpclient_is_judged_on_system_alone():
+    check = row(verify(client(uci=configured_uci())), "NTP server")
+    assert check["ok"] is True
+    assert "ntpclient" not in check["actual"]
+
+
 def test_the_firmware_check_uses_floor_semantics():
     # A switch newer than the floor must PASS verification, or every
     # arriving-newer unit would report as failed after being correctly left alone.

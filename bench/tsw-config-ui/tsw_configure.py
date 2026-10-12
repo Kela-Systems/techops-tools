@@ -247,15 +247,30 @@ class TswClient(TeltonikaClient):
         servers = self.configured_ntp_servers()
         running = self.running_ntp_servers()
         enabled = self.ssh_exec(f"uci -q get {UCI_NTP_ENABLED}", check=False).strip()
+        # The `ntpclient` half, on a build that has the package (TEC-846 gap left
+        # by TEC-881). set_ntp_server writes our server into it as well, and
+        # configured_ntp_servers scans it — so reading only `system.ntp.enabled`
+        # passed a switch whose client half was switched off. RutOS's init
+        # script reads `enabled` off each `ntpclient`-typed section, default 0,
+        # so every settings section must say 1.
+        client_types, client_opts = self._uci_package(NTP_CLIENT_PACKAGE)
+        client_enabled: Optional[str] = None
+        if client_types:
+            _, settings = self._ntp_client_sections(client_types, client_opts)
+            flags = [client_opts.get((s, "enabled"), "") for s in settings]
+            client_enabled = "1" if flags and all(f == "1" for f in flags) \
+                else (",".join(f or "-" for f in flags) or "-")
         # Only ours, enabled, and actually being polled by the live daemon. A
         # pool entry left behind is a real finding (the switch would drift to
         # internet time on a site that has none), and so is a correct config the
         # daemon never picked up.
         add("NTP server", f"{ntp_server} (only, enabled, polled)",
             f"configured {', '.join(servers) or '(none)'} "
-            f"(enabled={enabled or '?'}); "
-            f"ntpd polling {', '.join(running) or 'nothing'}",
+            f"(enabled={enabled or '?'}"
+            + (f", ntpclient enabled={client_enabled}" if client_enabled is not None else "")
+            + f"); ntpd polling {', '.join(running) or 'nothing'}",
             servers == [ntp_server] and enabled == "1"
+            and client_enabled in (None, "1")
             and running == [ntp_server])
 
         fw = self.ssh_exec("cat /etc/version 2>/dev/null", check=False).strip()

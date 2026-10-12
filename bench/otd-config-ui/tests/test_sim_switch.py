@@ -63,8 +63,9 @@ class FakeDevice:
     a recording of every command for the writes."""
 
     def __init__(self, *, version=FW_VERIFIED, slots=(1, 2, 3), uci=None,
-                 installed="", cron="", write_error="", keep=""):
+                 installed="", cron="", write_error="", keep="", epoch=""):
         self.commands: list[str] = []
+        self.epoch = epoch            # what `date -u +%s` reports ("" = unreadable)
         self.version = version
         self.slots = slots            # slots the device already has a section for
         self.uci = {"simcard.@sim[0].modem": "2-1", **(uci or {})}
@@ -83,6 +84,8 @@ class FakeDevice:
             return self.write_error or "__OK__"
         if command.startswith("cat /etc/version"):
             return self.version
+        if command == "date -u +%s":
+            return self.epoch
         if command.startswith("uci show sim_switch"):
             # One `uci show` now carries everything configure/verify read:
             # section list, positions, and whatever options `self.uci` holds.
@@ -334,6 +337,58 @@ def test_install_deploys_the_script_boot_hook_and_cron(monkeypatch):
     assert device.commands[-1] == QUOTA_SYNC_PATH
 
 
+# ── quota clock gate (TEC-935) ───────────────────────────────────────────────
+
+def _now() -> str:
+    import time
+    return str(int(time.time()))
+
+
+def test_install_vouches_for_a_clock_that_agrees_with_the_bench(monkeypatch):
+    client, device = fake_client(epoch=_now())
+    monkeypatch.setattr(client, "_put_file", lambda *a, **k: None)
+    client.install_quota_sync(SIM_SWITCH_CFG)
+    assert device.commands[-1] == f"{QUOTA_SYNC_PATH} --clock-ok"
+
+
+@pytest.mark.parametrize("epoch", ["", "1700000000"])   # unreadable / months off
+def test_install_does_not_vouch_for_a_clock_it_cannot_confirm(monkeypatch, epoch):
+    # The limits are still written — only switching new ones ON waits for the
+    # device's own gate, so the device never leaves the bench unconfigured.
+    client, device = fake_client(epoch=epoch)
+    monkeypatch.setattr(client, "_put_file", lambda *a, **k: None)
+    client.install_quota_sync(SIM_SWITCH_CFG)
+    assert device.commands[-1] == QUOTA_SYNC_PATH
+
+
+def test_the_script_gates_only_the_off_to_on_transition():
+    script = render_quota_sync_script(SIM_SWITCH_CFG)
+    from bench_core import QUOTA_CLOCK_FLOOR, QUOTA_CLOCK_MIN_UPTIME
+    assert f"CLOCK_FLOOR='{QUOTA_CLOCK_FLOOR}'" in script
+    assert f"CLOCK_MIN_UPTIME='{QUOTA_CLOCK_MIN_UPTIME}'" in script
+    # Trusted by the bench's word, or by uptime + floor on its own.
+    assert '*" --clock-ok "*) clock_ok=1' in script
+    assert '[ "$now" -ge "$CLOCK_FLOOR" ] && [ "$up" -ge "$CLOCK_MIN_UPTIME" ] && clock_ok=1' \
+        in script
+    # A limit that is already on is never switched off by the gate.
+    assert '[ "$(uci -q get "quota_limit.$section.enabled")" != 1 ]' in script
+    # The gate is decided before the loop reuses $@ for operator_for.
+    assert script.index("clock_ok=0") < script.index("for slot in $SLOTS")
+    # Deterministic: rendering twice gives the same file (no render-time clock).
+    assert script == render_quota_sync_script(SIM_SWITCH_CFG)
+
+
+def test_verification_reports_the_clock_the_limits_count_against():
+    rows = verify(uci=device_uci({1: GOOD_SLOT, 2: GOOD_SLOT}), epoch=_now())
+    assert rows["quota clock gate"]["ok"] is True
+    rows = verify(uci=device_uci({1: GOOD_SLOT, 2: GOOD_SLOT}), epoch="1700000000")
+    assert rows["quota clock gate"]["ok"] is False
+    assert rows["quota clock gate"]["actual"].startswith("-")
+    rows = verify(uci=device_uci({1: GOOD_SLOT, 2: GOOD_SLOT}))
+    assert rows["quota clock gate"] == {**rows["quota clock gate"],
+                                        "actual": "unreadable", "ok": False}
+
+
 def test_boot_hook_and_cron_run_the_same_path():
     from bench_core import QUOTA_SYNC_INIT
     assert QUOTA_SYNC_PATH in QUOTA_SYNC_INIT
@@ -568,7 +623,8 @@ def test_disabled_sim_switch_is_skipped_not_failed():
     rows = client._verify_sim_switch({"enabled": False})
     assert [r["item"] for r in rows] == ["SIM switch slot 1", "SIM switch slot 2",
                                          "quota sync script", "quota sync cron",
-                                         "quota sync survives upgrade"]
+                                         "quota sync survives upgrade",
+                                         "quota clock gate"]
     assert all(r["ok"] is None for r in rows)
     assert device.commands == []   # a skipped feature asks the device nothing
 

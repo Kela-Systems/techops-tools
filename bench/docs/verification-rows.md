@@ -60,6 +60,7 @@ SIM row out.
 | `quota sync script` | Three things: the script and its init script present and executable, **and** the `/etc/rc.d/S99…` symlink that actually runs it at boot. The last one is separate on purpose — a keep-settings upgrade restores the files but regenerates `/etc/rc.d`, so the hook can be installed and disabled at once (TEC-861). | effect-based |
 | `quota sync cron` | The exact cron line in `/etc/crontabs/root`. | read-back |
 | `quota sync survives upgrade` | The paths listed in `/etc/sysupgrade.conf`. | known gap |
+| `quota clock gate` | Device `date -u +%s` against this machine's clock, within 300 s (TEC-935). Within it, the install ran the script with `--clock-ok` and the limits are on; outside, they were written but left off, and the device's own gate (uptime ≥ 15 min, clock past a fixed floor) turns them on from cron. Modem time is the accepted fallback — the 2026-10-11 fleet audit found every unit within seconds on it. | effect-based |
 | `RMS` | `ubus call <rms object> status` for a live connection state, then the RMS cloud API as the authority. `enable=1` alone is not a pass. | effect-based |
 | `Tailscale` | `tailscale ip -4` returning a `100.x` node address, i.e. the unit joined the tailnet. | effect-based |
 | `eSIM profile` | `gsmctl --esim-list` returning anything. | known gap |
