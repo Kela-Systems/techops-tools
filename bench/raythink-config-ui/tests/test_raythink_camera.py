@@ -35,19 +35,23 @@ NETWORK_TABLE = {
 @pytest.fixture
 def client(monkeypatch):
     """A client whose RPC2 transport is faked. `client.network` is the Network
-    table getConfig hands back (mutate it to set up a read-back), and
-    `client.writes` collects every setConfig call."""
+    table getConfig hands back (mutate it to set up a read-back),
+    `client.video_in_mode` the VideoInMode table, and `client.writes` collects
+    every setConfig call."""
     cam = RaythinkCameraClient(host="192.168.1.123")
     cam.network = {"DefaultInterface": "eth0",
                    "eth0": dict(NETWORK_TABLE["eth0"],
                                 IPAddress=dict(NETWORK_TABLE["eth0"]["IPAddress"]))}
+    cam.video_in_mode = [{"Config": [0, 0], "Mode": 0},
+                         {"Config": [0, 0], "Mode": 0}]
     cam.writes = []
 
     def fake_rpc(method, params=None, **kwargs):
         if method == "configManager.getConfig":
             name = (params or {}).get("name")
             tables = {"Network": cam.network,
-                      "NTP": {"Enable": True, "Address": "192.168.88.10"}}
+                      "NTP": {"Enable": True, "Address": "192.168.88.10"},
+                      "VideoInMode": cam.video_in_mode}
             return {"result": True, "params": {"table": tables.get(name, {})}}
         if method == "configManager.setConfig":
             cam.writes.append(params)
@@ -255,3 +259,53 @@ def test_verify_static_still_compares_every_field(client, monkeypatch):
     assert check(rows, "static IP")["ok"] is True
     assert check(rows, "subnet mask")["ok"] is True
     assert check(rows, "gateway")["ok"] is True
+
+
+# ── Profile Management (TEC-1129) ───────────────────────────────────────────
+
+def test_verify_passes_with_day_on_both_channels(client, monkeypatch):
+    row = check(verify(client, monkeypatch), "profile management")
+    assert row["ok"] is True
+    assert row["actual"] == "day: Day, thermal: Day"
+
+
+@pytest.mark.parametrize("channel, label", [(0, "day: Night"), (1, "thermal: Night")])
+def test_verify_fails_with_night_on_either_channel(client, monkeypatch, channel, label):
+    client.video_in_mode[channel]["Config"][0] = 1
+    row = check(verify(client, monkeypatch), "profile management")
+    assert row["ok"] is False
+    assert label in row["actual"]
+
+
+def test_verify_judges_the_profile_in_use_not_the_alternate(client, monkeypatch):
+    # Config[1] is the profile a schedule would switch to; under Full Time only
+    # Config[0] is live, which is also all the TEC-1129 audit reads.
+    client.video_in_mode[1]["Config"] = [0, 1]
+    assert check(verify(client, monkeypatch), "profile management")["ok"] is True
+
+
+def test_verify_fails_an_unknown_mode_rather_than_guessing(client, monkeypatch):
+    client.video_in_mode[1]["Config"][0] = 2
+    row = check(verify(client, monkeypatch), "profile management")
+    assert row["ok"] is False
+    assert "unknown (2)" in row["actual"]
+
+
+def test_verify_fails_when_the_thermal_channel_is_not_reported(client, monkeypatch):
+    client.video_in_mode = client.video_in_mode[:1]
+    row = check(verify(client, monkeypatch), "profile management")
+    assert row["ok"] is False
+    assert "only 1 channel" in row["actual"]
+
+
+def test_verify_fails_when_the_table_cannot_be_read(client, monkeypatch):
+    client.video_in_mode = {}
+    row = check(verify(client, monkeypatch), "profile management")
+    assert row["ok"] is False
+    assert "read failed" in row["actual"]
+
+
+def test_profile_management_is_read_without_writing(client, monkeypatch):
+    client.set_read_only()
+    verify(client, monkeypatch)
+    assert client.writes == []

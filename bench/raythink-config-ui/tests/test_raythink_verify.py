@@ -141,8 +141,9 @@ class FakeCamera:
 
     def __init__(self, *, ip=ASSIGNED, netmask="255.255.255.0",
                  gateway="192.168.88.1", dhcp=False, ntp=NTP, ntp_enable=True,
-                 serial="KK0552PAZ00681"):
+                 serial="KK0552PAZ00681", video_in_modes=(0, 0)):
         self.calls: list[str] = []
+        self.video_in_modes = video_in_modes
         self.ip = ip
         self.netmask = netmask
         self.gateway = gateway
@@ -184,6 +185,8 @@ class FakeCamera:
                              "IPAddress": {"IPAddress": self.ip,
                                            "SubnetMask": self.netmask,
                                            "DefaultGateway": self.gateway}}}
+        if name == "VideoInMode":
+            return [{"Config": [mode, 0], "Mode": 0} for mode in self.video_in_modes]
         return {}
 
     @property
@@ -409,6 +412,19 @@ def test_ntp_disabled_fails_even_with_the_right_server(monkeypatch):
     c = client(monkeypatch, ntp_enable=False)
     result = mod.verify_camera(c, settings=settings(), resolve=recorded())
     assert row(result, "NTP server")["ok"] is False
+
+
+def test_a_thermal_channel_on_night_fails_the_pass(monkeypatch):
+    # What the bench's own profiles used to ship (TEC-1129): Night on thermal
+    # is the known ONVIF PTZ failure, and a sweep has to catch it on units
+    # configured before the profiles were fixed.
+    c = client(monkeypatch, video_in_modes=(0, 1))
+    result = mod.verify_camera(c, settings=settings(), resolve=recorded())
+    check = row(result, "profile management")
+    assert check["ok"] is False
+    assert "thermal: Night" in check["actual"]
+    assert result["ok"] is False
+    assert c.device.writes == []
 
 
 def test_a_missing_configure_record_fails_the_pass(monkeypatch):

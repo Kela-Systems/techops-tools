@@ -151,6 +151,22 @@ def test_the_committed_legacy_profiles_pass_through_unchanged():
         assert notes == [], name
 
 
+def test_the_committed_legacy_profiles_set_day_on_both_channels():
+    # Profile Management = Day on BOTH channels (TEC-1129). These files used to
+    # ship thermal on Night, and every older camera the bench configured
+    # inherited it; caught here because the import replays the table verbatim.
+    for name in ("lan", "cellular", "gotcha"):
+        path = mod.CONFIG_DIR / "profiles" / f"{name}.json"
+        if not path.is_file():
+            pytest.skip(f"{name} profile is not present in this checkout")
+        channels = json.loads(path.read_text(encoding="utf-8"))["VideoInMode"]
+        assert len(channels) == 2, name
+        for i, channel in enumerate(channels):
+            assert channel["Mode"] == 0, f"{name} channel {i}: not Full Time"
+            assert all(c == 0 for c in channel["Config"]), \
+                f"{name} channel {i}: {channel['Config']} is not Day"
+
+
 def test_the_committed_profiles_do_not_carry_the_station_password():
     # The guard that actually keeps a secret out of git: enforced here rather
     # than at runtime, because by the time a run imports a profile the commit
