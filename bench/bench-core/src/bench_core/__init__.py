@@ -257,6 +257,23 @@ ACCESS_TECH = {
 # an LTE radio bearer on a 5G core, which a device restricted to 4G should not
 # have ended up on, and calling it 4G would hide a misconfigured preference.
 FOURG_ACCESS_TECH = frozenset({7, 9})
+# Per-SIM "Deny data roaming" (TEC-932). Stock RutOS leaves it unset; on 07.24.3
+# the WebUI writes it on the simcard section and mobifd reads it, keeping data
+# down while registered on a roaming network (otd-avis-test, 2026-10-15). It
+# does not stop roaming registration, which the row's AT+CEREG? half catches.
+SIMCARD_DENY_ROAMING = "deny_roaming"
+# `AT+CEREG?` <stat> (3GPP TS 27.007 §10.1.22): the EPS registration state.
+CEREG_HOME, CEREG_ROAMING = 1, 5
+CEREG_STATE = {0: "not registered", 1: "home network", 2: "searching",
+               3: "registration denied", 4: "unknown", 5: "ROAMING"}
+# The mobile interface each SIM slot's data session runs on, which is where the
+# APN lives: `network.mob1s<slot>a1.{auto_apn,apn,pref_apn}` (07.24.3). With
+# auto_apn='1' RutOS writes its own pick into `apn`, so the option reads the
+# resolved APN in both modes.
+MOBILE_IFACE = "mob1s{slot}a1"
+# An APN is a DNS-label-ish string, and it is rendered into the on-device shell
+# script, so nothing else gets through.
+_APN_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,98}[A-Za-z0-9])?")
 # Tailscale is an add-on package (opkg-installed). Config lives under the
 # `tailscale` package's `settings` section (verified on OTD5_R_00.07.20.3).
 TS_PACKAGE = "tailscale"
@@ -897,13 +914,19 @@ def _whole_number(value, what: str) -> int:
 
 def quota_operators(cfg: dict) -> list[dict]:
     """The operator table from a `sim_switch` config block, normalised to
-    {name, iccid_prefixes, mccmnc, data_limit_mb, reset_day, enabled}.
+    {name, iccid_prefixes, mccmnc, data_limit_mb, reset_day, enabled, apns,
+    auto_apn}.
 
     Config typos here become wrong data limits on field SIMs, so they are hard
     errors rather than skipped rows: a non-numeric ICCID prefix (or an operator
     with none at all), a non-numeric limit, or an enabled operator without a
     positive data_limit_mb — which would write a 0 MB limit to the device and
     cut the SIM's data on the first sync.
+
+    `apns` (TEC-932) is every APN this operator's SIMs may run on; it is
+    required, because it is what the APN row holds auto-APN's pick against.
+    `auto_apn` true means the bench saw auto resolve to one of them, so the
+    device is left on auto; otherwise the first entry is written explicitly.
     """
     operators = []
     for raw in cfg.get("operators") or []:
@@ -918,6 +941,11 @@ def quota_operators(cfg: dict) -> list[dict]:
         if enabled and limit <= 0:
             raise SystemExit(f"sim_switch.operators['{name}']: an enabled operator "
                              f"needs data_limit_mb > 0 (got {limit}).")
+        apns = [str(a).strip() for a in (raw.get("apns") or [])]
+        if not apns or not all(_APN_RE.fullmatch(a) for a in apns):
+            raise SystemExit(f"sim_switch.operators['{name}']: apns must be a list of "
+                             "the APNs this operator's SIMs may use, letters, digits, "
+                             f"'.' and '-' only (got {apns!r}).")
         operators.append({
             "name": name,
             "iccid_prefixes": prefixes,
@@ -929,8 +957,19 @@ def quota_operators(cfg: dict) -> list[dict]:
             "reset_day": _whole_number(raw.get("reset_day", 1),
                                        f"sim_switch.operators['{name}'].reset_day"),
             "enabled": enabled,
+            "apns": apns,
+            "auto_apn": bool(raw.get("auto_apn", False)),
         })
     return operators
+
+
+def iccid_operator(operators: list[dict], iccid: str) -> Optional[dict]:
+    """The quota_operators() row an ICCID belongs to, or None. First match
+    wins, the same order the on-device script's `case` arms are tried in."""
+    for op in operators:
+        if any(iccid.startswith(p) for p in op["iccid_prefixes"]):
+            return op
+    return None
 
 
 def quota_unknown_operator(cfg: dict) -> dict:
@@ -972,7 +1011,9 @@ _QUOTA_SYNC_PROLOGUE = """#!/bin/sh
 # has to follow the SIM, not the slot. Each slot's operator is identified by the
 # ICCID prefix in `simcard.@sim[N].iccid` — RutOS keeps that for the INACTIVE
 # slots too, unlike the IMSI, which only the active SIM reports — and the
-# matching quota_limit section is rewritten when it differs.
+# matching quota_limit section is rewritten when it differs. The slot's APN
+# follows the SIM the same way (TEC-932): explicit where the bench config says
+# so, RutOS auto-APN everywhere else, including an unidentified SIM.
 #
 # Runs at boot (/etc/init.d/kela-quota-sync) and every 10 minutes from cron.
 
@@ -1006,6 +1047,7 @@ if [ -x """ + QUOTA_SYNC_INIT_PATH + """ ] && [ ! -e """ + QUOTA_SYNC_RC_LINK + 
 fi
 
 changed=0
+net_changed=0
 detected=''
 deferred=''
 
@@ -1034,6 +1076,16 @@ set_opt() {
     log "$1.$2: '$cur' -> '$3'"
 }
 
+# set_net <interface> <option> <wanted value> — set_opt for the slot's mobile
+# interface in the `network` package (TEC-932).
+set_net() {
+    cur=$(uci -q get "network.$1.$2")
+    [ "$cur" = "$3" ] && return 0
+    uci set "network.$1.$2=$3"
+    net_changed=1
+    log "network.$1.$2: '$cur' -> '$3'"
+}
+
 # index_for <slot> -> the simcard section index for that slot, matched by its
 # `position` option — file order is not trusted to equal slot order. Falls
 # back to slot-1 for a firmware whose simcard sections carry no position.
@@ -1048,21 +1100,37 @@ for slot in $SLOTS; do
     index=$(index_for "$slot")
     iccid=$(uci -q get "simcard.@sim[$index].iccid")
     set -- $(operator_for "$iccid")
-    limit="$2" day="$3" on="$4"
+    limit="$2" day="$3" on="$4" apn="$5"
     detected="$detected slot$slot=$1"
 
+    # The quota section and the mobile interface share the name mob1s<slot>a1.
+    # '-' is auto-APN: only auto_apn is touched, because with auto on RutOS
+    # writes its own pick into `apn`.
+    if [ -n "$(uci -q get "network.$section")" ]; then
+        if [ "$apn" = - ]; then
+            set_net "$section" auto_apn 1
+        else
+            set_net "$section" auto_apn 0
+            set_net "$section" apn "$apn"
+        fi
+    fi
+
     if [ -z "$(uci -q get "quota_limit.$section")" ]; then
-        # No section yet (a device that never had a limit configured): create it
-        # with the fields the WebUI writes. 'interface' is the section type
-        # quota_limit uses on 07.22.3.
+        # No section yet: create it. 'interface' is the section type quota_limit
+        # uses on 07.22.3.
         uci set "quota_limit.$section=interface"
         uci set "quota_limit.$section.ifname=$section"
-        uci set "quota_limit.$section.sim=$slot"
-        modem=$(uci -q get "simcard.@sim[$index].modem")
-        [ -n "$modem" ] && uci set "quota_limit.$section.modem=$modem"
         changed=1
         log "$section: created"
     fi
+    # Set on every run, not only at creation: the firmware creates these
+    # sections bare at first boot, and quota_limit skips a section without
+    # `sim` ("Option 'sim' was not found") — the limit is written, enabled and
+    # enforces nothing (otd-avis-test, 2026-10-15: no nftables quota at all).
+    set_opt "$section" sim "$slot"
+    modem=$(uci -q get "simcard.@sim[$index].modem")
+    [ -n "$modem" ] || modem=$(uci -q get "network.$section.modem")
+    [ -n "$modem" ] && set_opt "$section" modem "$modem"
 
     # event_sent is quota_limit's runtime state — deliberately never written.
     if [ "$on" = 1 ] && [ "$clock_ok" = 0 ] && \\
@@ -1085,8 +1153,16 @@ if [ "$changed" = 1 ]; then
     /etc/init.d/quota_limit restart >/dev/null 2>&1
     log "applied:$detected"
 fi
+# A reload, as the WebUI's Save & Apply does: netifd restarts only the
+# interfaces whose config changed, so an untouched slot's session is left alone.
+if [ "$net_changed" = 1 ]; then
+    uci commit network
+    /etc/init.d/network reload >/dev/null 2>&1
+    log "apn applied:$detected"
+fi
 # Printed for the caller (the bench reads it); cron discards stdout.
 [ -n "$deferred" ] && echo "deferred:$deferred"
+[ "$net_changed" = 1 ] && echo "apn-applied:$detected"
 exit 0
 """
 
@@ -1119,11 +1195,12 @@ def render_quota_sync_script(cfg: dict) -> str:
     arms = []
     for op in quota_operators(cfg):
         pattern = "|".join(f"{p}*" for p in op["iccid_prefixes"])
+        apn = "-" if op["auto_apn"] else op["apns"][0]
         arms.append(f"        {pattern}) echo '{op['name']} {op['data_limit_mb']} "
-                    f"{op['reset_day']} {1 if op['enabled'] else 0}' ;;"
+                    f"{op['reset_day']} {1 if op['enabled'] else 0} {apn}' ;;"
                     + (f"  # {op['mccmnc']}" if op["mccmnc"] else ""))
     arms.append(f"        *) echo 'unknown {unknown['data_limit_mb']} "
-                f"{unknown['reset_day']} {1 if unknown['enabled'] else 0}' ;;"
+                f"{unknown['reset_day']} {1 if unknown['enabled'] else 0} -' ;;"
                 "  # unrecognised SIM or empty slot")
     return (
         _QUOTA_SYNC_PROLOGUE
@@ -1132,7 +1209,8 @@ def render_quota_sync_script(cfg: dict) -> str:
         + f"ESIM_SECTION='mob1s{ESIM_SLOT}a1'\n"
         + f"CLOCK_FLOOR='{QUOTA_CLOCK_FLOOR}'\n"
         + f"CLOCK_MIN_UPTIME='{QUOTA_CLOCK_MIN_UPTIME}'\n"
-        + "\n# operator_for <iccid> -> '<name> <data_limit_mb> <reset_day> <enabled>'\n"
+        + "\n# operator_for <iccid> -> '<name> <data_limit_mb> <reset_day> <enabled> <apn>'\n"
+        + "# <apn> '-' = RutOS auto-APN.\n"
         + "# Limits are DEVICE MB, which are binary: 3000000 MB reads as 2.86 TB.\n"
         + 'operator_for() {\n    case "$1" in\n'
         + "\n".join(arms)
@@ -1381,6 +1459,9 @@ _MUTATING_COMMANDS = re.compile(
     | >>? \s* (?:/etc/|/tmp/|/proc/|/sys/|/usr/|/root/|/overlay/)
     | \btailscale \s+ (?:up|down|logout|set)\b
     | \bubus \s+ call \s+ \S+ \s+ (?:reload|restart|connect|set|write)\b
+    # `nft list` is the quota-enforcement read; these are its writes. `reset`
+    # zeroes a quota's used counter — the data limit's month, gone.
+    | \bnft \s+ (?:-\S+\s+)* (?:add|create|insert|replace|delete|destroy|flush|reset|-f)\b
     # Downloading an eSIM profile writes to the modem; resetting it drops the
     # link. `--esim-list` and the other gsmctl reads are untouched.
     | \bgsmctl \s+ (?:--esim-download | -A\s+'AT\+CFUN)
@@ -3274,6 +3355,18 @@ class TeltonikaClient:
         log.info("Set %d SIM slot(s) to 4G only (modem re-attaching — data drops briefly).",
                  len(indices))
 
+    def set_sims_deny_roaming(self) -> None:
+        """Deny data roaming on every SIM section (TEC-932). Pure UCI, no SIM
+        needed; it takes effect on the modem reset `set_sims_4g_only` issues
+        next, which is why the pipeline runs it first."""
+        indices = self._sim_indices()
+        if not indices:
+            log.warning("No simcard.@sim[N] sections found; skipping deny-roaming.")
+            return
+        self._uci(*(self._uci_arg(f"simcard.@sim[{i}].{SIMCARD_DENY_ROAMING}", "1")
+                    for i in indices), package="simcard")
+        log.info("Data roaming denied on %d SIM slot(s).", len(indices))
+
     def attached_access_tech(self) -> tuple[Optional[int], str]:
         """`(AcT code, raw reply)` — the radio technology the modem is CURRENTLY
         attached on, or `(None, raw)` when it is not attached (or the reply can't
@@ -3344,6 +3437,241 @@ class TeltonikaClient:
             "uci show simcard 2>/dev/null | "
             "sed -n 's/^simcard\\.@sim\\[\\([0-9]*\\)\\]=sim$/\\1/p'", check=False)
         return [int(x) for x in out.split() if x.strip().isdigit()]
+
+    # --- SIM radio policy rows (TEC-932) -------------------------------------
+    def _sim_cards(self) -> dict:
+        """What the device knows about the cards in slots 1 and 2:
+        {"options": {slot: {option: value}}, "iccid": {slot: iccid or ''},
+         "active": the slot the modem is on, or None,
+         "stale": slots whose stored ICCID is provably not the card in them}.
+
+        Slots are matched by `position`, as kela-quota-sync does. The active
+        slot and its ICCID come from the modem (`gsmctl -T`, `gsmctl -J`). For
+        the INACTIVE slot only `simcard`'s ICCID is available, and that is the
+        last card the modem saw in that slot — RutOS refreshes it only while the
+        slot is active (otd-avis-test, 2026-10-15: the card moved from slot 2 to
+        slot 1 was still recorded in both). A stored ICCID equal to the active
+        card's is therefore stale, and reported as such rather than judged."""
+        out = self.ssh_exec("uci show simcard 2>/dev/null", check=False)
+        by_index: dict[int, dict[str, str]] = {}
+        for line in out.splitlines():
+            m = re.match(r"^simcard\.@sim\[(\d+)\]\.([\w-]+)=(.*)$", line.strip())
+            if m:
+                by_index.setdefault(int(m.group(1)), {})[m.group(2)] = \
+                    m.group(3).strip().strip("'\"")
+        options: dict[int, dict[str, str]] = {}
+        for index, opts in sorted(by_index.items()):
+            position = opts.get("position", "")
+            options.setdefault(int(position) if position.isdigit() else index + 1, opts)
+        iccids = {slot: options.get(slot, {}).get("iccid", "") for slot in SIM_SLOTS}
+        # 19-digit ICCIDs carry a trailing 'F' pad nibble ('8997250000094155815F').
+        m = re.search(r"\b(\d{18,22})[Ff]?\b",
+                      self.ssh_exec("gsmctl -J 2>/dev/null", check=False))
+        modem_iccid = m.group(1) if m else ""
+        slot_out = self.ssh_exec("gsmctl -T 2>/dev/null", check=False).strip()
+        active = int(slot_out) if slot_out in {str(s) for s in SIM_SLOTS} else next(
+            (s for s, i in iccids.items()
+             if modem_iccid and self._iccid_digits(i) == modem_iccid), None)
+        stale: set[int] = set()
+        if active is not None and modem_iccid:
+            iccids[active] = modem_iccid
+            stale = {s for s, i in iccids.items()
+                     if s != active and self._iccid_digits(i) == modem_iccid}
+        return {"options": options, "iccid": iccids, "active": active, "stale": stale}
+
+    @staticmethod
+    def _iccid_digits(iccid: str) -> str:
+        return iccid.rstrip("Ff")
+
+    @staticmethod
+    def _iccid_label(iccid: str) -> str:
+        return f"ICCID {iccid[:7]}…"
+
+    STALE_SLOT = ("its stored ICCID is the active card's, left from when that card "
+                  "was in this slot — the card in it now is unreadable until it is "
+                  "the active SIM")
+
+    def sim_diversity_check(self, cards: dict, operators: list[dict]) -> dict:
+        """Rule R3: the two cards must not share an operator, or one carrier
+        outage defeats failover entirely (kela-fob-18 ran on two Partner cards).
+
+        Never green or red from the bench: the modem confirms only the ACTIVE
+        card, and the other slot's ICCID is the last card seen there — which
+        outlives the card (a bench SIM, a card in a returned unit). Judging it
+        could fail a one-SIM unit on a card that is gone. Units leave the bench
+        with one SIM, so enforcement is Tobee's in the field (TEC-815); the row
+        reports what the stored ICCIDs suggest, and names a same-operator pair
+        so it can be looked at."""
+        def skip(actual: str) -> dict:
+            return {"item": "SIM operator diversity",
+                    "expected": "slots 1 and 2 on different operators",
+                    "actual": f"{actual} (field check: Tobee, TEC-815)", "ok": None}
+
+        stale = cards.get("stale", set())
+        if stale:
+            return skip("; ".join(f"slot {s}: {self.STALE_SLOT}" for s in sorted(stale))
+                        + " — cannot compare")
+        present = {s: i for s, i in cards["iccid"].items() if i}
+        if len(present) < 2:
+            return skip(f"{len(present)} card(s) in — nothing to compare")
+        ops = {s: iccid_operator(operators, i) for s, i in present.items()}
+        unknown = [s for s, op in ops.items() if op is None]
+        if unknown:
+            return skip("; ".join(
+                f"slot {s}: {self._iccid_label(present[s])} matches no operator"
+                for s in unknown) + " — cannot compare")
+        names = {s: op["name"] for s, op in ops.items()}
+
+        def label(s: int) -> str:
+            # The inactive slot's ICCID is the last card seen there, not a live read.
+            if cards["active"] is None:
+                return f"slot {s} {names[s]}"
+            return f"slot {s} {names[s]}" + (" (active)" if s == cards["active"]
+                                             else " (last seen)")
+
+        actual = ", ".join(label(s) for s in sorted(names))
+        if len(set(names.values())) == 1:
+            actual += (" — both look like one operator: check the cards, one carrier "
+                       "outage would take out both")
+        return skip(f"{actual}; only the active card is confirmed")
+
+    def sim_roaming_check(self, cards: dict, deny_roaming: bool = True) -> dict:
+        """Roaming denied on both slots (the intent) and the modem registered on
+        its home network (the effect). A wrong config is decidable without a
+        card; an unregistered modem cannot confirm the effect and says so."""
+        row = {"item": "SIM roaming"}
+        if not deny_roaming:
+            return {**row, "expected": "(skipped)", "actual": "-", "ok": None}
+        row["expected"] = (f"{SIMCARD_DENY_ROAMING}=1 on slots 1 and 2, registered "
+                           "on the home network")
+        vals = {s: cards["options"].get(s, {}).get(SIMCARD_DENY_ROAMING, "")
+                for s in SIM_SLOTS}
+        configured = " ".join(f"slot {s}={v or '-'}" for s, v in vals.items())
+        raw = self.ssh_exec("gsmctl -A 'AT+CEREG?' 2>/dev/null", check=False).strip()
+        m = re.search(r"\+CEREG:\s*\d+\s*,\s*(\d+)", raw)
+        stat = int(m.group(1)) if m else None
+        state = CEREG_STATE.get(stat, f"stat {stat}") if stat is not None else "no reply"
+        actual = f"config {configured}; {state}"
+        if not all(v == "1" for v in vals.values()):
+            return {**row, "actual": actual, "ok": False}
+        if stat == CEREG_ROAMING:
+            return {**row, "actual": f"{actual} — attached to a foreign network",
+                    "ok": False}
+        if stat == CEREG_HOME:
+            return {**row, "actual": actual, "ok": True}
+        return {**row, "actual": f"{actual} — cannot confirm", "ok": None}
+
+    def sim_pin_checks(self, cards: dict) -> list[dict]:
+        """One row per slot: no PIN lock. A PIN-locked card reads as "SIM not
+        ready" and is failed over forever. `AT+CPIN?` answers for the ACTIVE card
+        only, so an inactive card is amber — switching SIMs to look would be a
+        mutation, and the procedure (PIN disabled before insertion) covers it."""
+        rows: list[dict] = []
+        cpin: Optional[str] = None
+        for slot in SIM_SLOTS:
+            row = {"item": f"SIM PIN slot {slot}", "expected": "no PIN lock (READY)"}
+            if not cards["iccid"][slot]:
+                rows.append({**row, "actual": "(no card)", "ok": None})
+                continue
+            if slot in cards.get("stale", set()):
+                rows.append({**row, "actual": f"inactive; {self.STALE_SLOT}", "ok": None})
+                continue
+            if cards["active"] not in (None, slot):
+                rows.append({**row, "actual": "inactive card — PIN state is readable "
+                             "on the active SIM only; procedure: PIN disabled before "
+                             "insertion", "ok": None})
+                continue
+            if cpin is None:
+                raw = self.ssh_exec("gsmctl -A 'AT+CPIN?' 2>/dev/null", check=False)
+                m = re.search(r"\+CPIN:\s*([^\r\n]+)", raw)
+                cpin = m.group(1).strip() if m else ""
+            known = cards["active"] == slot
+            where = "" if known else " (could not tell which slot is active)"
+            if cpin == "READY":
+                rows.append({**row, "actual": f"READY{where}", "ok": True if known else None})
+            elif "PIN" in cpin or "PUK" in cpin:
+                rows.append({**row, "actual": f"{cpin}{where} — the card is locked and "
+                             "will be failed over as 'SIM not ready'", "ok": False})
+            else:
+                rows.append({**row, "actual": f"no PIN state from the modem "
+                             f"({cpin or 'no reply'}) — cannot confirm", "ok": None})
+        return rows
+
+    def sim_apn_checks(self, cards: dict, operators: list[dict], *,
+                       managed: bool) -> list[dict]:
+        """One row per slot: the APN kela-quota-sync left on the slot's mobile
+        interface is the operator's. Auto-APN passes only on a listed APN — a
+        wrong auto-pick looks like "registered, no data" and trips the data-fail
+        rule. On the active card the modem's data context is read as well, so a
+        config the modem is not using fails too."""
+        if not managed:
+            return [{"item": f"SIM APN slot {s}", "expected": "(skipped)",
+                     "actual": "-", "ok": None} for s in SIM_SLOTS]
+        _, net = self._uci_package("network")
+        context: Optional[str] = None
+        rows: list[dict] = []
+        for slot in SIM_SLOTS:
+            item = f"SIM APN slot {slot}"
+            iccid = cards["iccid"][slot]
+            if not iccid:
+                rows.append({"item": item, "expected": "-", "actual": "(no card)",
+                             "ok": None})
+                continue
+            iface = MOBILE_IFACE.format(slot=slot)
+            auto, apn = net.get((iface, "auto_apn"), ""), net.get((iface, "apn"), "")
+            actual = f"auto_apn={auto or '-'} apn={apn or '-'}"
+            if slot in cards.get("stale", set()):
+                rows.append({"item": item, "expected": "the APN of the card in this slot",
+                             "actual": f"{actual}; {self.STALE_SLOT}", "ok": None})
+                continue
+            op = iccid_operator(operators, iccid)
+            if op is None:
+                rows.append({"item": item, "expected": "auto (unidentified SIM)",
+                             "actual": f"{actual}; {self._iccid_label(iccid)} matches "
+                                       "no operator", "ok": None})
+                continue
+            accepted = {a.lower() for a in op["apns"]}
+            if op["auto_apn"]:
+                expected = f"{op['name']}: auto, resolving to one of {', '.join(op['apns'])}"
+                if auto == "1" and not apn:
+                    rows.append({"item": item, "expected": expected,
+                                 "actual": f"{actual} — auto has not resolved yet",
+                                 "ok": None})
+                    continue
+                ok = auto == "1" and apn.lower() in accepted
+                if auto == "1" and not ok:
+                    actual += " — auto picked an APN this operator does not use"
+            else:
+                expected = f"{op['name']}: auto_apn=0 apn={op['apns'][0]}"
+                ok = auto == "0" and apn == op["apns"][0]
+            if ok and cards["active"] == slot:
+                if context is None:
+                    raw = self.ssh_exec("gsmctl -A 'AT+CGDCONT?' 2>/dev/null", check=False)
+                    m = re.search(r'\+CGDCONT:\s*1\s*,\s*"[^"]*"\s*,\s*"([^"]*)"', raw)
+                    context = m.group(1) if m else ""
+                if context and context.lower() != apn.lower():
+                    actual += f"; the modem's data context is on {context}"
+                    ok = False
+                else:
+                    actual += f"; modem context {context or '(empty)'}"
+            rows.append({"item": item, "expected": expected, "actual": actual, "ok": ok})
+        return rows
+
+    def sim_policy_checks(self, policy: dict) -> list[dict]:
+        """The TEC-932 rows. `policy` is {"deny_roaming": bool, "sim_switch":
+        <the sim_switch block>}; the operator table comes from the latter, and
+        the APN is only managed where the quota-sync script is installed."""
+        sim_switch = policy.get("sim_switch") or {}
+        try:
+            operators = quota_operators(sim_switch)
+        except SystemExit:
+            operators = []   # a disabled block is never validated
+        cards = self._sim_cards()
+        return ([self.sim_diversity_check(cards, operators),
+                 self.sim_roaming_check(cards, bool(policy.get("deny_roaming", True)))]
+                + self.sim_pin_checks(cards)
+                + self.sim_apn_checks(cards, operators,
+                                      managed=bool(sim_switch.get("enabled"))))
 
     # --- SIM switch + per-operator data limits (TEC-359) --------------------
     def _sim_switch_state(self) -> list[tuple[str, dict[str, str]]]:
@@ -3501,6 +3829,12 @@ class TeltonikaClient:
         skew = self.device_clock_skew()
         trusted = skew is not None and abs(skew) <= QUOTA_CLOCK_TOLERANCE
         out = self.ssh_exec(QUOTA_SYNC_PATH + (" --clock-ok" if trusted else "")) or ""
+        if "apn-applied:" in out:
+            # The script reloaded the network for a new APN: the next
+            # internet-dependent step has to wait for a fresh connection.
+            self._online = None
+            log.info("Quota sync set the APN for the inserted SIM(s) — mobile data "
+                     "re-connecting.")
         if not trusted:
             log.warning("Device clock %s — data limits written but NOT enabled; the "
                         "device enables them itself once its clock is trusted.",
@@ -3843,7 +4177,8 @@ class TeltonikaClient:
     # The sim_switch options worth reading back: the ones that decide WHETHER a
     # slot fails over and on what, rather than every option we write.
     SIM_SWITCH_VERIFIED_OPTIONS = ("enabled", "interval", "retry_count",
-                                   "weak_signal", "enable_back", "data_fail_host")
+                                   "weak_signal", "enable_back", "data_fail_host",
+                                   "roaming")
 
     def _verify_sim_switch(self, cfg: dict) -> list[dict]:
         """Verification rows for the sim_switch rules and the quota-sync script.
@@ -3861,6 +4196,7 @@ class TeltonikaClient:
             add("quota sync cron", "(skipped)", "-", None)
             add("quota sync survives upgrade", "(skipped)", "-", None)
             add("quota clock gate", "(skipped)", "-", None)
+            add("quota limit enforced", "(skipped)", "-", None)
             return rows
 
         state = self._sim_switch_state()
@@ -3914,13 +4250,65 @@ class TeltonikaClient:
         add("quota clock gate", f"device clock within {QUOTA_CLOCK_TOLERANCE}s of this machine",
             "unreadable" if skew is None else f"{skew:+d}s",
             skew is not None and abs(skew) <= QUOTA_CLOCK_TOLERANCE)
+        rows.append(self.quota_enforcement_check())
         return rows
+
+    def quota_enforcement_check(self) -> dict:
+        """The limit is ACTIVE, not just written. quota_limit skips a section
+        that does not name its SIM and modem, silently past a startup log line,
+        and the firmware's first-boot sections name neither — every row above
+        was green on units that had never enforced a limit (otd-avis-test,
+        2026-10-15). The effect is the nftables quota the daemon installs on the
+        active slot's data device, within a second of its restart; the inactive
+        slot's interface is down, so only its config can be checked."""
+        row = {"item": "quota limit enforced",
+               "expected": "enabled limits name their SIM and modem; the active "
+                           "slot's limit is installed in nftables"}
+        sections: dict[str, dict[str, str]] = {}
+        for line in self.ssh_exec("uci show quota_limit 2>/dev/null",
+                                  check=False).splitlines():
+            m = re.match(r"^quota_limit\.([\w-]+)\.([\w-]+)=(.*)$", line.strip())
+            if m:
+                sections.setdefault(m.group(1), {})[m.group(2)] = \
+                    m.group(3).strip().strip("'\"")
+        unbound = [f"{iface}: sim={o.get('sim') or '-'} modem={o.get('modem') or '-'}"
+                   for slot in SIM_SLOTS
+                   for iface, o in [(MOBILE_IFACE.format(slot=slot),
+                                     sections.get(MOBILE_IFACE.format(slot=slot), {}))]
+                   if o.get("enabled") == "1"
+                   and (o.get("sim") != str(slot) or not o.get("modem"))]
+        if unbound:
+            return {**row, "actual": "; ".join(unbound)
+                    + " — quota_limit skips it, nothing is enforced", "ok": False}
+        active = self.ssh_exec("gsmctl -T 2>/dev/null", check=False).strip()
+        if active not in {str(s) for s in SIM_SLOTS}:
+            return {**row, "actual": "config ok; active slot unknown — cannot read "
+                                     "the enforcement", "ok": None}
+        iface = MOBILE_IFACE.format(slot=active)
+        limit = sections.get(iface, {})
+        if limit.get("enabled") != "1":
+            return {**row, "actual": f"config ok; slot {active} has no limit on (a plan "
+                                     "without one, or the clock gate is holding it)",
+                    "ok": None}
+        nft = self.ssh_exec(f"nft list table netdev quota_{iface} 2>/dev/null",
+                            check=False)
+        q = re.search(r"\bover (\d+) mbytes(?: used (\d+) bytes)?", nft)
+        if not q:
+            return {**row, "actual": f"slot {active}: limit on in config, no nftables "
+                                     "quota — not enforced", "ok": False}
+        if q.group(1) != limit.get("data_limit"):
+            return {**row, "actual": f"slot {active}: nftables caps at {q.group(1)} MB, "
+                                     f"config says {limit.get('data_limit') or '-'}",
+                    "ok": False}
+        return {**row, "actual": f"slot {active}: {q.group(1)} MB cap in nftables, "
+                                 f"{q.group(2) or 0} bytes used", "ok": True}
 
     def verify_configuration(self, *, hostname: str, zonename: str, new_password: str,
                              sim_4g: bool, rms: bool, tailscale: bool,
                              esim: bool = False, expected_firmware: str = "",
                              rms_api_token: str = "", serial: str = "",
-                             sim_switch: Optional[dict] = None) -> list[dict]:
+                             sim_switch: Optional[dict] = None,
+                             sim_policy: Optional[dict] = None) -> list[dict]:
         """Re-read every setting back off the device and confirm it actually took.
         Returns a list of checks: {item, expected, actual, ok} where ok is True
         (passed), False (failed) or None (not in scope / skipped)."""
@@ -3954,6 +4342,9 @@ class TeltonikaClient:
         # None leaves the rows out entirely (a tool that has no SIM switch).
         if sim_switch is not None:
             checks += self._verify_sim_switch(sim_switch)
+        # Same convention: None for a tool with no modem.
+        if sim_policy is not None:
+            checks += self.sim_policy_checks(sim_policy)
 
         if rms:
             en = self.ssh_exec(f"uci get {UCI_RMS_ENABLED} 2>/dev/null", check=False).strip()

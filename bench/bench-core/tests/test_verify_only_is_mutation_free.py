@@ -108,6 +108,17 @@ ALLOWED_READS = [
     "gsmctl -j 2>/dev/null",
     "gsmctl --esim-list 2>/dev/null || gsmctl -A 'AT+ESIM?' 2>/dev/null",
     "gsmctl -A 'AT+COPS?' 2>/dev/null",
+    # The TEC-932 radio/SIM rows. AT reads one flag away from the CFUN reset
+    # the deny-list blocks.
+    "uci show simcard 2>/dev/null",
+    "gsmctl -J 2>/dev/null",
+    "gsmctl -T 2>/dev/null",
+    "gsmctl -A 'AT+CPIN?' 2>/dev/null",
+    "gsmctl -A 'AT+CEREG?' 2>/dev/null",
+    "gsmctl -A 'AT+CGDCONT?' 2>/dev/null",
+    # The quota-enforcement row: the daemon's config and the quota it installed.
+    "uci show quota_limit 2>/dev/null",
+    "nft list table netdev quota_mob1s1a1 2>/dev/null",
     # The one that broke the first version of the pattern.
     "grep -v '^#' /etc/sysupgrade.conf 2>/dev/null",
     "grep -F quota-sync /etc/crontabs/root 2>/dev/null",
@@ -143,6 +154,12 @@ def test_a_read_the_checks_make_is_not_mistaken_for_a_write(command):
 BLOCKED_WRITES = [
     "uci set system.system.hostname='otd-haifa' && uci commit system",
     "uci set 'simcard.@sim[0].service=lte'",
+    "uci set 'simcard.@sim[0].deny_roaming=1' && uci commit simcard",
+    "uci commit quota_limit\n    /etc/init.d/quota_limit restart >/dev/null 2>&1",
+    "nft reset quota netdev quota_mob1s1a1 quota_limit",
+    "nft delete table netdev quota_mob1s1a1",
+    "nft flush ruleset",
+    "uci commit network\n    /etc/init.d/network reload >/dev/null 2>&1",
     "uci -q delete system.ntp.server",
     # The DHCP move (TEC-848), verbatim — a `uci -q delete` in the middle of an
     # otherwise-innocuous-looking line is exactly what a screen can miss.
@@ -279,7 +296,9 @@ def test_verify_configuration_mutates_nothing():
                            new_password=SHARED, sim_4g=True, rms=True,
                            tailscale=True, esim=True,
                            expected_firmware="OTD5_R_00.07.20.3",
-                           sim_switch={"enabled": True})
+                           sim_switch={"enabled": True},
+                           sim_policy={"deny_roaming": True,
+                                       "sim_switch": {"enabled": True}})
     offenders = [cmd for cmd in c.device.commands
                  if _MUTATING_COMMANDS.search(cmd)]
     assert offenders == []
@@ -293,7 +312,8 @@ def test_verify_configuration_runs_unchanged_on_a_read_only_client():
     kwargs = dict(hostname="otd-haifa", zonename="Asia/Jerusalem",
                   new_password=SHARED, sim_4g=True, rms=True, tailscale=True,
                   esim=True, expected_firmware="OTD5_R_00.07.20.3",
-                  sim_switch={"enabled": True})
+                  sim_switch={"enabled": True},
+                  sim_policy={"deny_roaming": True, "sim_switch": {"enabled": True}})
     assert free.verify_configuration(**kwargs) == locked.verify_configuration(**kwargs)
     assert free.device.commands == locked.device.commands
 

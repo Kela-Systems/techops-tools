@@ -75,7 +75,7 @@ table is even parsed.
 | `check_count` | 5 | Consecutive failed checks before switching |
 | `weak_signal_dbm` | -105 | RSSI threshold; below this counts as a failed check |
 | `icmp_host` | 8.8.8.8 | Ping target for the data check |
-| `operators[]` | — | ICCID prefix → data limit table (below) |
+| `operators[]` | — | ICCID prefix → data limit + APN table (below) |
 | `unknown_operator` | 1330000 MB, day 1, on | Fallback for a SIM matching no prefix |
 
 `check_interval`, `check_count`, `weak_signal_dbm` and `icmp_host` are the only
@@ -94,9 +94,29 @@ practically-unlimited plan. `data_limit_mb` is still required to be a real value
 on those rows, so enabling one later can't hand a SIM a 0 MB limit. `mccmnc` is
 optional and only ends up as a comment in the generated script.
 
+`apns` (required, TEC-932) lists every APN the operator's SIMs may use. The
+script sets it per slot on `network.mob1s<slot>a1`, following the SIM like the
+limit does. `auto_apn: true` leaves that slot on RutOS auto-APN, and is only for
+an operator where the bench **saw** auto resolve to a listed APN. Otherwise the
+first entry is written with `auto_apn=0`. An unidentified SIM or an empty slot
+goes back to auto, so an APN chosen for one card never stays behind for the next.
+The SIM APN row fails an auto pick that is not in the list, which is the
+"registered, no data" case that trips the data-fail rule. The network is reloaded
+only when an APN actually changed.
+
+`sim_deny_roaming` (top level, default true) writes
+`simcard.@sim[N].deny_roaming=1` before the 4G-only step, whose modem reset
+applies it.
+
 `data_limit_mb` is in **device MB, which are binary** — 3000000 shows up in the
 WebUI as 2.86 TB, so the configured values keep real margin against a decimal-TB
 plan.
+
+Each slot's `quota_limit` section must also name its `sim` and `modem`, or
+RutOS's quota_limit daemon skips it and the limit is written but never enforced.
+The firmware creates these sections without them, so the script sets both on
+every run. The `quota limit enforced` row checks the result on the device: the
+nftables quota on the active slot's data interface.
 
 ### Failover logic
 

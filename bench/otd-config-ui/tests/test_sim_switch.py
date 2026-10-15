@@ -32,11 +32,15 @@ SIM_SWITCH_CFG = {
     "icmp_host": "8.8.8.8",
     "operators": [
         {"name": "partner", "iccid_prefixes": ["8997201"], "mccmnc": "425-01",
-         "data_limit_mb": 3000000, "reset_day": 1, "enabled": False},
+         "data_limit_mb": 3000000, "reset_day": 1, "enabled": False,
+         "apns": ["uinternet", "uwap.orange.co.il"], "auto_apn": True},
         {"name": "cellcom", "iccid_prefixes": ["8997202"], "mccmnc": "425-02",
-         "data_limit_mb": 1330000, "reset_day": 15, "enabled": True},
+         "data_limit_mb": 1330000, "reset_day": 15, "enabled": True,
+         "apns": ["internetg", "sphone"], "auto_apn": True},
         {"name": "pelephone", "iccid_prefixes": ["8997250"], "mccmnc": "425-03",
-         "data_limit_mb": 2660000, "reset_day": 1, "enabled": True},
+         "data_limit_mb": 2660000, "reset_day": 1, "enabled": True,
+         "apns": ["internet.pelephone.net.il", "sphone.pelephone.net.il"],
+         "auto_apn": False},
     ],
     "unknown_operator": {"data_limit_mb": 1330000, "reset_day": 1, "enabled": True},
 }
@@ -253,12 +257,14 @@ def test_every_verified_firmware_does_not_warn(teltonika_caplog, version):
 
 def test_script_embeds_the_operator_table():
     script = render_quota_sync_script(SIM_SWITCH_CFG)
-    # "<name> <data_limit_mb> <reset_day> <enabled>" per ICCID prefix.
-    assert "8997201*) echo 'partner 3000000 1 0' ;;" in script
-    assert "8997202*) echo 'cellcom 1330000 15 1' ;;" in script
-    assert "8997250*) echo 'pelephone 2660000 1 1' ;;" in script
-    # An unrecognised SIM (or empty slot) falls back to the conservative limit.
-    assert "*) echo 'unknown 1330000 1 1' ;;" in script
+    # "<name> <data_limit_mb> <reset_day> <enabled> <apn>" per ICCID prefix,
+    # '-' being auto-APN.
+    assert "8997201*) echo 'partner 3000000 1 0 -' ;;" in script
+    assert "8997202*) echo 'cellcom 1330000 15 1 -' ;;" in script
+    assert "8997250*) echo 'pelephone 2660000 1 1 internet.pelephone.net.il' ;;" in script
+    # An unrecognised SIM (or empty slot) falls back to the conservative limit,
+    # and to auto-APN — never to the APN an earlier card in that slot needed.
+    assert "*) echo 'unknown 1330000 1 1 -' ;;" in script
     assert "SLOTS='1 2'" in script and "PERIOD='3'" in script
     # Detection is by ICCID (readable on inactive slots), never by IMSI — which
     # would mean asking the modem about the active SIM.
@@ -291,6 +297,130 @@ def test_script_takes_a_lock_so_boot_and_cron_runs_cannot_interleave():
     script = render_quota_sync_script(SIM_SWITCH_CFG)
     assert 'mkdir "$LOCK" 2>/dev/null || exit 0' in script
     assert "trap 'rmdir \"$LOCK\"' EXIT" in script
+
+
+# A `uci` that keeps `key=value` lines in a file: enough of get/set/show/commit
+# to run the generated script for real.
+FAKE_UCI = r"""#!/bin/sh
+db="$UCI_DB"
+[ "$1" = -q ] && shift
+case "$1" in
+get) awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); f = 1 }
+                    END { exit !f }' "$db" ;;
+set) k="${2%%=*}"; awk -v k="$k" 'index($0, k "=") != 1' "$db" > "$db.new"
+     mv "$db.new" "$db"; echo "$2" >> "$db" ;;
+show) grep "^$2\." "$db" | sed "s/=\(.*\)$/='\1'/" ;;
+esac
+exit 0
+"""
+
+
+def run_quota_sync(tmp_path, db_lines):
+    import os
+    import subprocess
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    for name, body in (("uci", FAKE_UCI), ("logger", "#!/bin/sh\nexit 0\n")):
+        (bin_dir / name).write_text(body)
+        (bin_dir / name).chmod(0o755)
+    db = tmp_path / "uci.db"
+    if not db.exists():
+        db.write_text("\n".join(db_lines) + "\n")
+    script = tmp_path / "kela-quota-sync"
+    script.write_text(render_quota_sync_script(SIM_SWITCH_CFG).replace(
+        "/tmp/kela-quota-sync.lock", str(tmp_path / "lock")))
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "UCI_DB": str(db)}
+    subprocess.run(["sh", str(script), "--clock-ok"], env=env, capture_output=True,
+                   timeout=30, check=False)
+    return dict(line.split("=", 1) for line in db.read_text().splitlines() if "=" in line)
+
+
+# What 07.24.3 has before we touch it: add_quota_limit_config creates each
+# quota_limit section bare at first boot.
+FIRMWARE_FIRST_BOOT = [
+    "simcard.@sim[0].position=1", "simcard.@sim[0].modem=2-1",
+    "simcard.@sim[0].iccid=899720203506981475",
+    "simcard.@sim[1].position=2", "simcard.@sim[1].modem=2-1",
+    "simcard.@sim[1].iccid=8997250000094155815F",
+    "network.mob1s1a1=interface", "network.mob1s1a1.modem=2-1",
+    "network.mob1s2a1=interface", "network.mob1s2a1.modem=2-1",
+    "quota_limit.mob1s1a1=interface", "quota_limit.mob1s2a1=interface",
+]
+
+
+def test_script_binds_the_firmwares_bare_sections_to_their_sim(tmp_path):
+    # quota_limit skips a section without `sim`/`modem`; before the fix the
+    # script set them only on sections IT created, and every real unit already
+    # had them from first boot — limits written, enabled, never enforced.
+    uci = run_quota_sync(tmp_path, FIRMWARE_FIRST_BOOT)
+    assert uci["quota_limit.mob1s1a1.enabled"] == "1"
+    assert uci["quota_limit.mob1s1a1.data_limit"] == "1330000"
+    assert uci["quota_limit.mob1s1a1.sim"] == "1"
+    assert uci["quota_limit.mob1s1a1.modem"] == "2-1"
+    assert uci["quota_limit.mob1s2a1.sim"] == "2"
+    assert uci["quota_limit.mob1s2a1.modem"] == "2-1"
+
+
+def test_script_falls_back_to_the_interfaces_modem(tmp_path):
+    lines = [l for l in FIRMWARE_FIRST_BOOT if not l.startswith("simcard.@sim[0].modem")]
+    assert run_quota_sync(tmp_path, lines)["quota_limit.mob1s1a1.modem"] == "2-1"
+
+
+def test_script_sets_the_apn_on_the_slots_mobile_interface():
+    # TEC-932. The quota section and the interface share mob1s<slot>a1.
+    script = render_quota_sync_script(SIM_SWITCH_CFG)
+    assert 'limit="$2" day="$3" on="$4" apn="$5"' in script
+    assert 'set_net "$section" auto_apn 1' in script
+    assert 'set_net "$section" auto_apn 0' in script
+    assert 'set_net "$section" apn "$apn"' in script
+    # Guarded on the interface existing, and only for the physical slots.
+    assert '[ -n "$(uci -q get "network.$section")" ]' in script
+
+
+def test_script_applies_the_apn_only_when_it_changed():
+    script = render_quota_sync_script(SIM_SWITCH_CFG)
+    assert 'cur=$(uci -q get "network.$1.$2")' in script
+    assert script.count("uci commit network") == 1
+    commit = script.index("uci commit network")
+    assert script.index('if [ "$net_changed" = 1 ]; then') < commit
+    # A reload, not a restart: netifd only bounces the interfaces that changed.
+    assert "/etc/init.d/network reload" in script
+    assert "/etc/init.d/network restart" not in script
+    assert 'echo "apn-applied:$detected"' in script
+
+
+def test_operator_without_apns_is_rejected():
+    # The APN row holds auto-APN's pick against this list; without one, any
+    # pick would be unjudgeable and an explicit operator would have nothing to write.
+    with pytest.raises(SystemExit, match="apns"):
+        render_quota_sync_script({**SIM_SWITCH_CFG, "operators": [
+            {"name": "noapn", "iccid_prefixes": ["8991"], "data_limit_mb": 1,
+             "reset_day": 1, "enabled": True}]})
+
+
+@pytest.mark.parametrize("apn", ["internet partner", "uinternet'", "a;reboot", "-x", ""])
+def test_an_apn_that_could_break_the_script_is_rejected(apn):
+    with pytest.raises(SystemExit, match="apns"):
+        render_quota_sync_script({**SIM_SWITCH_CFG, "operators": [
+            {"name": "typo", "iccid_prefixes": ["8991"], "data_limit_mb": 1,
+             "reset_day": 1, "enabled": True, "apns": [apn]}]})
+
+
+def test_install_invalidates_the_online_state_when_the_apn_changed(monkeypatch):
+    client, device = fake_client()
+    monkeypatch.setattr(client, "_put_file", lambda *a, **k: None)
+    client._online = True
+    real = device.__call__
+
+    def answer(command, check=True, exec_timeout=None):
+        if command.startswith(QUOTA_SYNC_PATH):
+            device.commands.append(command)
+            return "apn-applied: slot1=cellcom slot2=partner"
+        return real(command, check, exec_timeout)
+
+    client.ssh_exec = answer
+    client.install_quota_sync(SIM_SWITCH_CFG)
+    assert client._online is None
 
 
 def test_bad_iccid_prefix_is_rejected():
@@ -529,9 +659,10 @@ def test_content_carrying_the_delimiter_is_refused():
 # ── verification ─────────────────────────────────────────────────────────────
 
 VERIFIED_OPTIONS = ("enabled", "interval", "retry_count", "weak_signal",
-                    "enable_back", "data_fail_host")
+                    "enable_back", "data_fail_host", "roaming")
 GOOD_SLOT = {"enabled": "1", "interval": "30", "retry_count": "5",
-             "weak_signal": "-105", "enable_back": "0", "data_fail_host": "8.8.8.8"}
+             "weak_signal": "-105", "enable_back": "0", "data_fail_host": "8.8.8.8",
+             "roaming": "0"}
 
 
 def device_uci(slot_values: dict) -> dict:
@@ -624,9 +755,84 @@ def test_disabled_sim_switch_is_skipped_not_failed():
     assert [r["item"] for r in rows] == ["SIM switch slot 1", "SIM switch slot 2",
                                          "quota sync script", "quota sync cron",
                                          "quota sync survives upgrade",
-                                         "quota clock gate"]
+                                         "quota clock gate", "quota limit enforced"]
     assert all(r["ok"] is None for r in rows)
     assert device.commands == []   # a skipped feature asks the device nothing
+
+
+# `uci show quota_limit` and the nftables table off otd-avis-test, 2026-10-15,
+# after the fix: slot 1 active on Cellcom.
+BOUND_QUOTA = """quota_limit.mob1s1a1=interface
+quota_limit.mob1s1a1.period='3'
+quota_limit.mob1s1a1.enabled='1'
+quota_limit.mob1s1a1.data_limit='1330000'
+quota_limit.mob1s1a1.reset_day='15'
+quota_limit.mob1s1a1.sim='1'
+quota_limit.mob1s1a1.modem='2-1'
+quota_limit.mob1s2a1=interface
+quota_limit.mob1s2a1.enabled='1'
+quota_limit.mob1s2a1.data_limit='2660000'
+quota_limit.mob1s2a1.sim='2'
+quota_limit.mob1s2a1.modem='2-1'
+quota_limit.mob1s3a1e1=interface"""
+NFT_QUOTA = """table netdev quota_mob1s1a1 {
+	quota quota_limit {
+		over 1330000 mbytes used 4365074 bytes
+	}
+}"""
+
+
+def enforcement(quota=BOUND_QUOTA, nft=NFT_QUOTA, slot="1"):
+    client = TeltonikaClient(host="192.0.2.1")
+
+    def answer(command, check=True, exec_timeout=None):
+        if command == "uci show quota_limit 2>/dev/null":
+            return quota
+        if command == "gsmctl -T 2>/dev/null":
+            return slot
+        if command == f"nft list table netdev quota_mob1s{slot}a1 2>/dev/null":
+            return nft
+        return ""
+    client.ssh_exec = answer
+    return client.quota_enforcement_check()
+
+
+def test_an_enabled_limit_without_its_sim_enforces_nothing_and_fails():
+    # The state every unit was in before the fix: limit on, no sim/modem, and
+    # quota_limit skipping the section — so no nftables quota either.
+    unbound = "\n".join(l for l in BOUND_QUOTA.splitlines()
+                        if ".sim=" not in l and ".modem=" not in l)
+    row = enforcement(quota=unbound, nft="")
+    assert row["ok"] is False
+    assert "mob1s1a1: sim=- modem=-" in row["actual"]
+    assert "nothing is enforced" in row["actual"]
+
+
+def test_a_limit_on_in_config_but_missing_from_nftables_fails():
+    row = enforcement(nft="")
+    assert row["ok"] is False and "not enforced" in row["actual"]
+
+
+def test_an_nftables_cap_that_disagrees_with_the_config_fails():
+    row = enforcement(nft=NFT_QUOTA.replace("1330000", "1"))
+    assert row["ok"] is False and "config says 1330000" in row["actual"]
+
+
+def test_the_active_slots_installed_limit_passes():
+    row = enforcement()
+    assert row["ok"] is True
+    assert row["actual"] == "slot 1: 1330000 MB cap in nftables, 4365074 bytes used"
+
+
+def test_an_active_slot_with_no_limit_on_cannot_be_judged():
+    # A disabled plan (Partner), or the TEC-935 clock gate holding the enable.
+    row = enforcement(quota=BOUND_QUOTA.replace(
+        "mob1s1a1.enabled='1'", "mob1s1a1.enabled='0'"), nft="")
+    assert row["ok"] is None
+
+
+def test_an_unreadable_active_slot_cannot_be_judged():
+    assert enforcement(slot="")["ok"] is None
 
 
 # ── pipeline wiring ──────────────────────────────────────────────────────────
@@ -651,6 +857,21 @@ def test_pipeline_configures_the_switch_before_the_modem_bounce(run_pipeline):
         < client.calls.index("set_sims_4g_only") \
         < client.calls.index("install_quota_sync")
     assert client.verified_with["sim_switch"] == SIM_SWITCH_CFG
+
+
+def test_pipeline_denies_roaming_before_the_modem_bounce(run_pipeline):
+    # TEC-932: deny_roaming is pure UCI, applied by sim-4g-only's modem reset.
+    client = run_pipeline(SETTINGS)
+    assert client.calls.index("set_sims_deny_roaming") \
+        < client.calls.index("set_sims_4g_only")
+    assert client.verified_with["sim_policy"] == {"deny_roaming": True,
+                                                  "sim_switch": SIM_SWITCH_CFG}
+
+
+def test_pipeline_skips_deny_roaming_when_disabled(run_pipeline):
+    client = run_pipeline({**SETTINGS, "sim_deny_roaming": False})
+    assert "set_sims_deny_roaming" not in client.calls
+    assert client.verified_with["sim_policy"]["deny_roaming"] is False
 
 
 def test_pipeline_installs_quota_sync_after_a_firmware_flash(run_pipeline):
