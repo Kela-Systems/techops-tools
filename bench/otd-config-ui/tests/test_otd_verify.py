@@ -58,8 +58,10 @@ class FakeOtd:
                  ntp_servers=(OTD_NTP,), ntp_enabled="1",
                  ntp_interval=str(NTP_CLIENT_INTERVAL),
                  ntp_package=True, dhcp_start="100", dhcp_limit="150",
-                 ntp_pid="15296", ntp_started=2000, ntp_written=1000):
+                 ntp_pid="15296", ntp_started=2000, ntp_written=1000,
+                 deny_roaming="1"):
         self.commands: list[str] = []
+        self.deny_roaming = deny_roaming
         self.hostname = hostname
         # The RUNNING kernel hostname, independent of the UCI option for the
         # same reason the clock is independent of the zone option: reading back
@@ -142,6 +144,14 @@ class FakeOtd:
         if "mnfinfo" in command:
             return ('{"serial":"6010212527","mac":"20972732F638",'
                     '"name":"OTD500"}')
+        if command == "uci show simcard 2>/dev/null":
+            # The TEC-932 rows read the whole package: no cards in (the normal
+            # bench state), roaming denied as configured.
+            return "\n".join(
+                f"simcard.@sim[{i}]=sim\nsimcard.@sim[{i}].position='{i + 1}'\n"
+                + (f"simcard.@sim[{i}].deny_roaming='{self.deny_roaming}'"
+                   if self.deny_roaming else "")
+                for i in range(self.sim_slots))
         if "uci show simcard" in command:
             # The real read pipes `uci show` through sed to leave the section
             # indices, so that is what comes back.
@@ -245,6 +255,17 @@ def test_the_client_is_read_only_for_the_whole_pass(monkeypatch):
     assert c.read_only is True
     with pytest.raises(MutationBlocked):
         c.set_hostname("otd-somewhere-else")
+
+
+def test_a_unit_whose_roaming_was_never_denied_fails_verification(monkeypatch):
+    # TEC-932. Decidable with no card in, so an empty bench unit still fails.
+    c = client(monkeypatch, deny_roaming="")
+    result = mod.verify_device(c, settings=settings(), resolve=recorded())
+    assert result["ok"] is False
+    assert row(result, "SIM roaming")["ok"] is False
+    # ... while the card rows skip, because there are no cards.
+    for item in ("SIM operator diversity", "SIM PIN slot 1", "SIM APN slot 2"):
+        assert row(result, item)["ok"] is None
 
 
 def test_the_sim_switch_rows_are_read_without_being_rewritten(monkeypatch):

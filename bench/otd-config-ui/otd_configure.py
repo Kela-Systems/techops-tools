@@ -4,7 +4,8 @@
 The device client (TeltonikaClient and the shared helpers) lives in the
 `bench_core` package; this module owns only the OTD500 step sequence
 (set password -> hostname -> timezone -> NTP + DHCP pool -> SIM switch ->
-4G-only -> firmware -> quota-sync -> RMS -> Tailscale -> [optional] eSIM) and
+deny roaming -> 4G-only -> firmware -> quota-sync (limits + APN) -> RMS ->
+Tailscale -> [optional] eSIM) and
 the single-device CLI.
 
 CLI (single device):
@@ -80,6 +81,12 @@ def time_rows(client: TeltonikaClient, settings: dict) -> list[dict]:
             reserved=pool.get("reserved", server)))
     return rows
 
+
+def sim_policy(settings: dict) -> dict:
+    """The TEC-932 radio/SIM rows' inputs, identical on both paths."""
+    return {"deny_roaming": bool(settings.get("sim_deny_roaming", True)),
+            "sim_switch": settings.get("sim_switch", {}) or {}}
+
 def configure_device(client: TeltonikaClient, *, label_password: str, site_name: str,
                      settings: dict, expected: Optional[dict] = None) -> dict:
     """Run the full provisioning pipeline for ONE device. Logs every step through
@@ -153,6 +160,10 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
     # see below.
     if sim_switch.get("enabled"):
         _step("sim-switch", lambda: client.configure_sim_switch(sim_switch))
+    # TEC-932: pure UCI like the rules above, and BEFORE 4G-only, whose modem
+    # reset is what applies it.
+    if settings.get("sim_deny_roaming", True):
+        _step("sim-deny-roaming", client.set_sims_deny_roaming)
     if settings.get("sim_4g_only", True):
         _step("sim-4g-only", client.set_sims_4g_only)
 
@@ -256,6 +267,7 @@ def configure_device(client: TeltonikaClient, *, label_password: str, site_name:
             new_password=new_password,
             sim_4g=bool(settings.get("sim_4g_only", True)),
             sim_switch=sim_switch,
+            sim_policy=sim_policy(settings),
             rms=bool(rms.get("enabled")),
             tailscale=bool(ts.get("enabled")),
             esim=needs_esim,
@@ -341,6 +353,7 @@ def verify_device(client: TeltonikaClient, *, settings: dict, resolve=None,
         new_password=new_password,
         sim_4g=bool(settings.get("sim_4g_only", True)),
         sim_switch=sim_switch,
+        sim_policy=sim_policy(settings),
         rms=bool(rms.get("enabled")),
         tailscale=bool(ts.get("enabled")),
         esim=esim_expected,

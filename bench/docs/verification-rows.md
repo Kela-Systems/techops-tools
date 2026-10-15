@@ -56,11 +56,16 @@ SIM row out.
 | `hostname` | `hostname` (the running kernel name — what the device reports to syslog, DHCP and RMS) **and** the UCI option, which is what survives a reboot. Converted from UCI-only in TEC-348; `test_hostname_applied.py`. | effect-based |
 | `timezone` | `date +%z` against what the zone means today, **and** `system.ntp.zoneName` for what the WebUI renders. `test_timezone_applied.py`. | effect-based |
 | `SIM 4G-only` | `AT+COPS?` access-technology field — the radio the modem is attached on — **and** the `simcard.@sim[N].service` intent. Amber when the modem is not attached. Converted from UCI-only in TEC-348; `test_sim_4g_effect.py`. | effect-based, degrades |
-| `SIM switch slot 1/2` | `uci show sim_switch`: the failover rule options we wrote. | read-back |
+| `SIM switch slot 1/2` | `uci show sim_switch`: the failover rule options we wrote, `roaming=0` included (TEC-932). | read-back |
+| `SIM operator diversity` | The active card's ICCID from the modem, and for the inactive slot the last ICCID `simcard` saw there (amber when that is provably stale — see the known gap below), each matched to the `sim_switch.operators` table. **Always amber, by decision (2026-10-15)**: the modem confirms only the active card, the other slot's ICCID outlives the card that left it, and units leave the bench with one SIM — so judging it could fail a one-SIM unit on a card that is gone. The row names what the stored ICCIDs suggest and calls out a same-operator pair (rule R3) for a person to check. It is an exception to rule 1 below, kept because enforcement of R3 is Tobee's in the field (TEC-815), where both cards actually are. `test_sim_l1_checks.py`. | known gap |
+| `SIM roaming` | `simcard.@sim[N].deny_roaming=1` on both slots **and** `AT+CEREG?` stat: 5 (roaming) fails, 1 (home) passes, anything else is amber. A wrong config fails without a card. | effect-based, degrades |
+| `SIM PIN slot 1/2` | `AT+CPIN?` for the card `gsmctl -J` says is active: `READY` passes, `SIM PIN`/`PUK` fails. A locked card fails even when the active slot cannot be told. The inactive card is amber (see the known gap below); an empty slot is amber. | effect-based, degrades |
+| `SIM APN slot 1/2` | The slot's `network.mob1sNa1` `auto_apn`/`apn` against its card's operator: auto must have resolved to one of the operator's `apns`, an explicit operator must carry `auto_apn=0` and its first APN. On the active card, `AT+CGDCONT?` context 1 must match too. Amber for an empty slot, an unidentified card, or auto not resolved yet; skipped when `sim_switch` (and so the quota-sync script that writes it) is off. | read-back, effect on the active card |
 | `quota sync script` | Three things: the script and its init script present and executable, **and** the `/etc/rc.d/S99…` symlink that actually runs it at boot. The last one is separate on purpose — a keep-settings upgrade restores the files but regenerates `/etc/rc.d`, so the hook can be installed and disabled at once (TEC-861). | effect-based |
 | `quota sync cron` | The exact cron line in `/etc/crontabs/root`. | read-back |
 | `quota sync survives upgrade` | The paths listed in `/etc/sysupgrade.conf`. | known gap |
 | `quota clock gate` | Device `date -u +%s` against this machine's clock, within 300 s (TEC-935). Within it, the install ran the script with `--clock-ok` and the limits are on; outside, they were written but left off, and the device's own gate (uptime ≥ 15 min, clock past a fixed floor) turns them on from cron. Modem time is the accepted fallback — the 2026-10-11 fleet audit found every unit within seconds on it. | effect-based |
+| `quota limit enforced` | Every enabled `quota_limit.mob1s<N>a1` names its `sim` and `modem` — quota_limit skips a section without them, logging only at startup — **and** the active slot (`gsmctl -T`) has the nftables quota the daemon installs (`nft list table netdev quota_mob1s<N>a1`), capped at the configured `data_limit`. Missing binding, missing quota or a different cap fails; an active slot with no limit on (a plan without one, or the clock gate holding it) or an unreadable slot is amber. Found on otd-avis-test, 2026-10-15: every row above was green on a unit that had never enforced a limit, because the firmware creates the sections bare and the script only bound sections it created itself. `test_sim_switch.py`. | effect-based, degrades |
 | `RMS` | `ubus call <rms object> status` for a live connection state, then the RMS cloud API as the authority. `enable=1` alone is not a pass. | effect-based |
 | `Tailscale` | `tailscale ip -4` returning a `100.x` node address, i.e. the unit joined the tailnet. | effect-based |
 | `eSIM profile` | `gsmctl --esim-list` returning anything. | known gap |
@@ -234,6 +239,33 @@ anything at all; it does not compare the ICCID against the activation code the
 run used, and does not check the profile is enabled. Closing it needs the
 `--esim-list` output format pinned against a real OTD500 with a loaded profile.
 Worth doing when eSIM stations become common.
+
+**`SIM PIN` on the inactive slot (OTD500).** `AT+CPIN?` answers for the card
+the modem is on, and reading the other one means a SIM switch — a modem
+re-attach, which a verify pass must not do and a configure run should not do
+for a check. The ICCID is no help: it is readable on a locked card. So the row
+is amber by construction, and the procedure (PIN disabled before insertion,
+[OPERATOR-GUIDE.md](../OPERATOR-GUIDE.md)) is what covers that card.
+
+**ICCID of the inactive slot (OTD500).** `simcard.@sim[N].iccid` is the last
+card the modem saw **in that slot**, refreshed only while the slot is active —
+not a live read. Found on otd-avis-test (2026-10-15): a Pelephone card moved
+from slot 2 to slot 1 and a Partner card put in slot 2 left both sections naming
+the Pelephone card, and the first version of `SIM operator diversity` failed the
+unit as two Pelephone cards. The active slot now comes from the modem
+(`gsmctl -T`, `gsmctl -J`), and an inactive slot whose stored ICCID equals the
+active card's is reported as stale (amber) on every per-card row. A stale value
+naming a *different* card — one since removed or replaced — cannot be told apart
+from the card really being there, so the diversity row labels the inactive slot
+"last seen" and never fails on it. Closing it needs the modem on that slot: a
+SIM switch, which a verify pass must not do and a one-SIM bench has no use for.
+TEC-815 (Tobee) has the same constraint — it must read the slot the modem is
+on, not trust `simcard` for the other one.
+
+The same blind spot predates TEC-932: kela-quota-sync derives the inactive
+slot's data limit from that ICCID, so on that unit slot 2 carried Pelephone's
+limit for a Partner card until the slot first goes active and the next sync runs.
+Keeping every operator on auto-APN keeps the APN half of the script out of it.
 
 **`NTP server` (speaker, camera).** Both devices expose the server and an enable
 flag over their own API and nothing else — no daemon to inspect, no offset to

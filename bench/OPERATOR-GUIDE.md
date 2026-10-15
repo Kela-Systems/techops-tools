@@ -156,6 +156,22 @@ Plug the router in. The page reads it and asks for two things:
 Click **Configure**. The tool does everything else (password, name, time, firmware, RMS, Tailscale,
 checks) and, for the RUTM08, **moves the LAN to** `192.168.88.1` **as the last step**.
 
+### OTD500: SIM cards
+
+Most units ship with no SIM in, and that is fine: the SIM rows show amber (*no card*), not red.
+If you **do** insert cards at the bench:
+
+- **Disable the PIN on every card before it goes in** (in any phone: Settings → SIM → SIM PIN
+  off). A PIN-locked card never comes online, and the unit just keeps switching away from it.
+  The bench can only check the PIN of the card the modem is currently using; the other one is
+  amber, so the procedure is what protects it.
+- **SIM operator diversity** is always amber at the bench (units leave with one SIM; the field
+  check is Tobee's). If it says *both look like one operator*, check the cards: a unit's two SIMs
+  must be from two different operators (e.g. Partner + Cellcom), or one carrier outage takes out both.
+- **SIM roaming** red with *ROAMING* means the unit attached to a foreign network. Tell an engineer.
+- **SIM APN** red means the card is not on its operator's APN, so it would register with no data.
+  Re-run Configure; if it stays red, tell an engineer.
+
 ### RUTM08: Server or Edge
 
 The RUTM08 page has a **Server / Edge** switch above the site name. Pick it **before** the batch —
@@ -378,7 +394,8 @@ factory reset, which is their call, not a bench step.
   unit was supposed to be: it was never provisioned by us, or it was done on a station whose
   records never reached bench-central. Tell an engineer rather than guessing.
 - **OTD500 without an antenna** will report the 4G row as *cannot confirm* — the modem hasn't
-  attached to a network, so the tool won't claim it's on 4G. Expected at the bench.
+  attached to a network, so the tool won't claim it's on 4G. Expected at the bench. The same goes
+  for **SIM roaming**, and for the SIM PIN / APN / operator rows when no card is in.
 - Verify needs the bench adapter to reach `192.168.88.x` (same as the last step of a normal run).
   If a finished unit is never detected, that's the usual cause.
 
